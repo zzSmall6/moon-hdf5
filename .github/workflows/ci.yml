@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  push:
+    branches: [master]
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -23,8 +26,17 @@ jobs:
       - name: Update dependencies
         run: moon update
 
+      - name: Format
+        run: moon fmt --check
+
       - name: Check
         run: moon check
+
+      - name: Documentation
+        run: moon doc
+
+      - name: Package
+        run: moon package --list
 
       - name: Build (wasm)
         run: moon build --target wasm

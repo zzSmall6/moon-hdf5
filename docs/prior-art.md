@@ -1,17 +1,20 @@
 # Ecosystem check and references
 
-Checked 2026-10-19. No published, mature MoonBit HDF5 file parser with highly
-overlapping scope was found. This does not prove that no related work exists.
+Registry searches were checked 2026-11-04; GitHub repository and authenticated
+code searches were checked 2026-10-19. Mooncakes now lists one narrow MoonBit
+HDF5 module, `JSJ222/moonh5@0.1.0`. No published, mature MoonBit package
+covering this project's v1.0 delivery profile was found. This does not prove
+that no related work exists.
 
 ```sh
 moon search hdf5 --limit 50
 moon search hdf --limit 50
-curl 'https://mooncakes.io/api-new/v0/search?kw=hdf5'
+moon search moonh5 --limit 20
 ```
 
-CLI queries returned no modules; the registry returned `[]`. GitHub repository
-queries `hdf5 moonbit` and `hdf5 language:moonbit` found only this repository
-after publication. Authenticated code search also found related implementations:
+The HDF5 queries return only `JSJ222/moonh5@0.1.0`. GitHub repository queries
+`hdf5 moonbit` and `hdf5 language:moonbit` found only this repository after
+publication. Authenticated code search also found related implementations:
 
 | Project | Relationship |
 | --- | --- |
@@ -19,10 +22,14 @@ after publication. Authenticated code search also found related implementations:
 | [zarr](https://github.com/zlhahaha/zarr) | Zarr v2/v3, a different storage format |
 | [MoonMatBridge](https://github.com/WeiR-h/moonmatbridge) | MAT Level 5; excludes HDF5 MAT v7.3 |
 | [BioSeqs rhdf5](https://github.com/paipai-Studio/BioSeqs/blob/main/src/rhdf5.mbt) | Inspected module models data in memory, without HDF5 binary parsing |
+| [JSJ222/moonh5](https://github.com/JSJ222/MoonH5) | Narrower 0.1.0 array-interchange implementation published after this project began: fixed-width arrays, compact/contiguous/v1-B-tree chunked storage, inline attributes and gzip/shuffle/Fletcher32. It documents dense groups, shared types, vlen/compound/enums/references, advanced chunk indexes and chunked/filtered writing as unsupported. |
 
 Research followed the package-lookup workflow in
 [osc2026-guide](https://github.com/Milky2018/osc2026-guide/blob/main/SKILL.md).
-This project's contribution is parsing HDF5 container bytes in MoonBit.
+This project independently covers broader HDF5 container parsing and new-file
+writing, including dense and shared metadata, structured and variable-length
+values, advanced chunk indexes, references and multi-dimension unlimited
+output.
 
 ## Implementation sources
 

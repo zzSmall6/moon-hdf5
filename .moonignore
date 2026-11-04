@@ -7,3 +7,5 @@ target
 requirement.md
 proposal.draft.md
 AGENTS.md
+__pycache__/
+*.pyc

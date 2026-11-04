@@ -17,6 +17,18 @@ moon-hdf5 implements a documented subset of HDF5. The
   external raw data.
 - In-place editing of an existing file is not supported.
 
+## Installation
+
+Add the released package to a MoonBit module:
+
+```sh
+moon add Zz04321/moon-hdf5@0.1.0
+moon update
+```
+
+The package targets `wasm` by default. To build this repository from source
+instead, use the commands in [Quick Start](#quick-start).
+
 ## Capabilities
 
 - Superblocks v0–v3, 4- and 8-byte addresses, compact and dense groups and
