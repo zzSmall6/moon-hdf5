@@ -179,7 +179,14 @@ fn split_path(path : String) -> Array[String] {
   let segments : Array[String] = []
   for part in path.split("/") {
     let segment = part.to_owned()
-    if segment != "" && segment != "." {
+    if segment == "" || segment == "." {
+      continue
+    }
+    if segment == ".." {
+      if segments.length() > 0 {
+        segments.pop() |> ignore
+      }
+    } else {
       segments.push(segment)
     }
   }

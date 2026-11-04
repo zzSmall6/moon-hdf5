@@ -30,8 +30,8 @@ moon-hdf5 implements a documented subset of HDF5. The
   enum, array, time, bitfield, opaque, sequence, reference and complex values.
 - Hyperslab and ordered-point reads, metadata-only reads, bounded-memory chunk
   iteration, object-reference resolution and dataset-region-reference reads.
-- SOHM reading and optional writing: shared attributes, datatype/dataspace
-  fields, fills and named committed datatypes.
+- SOHM reading and optional writing: shared attributes, filter pipelines,
+  datatype/dataspace fields, fills and named committed datatypes.
 - New-file output for groups, datasets, attributes, links, committed datatypes,
   filters, fills, references, contiguous external raw-data slots and one or more
   unlimited dataset dimensions.
@@ -105,6 +105,7 @@ leaves external targets and external raw data unresolved.
 let writer = @lib.Hdf5Writer::new()
 writer.set_attribute_sharing(true)
 writer.set_fill_sharing(true)
+writer.set_filter_sharing(true)
 
 let record = @lib.Datatype::write_compound([
   ("id", @lib.Datatype::write_integer(true, 4)),
@@ -160,16 +161,17 @@ let output = writer.encode()
 - `add_dataset` writes contiguous storage. `add_chunked_dataset`,
   `add_extensible_dataset` and `resize_dataset` cover finite and multi-unlimited
   chunked storage. One unlimited dimension uses an extensible-array index;
-  multiple unlimited dimensions use a v2 B-tree. `append_dataset` appends along
-  a single unlimited dimension; use `resize_dataset` for multiple unlimited
-  dimensions.
+  multiple unlimited dimensions use a v2 B-tree. `append_dataset` appends a
+  block at the trailing corner of every unlimited axis, growing each such axis
+  by the block extent.
 - `add_external_dataset` stores raw bytes in caller-managed external files. Slot
   sizes must match the dataset byte count; the writer does not create those
   files.
 - Dense link and attribute collections support 9–65,535 records with encoded
   heap objects up to 65,535 bytes. Larger sets remain compact and use OCHK
   continuation chunks.
-- Whole attributes and fills up to 65,535 bytes use one SOHM table and heap.
+- Whole attributes, fills and encoded filter pipelines up to 65,535 bytes use one
+  SOHM table and heap. Equal fills, attributes and pipelines reuse one heap ID.
   Committed datatypes use wrapper version 3 storage type 2 and are referenced by
   datasets and attributes with matching encoded datatypes.
 - Variable-length strings and sequences share a global heap. Sequence bases must
@@ -198,24 +200,53 @@ errors and 2 for invalid arguments.
 
 ## Limitations
 
-- Whole-dataset and single-selection results are memory resident; use
-  `chunk_iterator` for large reads.
-- The writer creates new files only; it does not edit existing files.
-- Dense output uses one direct FHDB block and one leaf per index. Indirect or
-  huge heap blocks and a free-space manager are not written.
-- One SOHM table and heap are emitted. Multiple SOHM tables or heaps are not
-  supported.
-- External raw data is limited to contiguous, unfiltered fixed-size storage;
-  remote URLs, filtered/chunked external layouts and automatic external-file
-  creation are unsupported.
-- Numeric storage wider than 8 bytes and binary-float normalizations other than
-  implied MSB are unsupported.
-- Variable-length datasets cannot use filters. Custom variable-length sequence
-  fills and region references inside sequences are rejected.
-- Reference support covers legacy object and dataset-region forms under 4- and
-  8-byte addresses. Version-4 encoded references are unsupported.
-- `append_dataset` requires exactly one unlimited dimension. Multi-unlimited
-  datasets are resized with `resize_dataset`.
+moon-hdf5 is a documented subset, not a drop-in replacement for libhdf5. The
+[compatibility matrix](docs/compatibility.md) is the authoritative boundary;
+the items below summarize the main user-visible gaps.
+
+- **Memory and streaming:** `Hdf5File::parse` requires the complete file bytes.
+  `parse_source` provides bounded random access, but `read_dataset` and a single
+  selection result are materialized in memory. Use `chunk_iterator` for large
+  datasets.
+- **Writer lifecycle:** `Hdf5Writer` is an in-memory builder and `encode` returns
+  the complete file. There is no streaming writer, in-place edit or file
+  patching. Multi-unlimited resizing and v2 B-tree output are rebuilt for the
+  current in-memory shape.
+- **Read coverage:** virtual datasets, SWMR, parallel HDF5 and third-party or
+  custom filters are outside the profile. Unsupported layouts, indexes,
+  datatypes and required unknown filters raise `UnsupportedFeature`; detection
+  of unsupported input is not exhaustive. Unsupported attribute datatypes fail
+  the read instead of returning empty values.
+- **Writer coverage:** output uses superblock v3 and v2 object headers; older
+  output formats and virtual storage are not selected. Fixed-size values accept
+  shuffle, deflate, Fletcher32 and scale-offset; scale-offset must lead the
+  pipeline, and floating-point scale-offset cannot be combined with Fletcher32.
+  Variable-length values accept shuffle and deflate; Fletcher32 and
+  scale-offset are rejected for them.
+- **Dense and shared metadata:** dense output is limited to 9–65,535 records
+  with encoded heap objects up to 65,535 bytes, one direct FHDB block and one
+  leaf per index. Indirect/huge heap blocks and a free-space manager are not
+  emitted. One SOHM table and heap are written; multiple tables, multiple heaps
+  and heap extension across blocks are not.
+- **External raw data:** only contiguous, unfiltered, fixed-size storage is
+  supported. It requires `Hdf5Resolver` and caller-registered, caller-managed
+  files; `Hdf5File` alone cannot dereference it. Remote URLs, filtered/chunked
+  external layouts and automatic external-file creation are unsupported, and
+  short sources are zero-filled for the declared remainder.
+- **Numeric and string constraints:** numeric storage wider than 8 bytes and
+  binary-float normalizations other than implied MSB are unsupported.
+- **Variable-length structures:** sequence bases must be fixed-size and cannot
+  contain region references. Custom variable-length string and sequence fills
+  are stored through the global heap.
+- **References:** support covers legacy object and dataset-region forms under
+  4- and 8-byte addresses. Object targets need a named hard link; region targets
+  must be datasets in the same file. Version-4 encoded references are
+  unsupported.
+- **Unlimited dimensions:** `append_dataset` writes only at the trailing edge of
+  every unlimited axis. Interior insertion and arbitrary placement are not
+  exposed.
+- **High-level semantics:** netCDF-4 and MATLAB metadata are read as HDF5
+  structures, not as complete netCDF-4 or MATLAB semantics.
 
 Unsupported structures raise `UnsupportedFeature`; malformed input raises
 `InvalidField` or `UnexpectedEof`; invalid caller input raises

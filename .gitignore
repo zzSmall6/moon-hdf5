@@ -4,5 +4,6 @@ target/
 target
 .mooncakes/
 .moonagent/
+__pycache__/
 requirement.md
 proposal.draft.md

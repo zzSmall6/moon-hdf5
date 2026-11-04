@@ -795,6 +795,22 @@ test "high-level API follows soft links and reports external links" {
 }
 
 ///|
+test "high-level API resolves parent segments in paths and soft links" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/target/value", [1UL], Int64Values([9L]))
+  writer.add_group("/group/child")
+  writer.add_soft_link("/group", "sibling", "../target/./value")
+  writer.add_soft_link("/group/child", "up", "../../../target/value")
+  let file = Hdf5File::parse(writer.encode())
+  assert_eq(file.resolve("/group/sibling").path, "/target/value")
+  assert_eq(file.resolve("/group/child/../sibling").path, "/target/value")
+  assert_eq(file.resolve("/group/child/up").path, "/target/value")
+  assert_eq(integer_values(file.read_dataset("/group/../target/value")), [9L])
+  assert_eq(integer_values(file.read_dataset("/group/sibling")), [9L])
+  assert_eq(integer_values(file.read_dataset("/group/child/up")), [9L])
+}
+
+///|
 test "compact and empty groups remain readable" {
   let file = Hdf5File::parse(
     @fs.read_file_to_bytes("testdata/group_storage.h5"),

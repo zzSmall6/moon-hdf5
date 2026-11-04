@@ -157,11 +157,14 @@ fn parse_shared_message_context(
     let _minimum_size = table_reader.read_u32_le()
     let _list_maximum = table_reader.read_u16_le()
     let _btree_minimum = table_reader.read_u16_le()
-    let _message_count = table_reader.read_u16_le()
+    let message_count = table_reader.read_u16_le()
     let _index_address = table_reader.read_uint_le(superblock.offset_size)
     let heap_address = table_reader.read_uint_le(superblock.offset_size)
-    guard heap_address != heap_undefined_address(superblock.offset_size) else {
-      raise InvalidField("shared-message index has no fractal heap")
+    guard heap_address != heap_undefined_address(superblock.offset_size) ||
+      message_count == 0 else {
+      raise InvalidField(
+        "shared-message index with entries has no fractal heap",
+      )
     }
     indexes.push({ message_types, heap_address, })
   }
@@ -202,7 +205,12 @@ fn SharedMessageContext::resolve_sohm_heap_id(
     raise InvalidField("shared-message heap ID has an invalid size")
   }
   let heap_address = match self.heap_address(msg_type) {
-    Some(address) => address
+    Some(address) => {
+      guard address != heap_undefined_address(self.offset_size) else {
+        raise InvalidField("shared-message index has no fractal heap")
+      }
+      address
+    }
     None =>
       raise UnsupportedFeature("shared message has no matching SOHM index")
   }

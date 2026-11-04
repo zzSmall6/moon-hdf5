@@ -35,11 +35,18 @@ heap with metadata v2 B-tree name and creation-order indexes. Attributes use the
 same dense machinery. Every named hard-link path is discovered, with recursion
 stopped when an address repeats in the current ancestor chain.
 
+Paths and relative soft-link targets are normalized by removing empty and `.`
+components and folding `..` into the current segment stack before traversal.
+This keeps `Hdf5File` and `Hdf5Resolver` behavior aligned.
+
 Chunk indexes are normalized behind `DataLayout` and `DatasetLayoutKind`.
 Supported readers cover v1 B-trees, single-chunk, implicit, fixed-array,
 extensible-array and v2 B-tree indexes. Headers, block signatures, backlinks,
 entry counts, coordinates, offsets and checksums are validated. Missing or
-undefined chunks use fill values.
+undefined chunks use fill values. Undefined fill messages and fill-time `NEVER`
+are treated as no stored payload, so unallocated storage reads as zero, matching
+HDF5. A custom fixed-size payload remains parsed and size-checked even when the
+writing policy disables its use.
 
 Filters are decoded through a shared pipeline model: shuffle, deflate,
 Fletcher32, integer scale-offset and f32/f64 decimal scale-offset. Per-chunk
@@ -74,13 +81,17 @@ links and external raw data unresolved.
 The reader resolves the superblock-extension SOHM table through its SMTB indexes
 and fractal heaps. Wrapper versions 1–3 cover SOHM heap IDs and committed
 object-header targets. Dense shared attribute records use SOHM heap IDs directly;
-attribute flags may also share embedded datatype or dataspace messages. Cycles,
-malformed indexes and bad checksums are rejected.
+attribute flags may also share embedded datatype or dataspace messages. Whole
+fill and filter-pipeline messages resolve through the same SOHM heap-ID path.
+HDF5 may reserve a configured index without creating a heap when it has no
+entries; that form is accepted, while an index with a nonzero entry count and no
+heap is rejected. Cycles, malformed indexes and bad checksums are rejected.
 
 The writer can emit:
 
-- whole attribute and custom fill messages through one SOHM table and managed
-  heap, interning equal encoded attributes;
+- whole attribute, custom fill and filter-pipeline messages through one SOHM
+  table and managed heap, interning equal encoded fills, attributes and
+  pipelines;
 - named committed datatypes as ordinary datatype objects referenced through
   wrapper version 3 storage type 2;
 - the SMTB type mask for the message kinds actually emitted.
@@ -112,15 +123,21 @@ finite chunked datasets with fixed-array indexes, one-unlimited-dimension
 datasets with extensible-array indexes, and multi-unlimited datasets with v2
 B-tree chunk indexes. Extensible arrays use inline, direct, super-block or paged
 forms. The v2 B-tree is bulk-built in row-major chunk order, with client type 10
-for unfiltered chunks and 11 for filtered chunks. Fill-only chunks keep undefined
-addresses except for variable-length datasets, which allocate in-shape chunks so
-empty strings do not depend on undefined vlen storage.
+for unfiltered chunks and 11 for filtered chunks. Fixed axes must match the
+current shape when appending; each unlimited axis grows by the block extent and
+the block is written at the old shape's trailing corner. Fill-only chunks keep
+undefined addresses except for variable-length datasets, which allocate in-shape
+chunks so empty strings do not depend on undefined vlen storage.
 
 Integer scale-offset supports automatic or fixed bit widths; floating-point
 scale-offset supports f32/f64 decimal digits. Scale-offset must lead the
 pipeline, and floating-point scale-offset cannot be combined with Fletcher32.
+Variable-length values are filtered as fixed-width heap descriptors: shuffle
+and deflate are supported, while Fletcher32 and scale-offset are rejected, as
+in HDF5 1.14.6.
 `set_chunk_filter_mask` records per-chunk skips in the fixed-array,
-extensible-array or v2 B-tree index.
+extensible-array or v2 B-tree index. Masks are keyed by chunk-grid coordinates,
+not linear chunk positions, so resize and append preserve their logical target.
 
 Structured values use one recursive encoder. Validation covers nesting depth,
 member names and offsets, enum values, array dimensions, compound bounds and
@@ -130,9 +147,9 @@ because mixing them with string or sequence heap objects can corrupt HDF5 1.14.6
 bookkeeping.
 
 Variable-length strings and sequences use 16-byte descriptors and one shared
-global heap; repeated payloads share heap objects. Sequence bases must be
-fixed-size. Variable-length sequence fills and sequence bases containing region
-references are rejected because HDF5 1.14.6 cannot safely consume them.
+global heap; repeated payloads and custom fills share heap objects. Sequence
+bases must be fixed-size. Sequence bases containing region references are
+rejected because HDF5 1.14.6 cannot safely consume them.
 
 ## Errors and verification
 

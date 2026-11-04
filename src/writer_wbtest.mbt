@@ -296,6 +296,31 @@ fn writer_test_dense_attribute_payloads(
 }
 
 ///|
+fn writer_test_filter_message(
+  bytes : Bytes,
+  address : UInt64,
+) -> (Int32, Bytes) raise Hdf5Error {
+  let header = parse_object_header(bytes, address, 8, 8, 0UL)
+  match header.first(msg_filter_pipeline) {
+    Some(message) => (message.flags.to_int(), message.data)
+    None => raise InvalidField("dataset has no filter pipeline message")
+  }
+}
+
+///|
+fn writer_test_shared_heap_id(payload : Bytes) -> Bytes raise Hdf5Error {
+  let reader = Reader::new(payload)
+  guard reader.read_u8() == b'\x03' && reader.read_u8() == b'\x01' else {
+    raise InvalidField("expected a SOHM heap-ID wrapper")
+  }
+  let id = reader.read_bytes(8)
+  guard reader.remaining() == 0 else {
+    raise InvalidField("shared filter pipeline has trailing bytes")
+  }
+  id
+}
+
+///|
 test "writer shares attributes through SOHM" {
   let writer = Hdf5Writer::new()
   writer.set_attribute_sharing(true)
@@ -363,6 +388,15 @@ test "writer shares attributes through SOHM" {
     )
     writer.resize_dataset("/shared/fills/" + name, [3UL])
   }
+  writer.add_extensible_dataset(
+    "/shared/fills/duplicate_negative",
+    [0UL],
+    [None],
+    [1U],
+    Int64Values([]),
+    fill_value=Int64Values([-7L]),
+  )
+  writer.resize_dataset("/shared/fills/duplicate_negative", [3UL])
   let layout = assign_writable_addresses(
     writer,
     initial_writable_objects(writer),
@@ -373,7 +407,7 @@ test "writer shares attributes through SOHM" {
     Some(shared) => {
       assert_eq(shared.attributes.length(), 25)
       assert_eq(shared.message_count, 26)
-      assert_eq(shared.fills.length(), 2)
+      assert_eq(shared.fills.length(), 3)
       assert_eq(shared.message_types, 0x1020)
       let compact = match
         writer_shared_attribute(shared.attributes, "/shared/value", "compact") {
@@ -390,6 +424,23 @@ test "writer shares attributes through SOHM" {
         None => abort("expected duplicate shared attribute")
       }
       assert_eq(compact.id, duplicate.id)
+      let negative = match
+        writer_shared_fill(shared.fills, "/shared/fills/negative") {
+        Some(fill) => fill
+        None => abort("expected shared negative fill")
+      }
+      let duplicate_negative = match
+        writer_shared_fill(shared.fills, "/shared/fills/duplicate_negative") {
+        Some(fill) => fill
+        None => abort("expected duplicate shared negative fill")
+      }
+      let positive = match
+        writer_shared_fill(shared.fills, "/shared/fills/positive") {
+        Some(fill) => fill
+        None => abort("expected shared positive fill")
+      }
+      assert_eq(negative.id, duplicate_negative.id)
+      assert_true(negative.id != positive.id)
     }
     None => abort("expected shared-message metadata")
   }
@@ -436,7 +487,12 @@ test "writer shares attributes through SOHM" {
     assert_eq(message.data[0], b'\x03')
     assert_eq(message.data[1], b'\x01')
   }
-  for (name, fill) in [("negative", -7L), ("positive", 23L)] {
+  for
+    (name, fill) in [
+      ("negative", -7L),
+      ("positive", 23L),
+      ("duplicate_negative", -7L),
+    ] {
     let path = "/shared/fills/" + name
     let fill_header = parse_object_header(
       bytes,
@@ -548,6 +604,178 @@ test "writer shares attributes through SOHM" {
   let all_heap_address = all_reader.read_uint_le(8)
   let all_heap = parse_fractal_heap(bytes, all_heap_address, 8, 8, 0UL)
   assert_eq(all_heap.blocks.length(), 0)
+}
+
+///|
+test "writer shares encoded filter pipelines through SOHM" {
+  let writer = Hdf5Writer::new()
+  writer.set_filter_sharing(true)
+  writer.add_group("/filters")
+  let shared_pipeline = [Shuffle, Deflate(6), Fletcher32]
+  writer.add_chunked_dataset(
+    "/filters/fixed_a",
+    [4UL],
+    [2U],
+    Int64Values([1L, 2L, 3L, 4L]),
+    fill_value=Int64Values([-1L]),
+    filters=shared_pipeline,
+  )
+  writer.add_chunked_dataset(
+    "/filters/fixed_b",
+    [4UL],
+    [2U],
+    Int64Values([5L, 6L, 7L, 8L]),
+    fill_value=Int64Values([-2L]),
+    filters=shared_pipeline,
+  )
+  writer.add_extensible_dataset(
+    "/filters/growing",
+    [4UL],
+    [None],
+    [2U],
+    Int64Values([9L, 10L, 11L, 12L]),
+    fill_value=Int64Values([-3L]),
+    filters=shared_pipeline,
+  )
+  writer.add_chunked_dataset(
+    "/filters/different",
+    [4UL],
+    [2U],
+    Int64Values([13L, 14L, 15L, 16L]),
+    filters=[Deflate(9)],
+  )
+  writer.add_chunked_dataset(
+    "/filters/scale_a",
+    [4UL],
+    [2U],
+    Int32Values([1, 2, 3, 4]),
+    fill_value=Int32Values([-1]),
+    filters=[ScaleOffset(4)],
+  )
+  writer.add_chunked_dataset(
+    "/filters/scale_b",
+    [4UL],
+    [2U],
+    Int32Values([5, 6, 7, 8]),
+    fill_value=Int32Values([-2]),
+    filters=[ScaleOffset(4)],
+  )
+
+  let layout = assign_writable_addresses(
+    writer,
+    initial_writable_objects(writer),
+  ) catch {
+    error => abort("layout failed: " + error.message())
+  }
+  let (fixed_id, growing_id, different_id, scale_a_id, scale_b_id) = match
+    layout.shared {
+    Some(shared) => {
+      assert_eq(shared.filters.length(), 6)
+      assert_eq(shared.message_count, 4)
+      assert_eq(shared.message_types, 1 << 0x0B)
+      let fixed_a = match
+        writer_shared_filter(shared.filters, "/filters/fixed_a") {
+        Some(filter) => filter
+        None => abort("expected shared fixed pipeline")
+      }
+      let fixed_b = match
+        writer_shared_filter(shared.filters, "/filters/fixed_b") {
+        Some(filter) => filter
+        None => abort("expected duplicate fixed pipeline")
+      }
+      let growing = match
+        writer_shared_filter(shared.filters, "/filters/growing") {
+        Some(filter) => filter
+        None => abort("expected shared growing pipeline")
+      }
+      let different = match
+        writer_shared_filter(shared.filters, "/filters/different") {
+        Some(filter) => filter
+        None => abort("expected distinct pipeline")
+      }
+      let scale_a = match
+        writer_shared_filter(shared.filters, "/filters/scale_a") {
+        Some(filter) => filter
+        None => abort("expected first scale-offset pipeline")
+      }
+      let scale_b = match
+        writer_shared_filter(shared.filters, "/filters/scale_b") {
+        Some(filter) => filter
+        None => abort("expected second scale-offset pipeline")
+      }
+      assert_eq(fixed_a.id, fixed_b.id)
+      assert_eq(fixed_a.id, growing.id)
+      assert_true(fixed_a.id != different.id)
+      assert_true(scale_a.id != scale_b.id)
+      (fixed_a.id, growing.id, different.id, scale_a.id, scale_b.id)
+    }
+    None => abort("expected shared filter metadata")
+  }
+
+  let bytes = writer.encode() catch {
+    error => abort("encode failed: " + error.message())
+  }
+  let file = Hdf5File::parse(bytes) catch {
+    error => abort("parse failed: " + error.message())
+  }
+  assert_eq(integer_values(file.read_dataset("/filters/fixed_a")), [
+    1L, 2L, 3L, 4L,
+  ])
+  assert_eq(integer_values(file.read_dataset("/filters/fixed_b")), [
+    5L, 6L, 7L, 8L,
+  ])
+  assert_eq(integer_values(file.read_dataset("/filters/growing")), [
+    9L, 10L, 11L, 12L,
+  ])
+  assert_eq(integer_values(file.read_dataset("/filters/different")), [
+    13L, 14L, 15L, 16L,
+  ])
+  assert_eq(integer_values(file.read_dataset("/filters/scale_a")), [
+    1L, 2L, 3L, 4L,
+  ])
+  assert_eq(integer_values(file.read_dataset("/filters/scale_b")), [
+    5L, 6L, 7L, 8L,
+  ])
+  let (fixed_flags, fixed_payload) = writer_test_filter_message(
+    bytes,
+    file.resolve("/filters/fixed_a").address,
+  ) catch {
+    error => abort("fixed filter message failed: " + error.message())
+  }
+  let (growing_flags, growing_payload) = writer_test_filter_message(
+    bytes,
+    file.resolve("/filters/growing").address,
+  ) catch {
+    error => abort("growing filter message failed: " + error.message())
+  }
+  let (different_flags, different_payload) = writer_test_filter_message(
+    bytes,
+    file.resolve("/filters/different").address,
+  ) catch {
+    error => abort("different filter message failed: " + error.message())
+  }
+  let (scale_a_flags, scale_a_payload) = writer_test_filter_message(
+    bytes,
+    file.resolve("/filters/scale_a").address,
+  ) catch {
+    error => abort("first scale-offset message failed: " + error.message())
+  }
+  let (scale_b_flags, scale_b_payload) = writer_test_filter_message(
+    bytes,
+    file.resolve("/filters/scale_b").address,
+  ) catch {
+    error => abort("second scale-offset message failed: " + error.message())
+  }
+  assert_eq(fixed_flags & shared_message_flag, shared_message_flag)
+  assert_eq(growing_flags & shared_message_flag, shared_message_flag)
+  assert_eq(different_flags & shared_message_flag, shared_message_flag)
+  assert_eq(scale_a_flags & shared_message_flag, shared_message_flag)
+  assert_eq(scale_b_flags & shared_message_flag, shared_message_flag)
+  assert_eq(writer_test_shared_heap_id(fixed_payload), fixed_id)
+  assert_eq(writer_test_shared_heap_id(growing_payload), growing_id)
+  assert_eq(writer_test_shared_heap_id(different_payload), different_id)
+  assert_eq(writer_test_shared_heap_id(scale_a_payload), scale_a_id)
+  assert_eq(writer_test_shared_heap_id(scale_b_payload), scale_b_id)
 }
 
 ///|
@@ -2165,6 +2393,51 @@ test "writer writes per-chunk filter masks" {
 }
 
 ///|
+test "writer preserves chunk filter masks across multi-axis growth" {
+  let writer = Hdf5Writer::new()
+  writer.add_extensible_dataset(
+    "/masked_multi",
+    [2UL, 2UL],
+    [None, None],
+    [1U, 1U],
+    Int64Values([1L, 2L, 3L, 4L]),
+    fill_value=Int64Values([-1L]),
+    filters=[Shuffle, Deflate(5)],
+  )
+  writer.set_chunk_filter_mask("/masked_multi", 3, 1U)
+  let index = writer.writer_dataset_index("/masked_multi")
+  let initial = encode_dataset_chunks(
+    writer.datasets[index],
+    empty_writable_heap(),
+    [],
+  )
+  assert_eq(initial[3].filter_mask, 1U)
+
+  writer.resize_dataset("/masked_multi", [2UL, 3UL])
+  let resized = encode_dataset_chunks(
+    writer.datasets[index],
+    empty_writable_heap(),
+    [],
+  )
+  assert_eq(resized[3].filter_mask, 0U)
+  assert_eq(resized[4].filter_mask, 1U)
+
+  writer.append_dataset("/masked_multi", [1UL, 1UL], Int64Values([5L]))
+  let appended = encode_dataset_chunks(
+    writer.datasets[index],
+    empty_writable_heap(),
+    [],
+  )
+  assert_eq(appended[5].filter_mask, 1U)
+  assert_eq(
+    integer_values(
+      Hdf5File::parse(writer.encode()).read_dataset("/masked_multi"),
+    ),
+    [1L, 2L, -1L, -1L, 3L, 4L, -1L, -1L, -1L, -1L, -1L, 5L],
+  )
+}
+
+///|
 test "writer emits integer scale-offset chunks" {
   let writer = Hdf5Writer::new()
   writer.add_chunked_dataset(
@@ -2559,6 +2832,32 @@ test "writer grows multiple unlimited dimensions through a v2 b-tree" {
 }
 
 ///|
+test "writer appends multiple unlimited dimensions at the trailing corner" {
+  let writer = Hdf5Writer::new()
+  writer.add_extensible_dataset(
+    "/multi_append",
+    [2UL, 2UL],
+    [None, None],
+    [1U, 2U],
+    Int64Values([1L, 2L, 3L, 4L]),
+    fill_value=Int64Values([-1L]),
+    filters=[Shuffle, Deflate(6), Fletcher32],
+  )
+  writer.append_dataset("/multi_append", [1UL, 1UL], Int64Values([5L]))
+  writer.append_dataset("/multi_append", [1UL, 2UL], Int64Values([6L, 7L]))
+  let dataset = Hdf5File::parse(writer.encode()).read_dataset("/multi_append")
+  assert_eq(dataset.dataspace.dimensions, [4UL, 5UL])
+  assert_eq(dataset.dataspace.maximum_dimensions, [
+    0xFFFFFFFFFFFFFFFFUL, 0xFFFFFFFFFFFFFFFFUL,
+  ])
+  assert_true(dataset.layout.chunk_index is BTreeV2(_))
+  assert_eq(integer_values(dataset), [
+    1L, 2L, -1L, -1L, -1L, 3L, 4L, -1L, -1L, -1L, -1L, -1L, 5L, -1L, -1L, -1L, -1L,
+    -1L, 6L, 7L,
+  ])
+}
+
+///|
 test "writer filters multiple unlimited dimensions through a v2 b-tree" {
   let writer = Hdf5Writer::new()
   writer.add_extensible_dataset(
@@ -2780,27 +3079,6 @@ test "writer validates extensible shapes and mutations" {
   assert_eq(
     append_shape,
     Some(InvalidArgument("appended block must match fixed dataset dimensions")),
-  )
-  writer.add_extensible_dataset(
-    "/multi_append",
-    [1UL, 1UL],
-    [None, None],
-    [1U, 1U],
-    Int64Values([1L]),
-  )
-  let multi_append = try {
-    writer.append_dataset("/multi_append", [1UL, 1UL], Int64Values([2L]))
-    None
-  } catch {
-    error => Some(error)
-  }
-  assert_eq(
-    multi_append,
-    Some(
-      InvalidArgument(
-        "append_dataset requires one unlimited dimension; use resize_dataset for multiple unlimited dimensions",
-      ),
-    ),
   )
 }
 
@@ -3378,7 +3656,7 @@ test "writer rejects invalid time bitfield opaque and sequence types" {
       [1UL],
       [1U],
       StructuredValues(sequence, [Sequence([SignedInteger(1L)])]),
-      filters=[Deflate(6)],
+      filters=[Fletcher32],
     )
     None
   } catch {
@@ -3388,27 +3666,7 @@ test "writer rejects invalid time bitfield opaque and sequence types" {
     filtered,
     Some(
       UnsupportedFeature(
-        "filters are not supported for variable-length datasets",
-      ),
-    ),
-  )
-  let invalid_fill = try {
-    writer.add_chunked_dataset(
-      "/fill",
-      [1UL],
-      [1U],
-      StructuredValues(sequence, [Sequence([])]),
-      fill_value=StructuredValues(sequence, [Sequence([SignedInteger(1L)])]),
-    )
-    None
-  } catch {
-    error => Some(error)
-  }
-  assert_eq(
-    invalid_fill,
-    Some(
-      UnsupportedFeature(
-        "custom variable-length sequence fills are not supported yet",
+        "Fletcher32 is not supported for variable-length datasets",
       ),
     ),
   )
@@ -3557,8 +3815,60 @@ test "writer round-trips variable-length UTF-8 strings" {
 }
 
 ///|
-test "writer rejects filters for variable-length datasets" {
-  let chunked = try {
+test "writer filters variable-length values with shuffle and deflate" {
+  let writer = Hdf5Writer::new()
+  writer.add_chunked_dataset(
+    "/strings",
+    [5UL],
+    [2U],
+    VariableStringValues(["alpha", "", "数据", "alpha", ""]),
+    filters=[Shuffle, Deflate(6)],
+  )
+  writer.add_extensible_dataset(
+    "/extensible_strings",
+    [0UL],
+    [None],
+    [1U],
+    VariableStringValues([]),
+    filters=[Shuffle, Deflate(6)],
+  )
+  writer.append_dataset(
+    "/extensible_strings",
+    [3UL],
+    VariableStringValues(["first", "", "third"]),
+  )
+  let sequence = Datatype::write_vlen_sequence(Datatype::write_integer(true, 4))
+  writer.add_chunked_dataset(
+    "/sequences",
+    [4UL],
+    [2U],
+    StructuredValues(sequence, [
+      Sequence([]),
+      Sequence([SignedInteger(1L), SignedInteger(-2L), SignedInteger(3L)]),
+      Sequence([SignedInteger(1L), SignedInteger(-2L), SignedInteger(3L)]),
+      Sequence([SignedInteger(-1L), SignedInteger(0L)]),
+    ]),
+    filters=[Shuffle, Deflate(6)],
+  )
+
+  let file = Hdf5File::parse(writer.encode())
+  assert_eq(string_values(file.read_dataset("/strings")), [
+    "alpha", "", "数据", "alpha", "",
+  ])
+  assert_eq(string_values(file.read_dataset("/extensible_strings")), [
+    "first", "", "third",
+  ])
+  assert_eq(structured_values(file.read_dataset("/sequences")), [
+    Sequence([]),
+    Sequence([SignedInteger(1L), SignedInteger(-2L), SignedInteger(3L)]),
+    Sequence([SignedInteger(1L), SignedInteger(-2L), SignedInteger(3L)]),
+    Sequence([SignedInteger(-1L), SignedInteger(0L)]),
+  ])
+}
+
+///|
+test "writer rejects vlen-incompatible filters" {
+  let fletcher32 = try {
     Hdf5Writer::new().add_chunked_dataset(
       "/strings",
       [2UL],
@@ -3571,38 +3881,38 @@ test "writer rejects filters for variable-length datasets" {
     error => Some(error)
   }
   assert_eq(
-    chunked,
+    fletcher32,
     Some(
       UnsupportedFeature(
-        "filters are not supported for variable-length datasets",
+        "Fletcher32 is not supported for variable-length datasets",
       ),
     ),
   )
-  let extensible = try {
+  let scaleoffset = try {
     Hdf5Writer::new().add_extensible_dataset(
       "/strings",
       [0UL],
       [None],
       [1U],
       VariableStringValues([]),
-      filters=[Shuffle],
+      filters=[ScaleOffset(0)],
     )
     None
   } catch {
     error => Some(error)
   }
   assert_eq(
-    extensible,
+    scaleoffset,
     Some(
       UnsupportedFeature(
-        "filters are not supported for variable-length datasets",
+        "scale-offset writer filter requires fixed-size numeric values",
       ),
     ),
   )
 }
 
 ///|
-test "writer round-trips custom variable-length string fills" {
+test "writer round-trips custom variable-length fills" {
   let writer = Hdf5Writer::new()
   writer.add_chunked_dataset(
     "/strings",
@@ -3628,25 +3938,19 @@ test "writer round-trips custom variable-length string fills" {
   ])
 
   let sequence = Datatype::write_vlen_sequence(Datatype::write_integer(true, 4))
-  let unsupported = try {
-    Hdf5Writer::new().add_extensible_dataset(
-      "/sequences",
-      [0UL],
-      [None],
-      [1U],
-      StructuredValues(sequence, []),
-      fill_value=StructuredValues(sequence, [Sequence([SignedInteger(1L)])]),
-    )
-    None
-  } catch {
-    error => Some(error)
-  }
-  assert_eq(
-    unsupported,
-    Some(
-      UnsupportedFeature(
-        "custom variable-length sequence fills are not supported yet",
-      ),
-    ),
+  writer.add_extensible_dataset(
+    "/sequences",
+    [0UL],
+    [None],
+    [1U],
+    StructuredValues(sequence, []),
+    fill_value=StructuredValues(sequence, [Sequence([SignedInteger(1L)])]),
   )
+  writer.resize_dataset("/sequences", [3UL])
+  let file = Hdf5File::parse(writer.encode())
+  assert_eq(structured_values(file.read_dataset("/sequences")), [
+    Sequence([SignedInteger(1L)]),
+    Sequence([SignedInteger(1L)]),
+    Sequence([SignedInteger(1L)]),
+  ])
 }

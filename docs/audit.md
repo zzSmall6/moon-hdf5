@@ -1,4 +1,4 @@
-# Code audit — 2026-10-29
+# Code audit — 2026-11-04
 
 Scope: current worktree, reader and writer, with emphasis on the HDF5 1.14.6
 v1.0 delivery profile and post-v1.0 extensions.
@@ -7,8 +7,8 @@ v1.0 delivery profile and post-v1.0 extensions.
 
 The release gate passes on the current worktree:
 
-- wasm: 227 tests passed;
-- native: 227 tests passed;
+- wasm: 239 tests passed;
+- native: 239 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - writer demo verified by h5py 3.13.0/HDF5 1.14.6;
 - numeric-layout, scale-offset, vlen-fill, NetCDF-4, external-storage,
@@ -21,13 +21,14 @@ structures raise errors; detection is not exhaustive.
 
 | Area | Evidence |
 | --- | --- |
-| Framing and navigation | Superblock v0–v3, user blocks, compact/dense groups, hard/soft links, source-backed reads |
+| Framing and navigation | Superblock v0–v3, user blocks, compact/dense groups, hard/soft links, `.`/`..` path normalization, source-backed reads |
 | Dense metadata | FRHP direct/indirect blocks, huge objects, v2 B-tree leaf/internal nodes and SOHM heap IDs |
 | Datasets | Compact, contiguous, external raw data and every supported chunk index |
+| Fill policies | Default, custom, undefined and `FILL_TIME_NEVER`; malformed messages and external-storage boundaries remain rejected |
 | Filters | Shuffle, deflate, Fletcher32, integer/f32/f64 scale-offset, masks and fill markers |
 | Datatypes | Fixed-point, IEEE/normalized floats, strings, compound, enum, array, time, bitfield, opaque, sequence, references, complex |
 | References | 4-/8-byte object references and legacy region references against compact, contiguous and filtered targets |
-| Shared messages | Table/indexes/heaps, wrappers v1–v3, field sharing, fills, whole attributes and committed targets |
+| Shared messages | Table/indexes/heaps, wrappers v1–v3, field sharing, fills, filter pipelines, whole attributes and committed targets |
 | Writer | Superblock v3, OHDR/OCHK, dense metadata, chunk indexes, SOHM, references and external slots |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
 
@@ -38,10 +39,21 @@ continuation chunks, dense metadata, heap blocks, B-tree nodes and chunk indexes
 are bounds checked before use. Metadata checksums are verified. Group traversal
 stops recursive hard-link aliases at the current ancestor chain.
 
+`Hdf5File` canonicalizes empty, `.` and `..` path components before traversal,
+so relative soft-link targets that walk to a parent group resolve consistently
+with `Hdf5Resolver`. Normalization is lexical and bounded by the existing
+soft-link indirection limit.
+
 Dataset metadata and payload reads are separate. Selection reads validate rank,
 bounds and stride and decode only intersecting allocated chunks. Missing chunks
 use fill values. `chunk_iterator` bounds memory by one tile plus an intersecting
 storage chunk and supports early termination.
+
+Undefined fill messages and fill-time `NEVER` produce no stored fill payload, so
+unallocated contiguous regions and chunks read as zero, matching HDF5 1.14.6.
+Custom payloads that are present but disabled are still parsed and size-checked.
+Malformed fill messages remain rejected, and external raw data still requires
+`Hdf5Resolver` independently of the fill policy.
 
 Variable-length values read global-heap objects on demand. Dataset-region
 references resolve a selection against a same-file dataset and reuse the normal
@@ -76,17 +88,25 @@ blocks and a free-space manager are not emitted.
 Finite chunked datasets use fixed-array indexes; one unlimited dimension uses
 extensible-array indexes, including inline entries, direct/super blocks and paged
 data blocks. Multiple unlimited dimensions use bulk-built v2 B-tree chunk indexes
-with client type 10/11 records, including internal nodes. `append_dataset` is
-limited to one unlimited dimension; multi-unlimited growth uses
-`resize_dataset`. Fill-only chunks keep undefined addresses, except that
-variable-length datasets allocate in-shape chunks so empty strings do not depend
-on undefined vlen fill storage.
+with client type 10/11 records, including internal nodes. `append_dataset`
+requires fixed axes to match the current shape, grows every unlimited axis by
+the appended block extent and places the block at the old shape's trailing
+corner. Fill-only chunks keep undefined addresses, except that variable-length
+datasets allocate in-shape chunks so empty strings do not depend on undefined
+vlen fill storage.
 
-Integer and floating-point scale-offset, filter masks and fixed-size filter
-pipelines are encoded in the index. Variable-length datasets reject filters,
-matching HDF5 1.14.6. Variable-length sequence fills are rejected. Sequence
-bases must be fixed-size; bases containing region references are rejected because
-HDF5 1.14.6 cannot safely consume them.
+Integer and floating-point scale-offset, filter masks and filter pipelines are
+encoded in the index. Variable-length values accept shuffle and deflate on their
+fixed-width heap descriptors; Fletcher32 and scale-offset are rejected for them,
+matching HDF5 1.14.6. Custom variable-length string and sequence fills use the
+same global heap as dataset values. Sequence bases must be fixed-size; bases
+containing region references are rejected because HDF5 1.14.6 cannot safely
+consume them.
+
+Chunk filter masks are keyed by chunk-grid coordinates rather than transient
+linear indices. Resizing or appending a dataset with multiple unlimited axes can
+therefore change chunk strides without moving a mask to a different logical
+chunk.
 
 Structured values use the reader's recursive datatype model. References resolve
 after final layout, allowing forward targets. Region references use a dedicated
@@ -98,15 +118,18 @@ bookkeeping.
 The reader resolves the superblock-extension SOHM table, SMTB indexes and fractal
 heaps. Wrapper versions 1–3 cover heap IDs and committed object-header targets.
 Dense attribute records referencing SOHM read the payload from the shared heap.
-Attribute datatype/dataspace flags are resolved separately. Cycles, malformed
-indexes and checksum failures are rejected.
+Whole fill and filter-pipeline messages use the same heap-ID path.
+Reserved indexes with no entries may omit their fractal heap; an index that
+claims entries must provide one. Attribute datatype/dataspace flags are resolved
+separately. Cycles, malformed indexes and checksum failures are rejected.
 
 The writer optionally emits one SOHM table and one managed-object heap for whole
-attributes and custom fills up to 65,535 bytes. Equal encoded attributes reuse one
-heap ID. Named committed datatypes are written as datatype objects and referenced
-through wrapper version 3 storage type 2; datasets and attributes with matching
-encoded datatypes use the shared flag and target address. This path also works
-without a superblock-extension SOHM table.
+attributes, custom fills and encoded filter pipelines up to 65,535 bytes. Equal
+encoded fills, attributes and pipelines reuse one heap ID. Named committed
+datatypes are written as datatype objects and referenced through wrapper version
+3 storage type 2; datasets and attributes with matching encoded datatypes use the
+shared flag and target address. This path also works without a
+superblock-extension SOHM table.
 
 The remaining SOHM boundary is one table and one heap. Multiple tables, multiple
 heaps and heap extension across multiple blocks are not emitted.
@@ -118,8 +141,10 @@ heaps and heap extension across multiple blocks are not emitted.
 - External raw data requires caller registration and caller-managed files.
 - Dense and SOHM output use compact single-block writer forms; larger producer
   structures are reader-side features unless explicitly listed as writer output.
-- V2 B-tree output is bulk-built for a completed in-memory shape; incremental
-  insertion and `append_dataset` for multiple unlimited axes are not exposed.
+- V2 B-tree output is bulk-built for a completed in-memory shape; arbitrary
+  incremental insertion at interior coordinates is not exposed.
+- Dot-segment path normalization is lexical; combinations where `..` follows a
+  soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 encoded references and high-level netCDF-4/MATLAB semantics remain
   outside the profile.
 
@@ -136,5 +161,10 @@ heaps and heap extension across multiple blocks are not emitted.
 - 2026-10-29: structured references, region references, chunk masks, external
   slots, creation order, complex values, large dense objects, SOHM output,
   fill/attribute deduplication and committed datatypes.
-- 2026-10-30: multi-unlimited writer storage with v2 B-tree chunk indexes,
-  filtered records and internal-node coverage.
+- 2026-10-30: multi-unlimited writer storage and append with v2 B-tree chunk
+  indexes, filtered records, internal-node coverage, undefined/disabled fill
+  policies, fixture-verified shared filter pipelines and writer-side pipeline
+  sharing, plus filtered variable-length strings and sequences and vlen fills.
+- 2026-11-04: audit hardening for coordinate-stable chunk filter masks across
+  multi-axis resize/append and parent-segment normalization in paths and soft
+  links, with native/wasm and HDF5 1.14.6 release verification.

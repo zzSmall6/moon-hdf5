@@ -58,6 +58,24 @@ test "variable-length string fills resolve from the global heap" {
 }
 
 ///|
+test "variable-length sequence fill descriptors are accepted" {
+  let datatype = Datatype::write_vlen_sequence(Datatype::write_integer(true, 4))
+  let descriptor = @buffer.Buffer::Buffer(size_hint=16)
+  descriptor.write_uint_le(2U)
+  descriptor.write_uint64_le(0x800UL)
+  descriptor.write_uint_le(1U)
+  let message = @buffer.Buffer::Buffer(size_hint=22)
+  message.write_byte(b'\x03')
+  message.write_byte(b'\x2b')
+  message.write_uint_le(16U)
+  message.write_bytes(descriptor.to_bytes())
+  assert_eq(
+    dataset_fill_value(fill_test_header(message.to_bytes()), datatype),
+    descriptor.to_bytes(),
+  )
+}
+
+///|
 fn fill_test_header(data : Bytes, old~ : Bool = false) -> ObjectHeader {
   {
     _version: 2,
@@ -130,7 +148,7 @@ test "fill message versions and default values" {
 }
 
 ///|
-test "undefined disabled and malformed fill messages are rejected" {
+test "undefined and disabled fill messages yield zero fill" {
   let datatype : Datatype = {
     class: 0,
     version: 1,
@@ -156,14 +174,48 @@ test "undefined disabled and malformed fill messages are rejected" {
     opaque_tag: "",
     reference_kind: 0,
   }
-  for data in [b"\x03\x1b", b"\x03\x07", b"\x02\x03\x02\x00", b"\x04\x00"] {
-    let error = try {
-      dataset_fill_value(fill_test_header(data), datatype) |> ignore
-      None
-    } catch {
-      error => Some(error)
-    }
-    assert_true(error is Some(UnsupportedFeature(_)))
+  for
+    data in [
+      b"\x03\x1b", b"\x03\x07", b"\x03\x27\x04\x00\x00\x00\xf9\xff\xff\xff", b"\x02\x03\x02\x00",
+      b"\x02\x03\x01\x00\x00\x00\x00\x00",
+    ] {
+    assert_eq(dataset_fill_value(fill_test_header(data), datatype), b"")
+  }
+  let error = try {
+    dataset_fill_value(fill_test_header(b"\x04\x00"), datatype) |> ignore
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_true(error is Some(UnsupportedFeature(_)))
+}
+
+///|
+test "malformed fill messages are rejected" {
+  let datatype : Datatype = {
+    class: 0,
+    version: 1,
+    size: 4,
+    signed: true,
+    little_endian: true,
+    vlen_is_string: false,
+    enum_members: [],
+    compound_members: [],
+    base_types: [],
+    array_dimensions: [],
+    bit_offset: 0,
+    bit_precision: 0,
+    float_sign_position: 0,
+    float_exponent_position: 0,
+    float_exponent_size: 0,
+    float_mantissa_position: 0,
+    float_mantissa_size: 0,
+    float_exponent_bias: 0,
+    float_normalization: 0,
+    string_padding: 0,
+    string_charset: 0,
+    opaque_tag: "",
+    reference_kind: 0,
   }
   for
     data in [

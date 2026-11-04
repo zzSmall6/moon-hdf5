@@ -90,6 +90,16 @@ fn check_shared_message_fixture(file : Hdf5File) -> Unit raise {
     Integers(values) => assert_eq(values, [0L, 1L, 2L, 5L, 6L, 7L])
     _ => raise InvalidField("expected integer chunk values")
   }
+  let filtered_expected = Array::make(20, 0L)
+  for index in 0..<20 {
+    filtered_expected[index] = index.to_int64()
+  }
+  for index in 0..<3 {
+    assert_eq(
+      shared_integer_values(file.read_dataset("/filtered" + index.to_string())),
+      filtered_expected,
+    )
+  }
 }
 
 ///|
@@ -131,5 +141,27 @@ test "shared message heap IDs validate their index and size" {
   assert_eq(
     index_error,
     Some(UnsupportedFeature("shared message has no matching SOHM index")),
+  )
+  let unused_context : SharedMessageContext = {
+    bytes: b"",
+    source: None,
+    offset_size: 8,
+    length_size: 8,
+    base_address: 0UL,
+    indexes: [
+      { message_types: 1 << 0x0B, heap_address: heap_undefined_address(8), },
+    ],
+  }
+  let unused_error = try {
+    let _ = unused_context.resolve_sohm_heap_id(
+      b"\x00\x00\x00\x00\x00\x00\x00\x00", msg_filter_pipeline,
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    unused_error,
+    Some(InvalidField("shared-message index has no fractal heap")),
   )
 }

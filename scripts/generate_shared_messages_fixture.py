@@ -44,7 +44,7 @@ def check(status: int, operation: str) -> None:
 def create_file(destination: Path) -> None:
     library = load_hdf5()
     creation = h5py.h5p.create(h5py.h5p.FILE_CREATE)
-    check(library.H5Pset_shared_mesg_nindexes(creation.id, 3), "set indexes")
+    check(library.H5Pset_shared_mesg_nindexes(creation.id, 5), "set indexes")
     check(
         library.H5Pset_shared_mesg_index(creation.id, 0, 0x000A, 0),
         "share datatype and dataspace messages",
@@ -58,6 +58,14 @@ def create_file(destination: Path) -> None:
     check(
         library.H5Pset_shared_mesg_index(creation.id, 2, 0x0020, 0),
         "share fill-value messages",
+    )
+    check(
+        library.H5Pset_shared_mesg_index(creation.id, 3, 0x0800, 0),
+        "share filter-pipeline messages",
+    )
+    check(
+        library.H5Pset_shared_mesg_index(creation.id, 4, 0x0001, 0),
+        "reserve an unused shared-message index",
     )
     check(
         library.H5Pset_shared_mesg_phase_change(creation.id, 4, 2),
@@ -137,6 +145,15 @@ def add_cases(destination: Path) -> None:
             chunks=(2, 3),
             track_times=False,
         )
+        for index in range(3):
+            handle.create_dataset(
+                f"filtered{index}",
+                data=np.arange(20, dtype="<i4").reshape(4, 5),
+                chunks=(2, 3),
+                compression="gzip",
+                shuffle=True,
+                track_times=False,
+            )
 
 
 def verify(destination: Path) -> None:
@@ -170,6 +187,10 @@ def verify(destination: Path) -> None:
         np.testing.assert_array_equal(
             handle["chunked"][:], np.arange(20).reshape(4, 5)
         )
+        for index in range(3):
+            np.testing.assert_array_equal(
+                handle[f"filtered{index}"][:], np.arange(20).reshape(4, 5)
+            )
     data = destination.read_bytes()
     if b"SMTB" not in data or data.count(b"FRHP") < 3:
         raise RuntimeError("fixture does not contain the expected SOHM structures")

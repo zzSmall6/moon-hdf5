@@ -24,39 +24,71 @@ test "unallocated contiguous datasets return typed fill values" {
 }
 
 ///|
-test "unallocated storage does not hide external data or disabled fills" {
+test "unallocated storage does not hide external data" {
   let file = Hdf5File::parse(
     @fs.read_file_to_bytes("testdata/contiguous_fill_v3.h5"),
   )
   let original = file.object_header_at(file.resolve("/signed").address)
-  for external in [false, true] {
-    let messages = original.messages.filter(message => {
-      message.msg_type != msg_fill_value
-    })
-    messages.push({
-      msg_type: if external {
-        msg_external_data_files
-      } else {
-        msg_fill_value
-      },
-      flags: b'\x00',
-      data: b"\x03\x06",
-    })
-    let header : ObjectHeader = { _version: original._version, messages, }
-    let error = try {
-      read_dataset(
+  let messages = original.messages.filter(message => {
+    message.msg_type != msg_fill_value
+  })
+  messages.push({
+    msg_type: msg_external_data_files,
+    flags: b'\x00',
+    data: b"\x03\x06",
+  })
+  let header : ObjectHeader = { _version: original._version, messages, }
+  let error = try {
+    read_dataset(
+      file.bytes,
+      header,
+      file.superblock.offset_size,
+      file.superblock.length_size,
+      file.superblock.base_address,
+    )
+    |> ignore
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_true(error is Some(UnsupportedFeature(_)))
+}
+
+///|
+fn header_with_fill(
+  file : Hdf5File,
+  path : String,
+  data : Bytes,
+) -> ObjectHeader raise Hdf5Error {
+  let original = file.object_header_at(file.resolve(path).address)
+  let messages = original.messages.filter(message => {
+    message.msg_type != msg_fill_value && message.msg_type != msg_fill_value_old
+  })
+  messages.push({ msg_type: msg_fill_value, flags: b'\x00', data, })
+  { _version: original._version, messages, }
+}
+
+///|
+test "undefined and disabled fills zero unallocated storage" {
+  for
+    (path, dataset_path, expected) in [
+      ("testdata/contiguous_fill_v3.h5", "/signed", [0L, 0L, 0L]),
+      ("testdata/fill_v3.h5", "/other/unallocated", [0L, 0L, 0L, 0L]),
+    ] {
+    let file = Hdf5File::parse(@fs.read_file_to_bytes(path))
+    for
+      data in [
+        b"\x03\x17", b"\x03\x07", b"\x03\x27\x04\x00\x00\x00\xf9\xff\xff\xff",
+      ] {
+      let dataset = read_dataset(
         file.bytes,
-        header,
+        header_with_fill(file, dataset_path, data),
         file.superblock.offset_size,
         file.superblock.length_size,
         file.superblock.base_address,
       )
-      |> ignore
-      None
-    } catch {
-      error => Some(error)
+      assert_eq(integer_values(dataset), expected)
     }
-    assert_true(error is Some(UnsupportedFeature(_)))
   }
 }
 

@@ -308,7 +308,7 @@ pub(all) struct Hdf5ExternalSlot {
 
 ///|
 priv struct WritableChunkFilterMask {
-  chunk_index : Int32
+  coordinates : Array[UInt64]
   filter_mask : UInt32
 }
 
@@ -379,6 +379,7 @@ pub struct Hdf5Writer {
   priv link_order_counters : Array[WritableLinkOrderCounter]
   priv mut share_attributes : Bool
   priv mut share_fills : Bool
+  priv mut share_filters : Bool
 }
 
 ///|
@@ -468,11 +469,19 @@ priv struct WritableSharedFill {
 }
 
 ///|
+priv struct WritableSharedFilter {
+  path : String
+  data : Bytes
+  id : Bytes
+}
+
+///|
 priv struct WritableSharedMetadata {
   extension_address : UInt64
   table_address : UInt64
   heap_address : UInt64
   fills : Array[WritableSharedFill]
+  filters : Array[WritableSharedFilter]
   attributes : Array[WritableSharedAttribute]
   message_types : Int32
   message_count : Int32
@@ -501,6 +510,7 @@ pub fn Hdf5Writer::new() -> Hdf5Writer {
     link_order_counters: [],
     share_attributes: false,
     share_fills: false,
+    share_filters: false,
   }
 }
 
@@ -521,6 +531,16 @@ pub fn Hdf5Writer::set_attribute_sharing(
 /// the object header.
 pub fn Hdf5Writer::set_fill_sharing(self : Hdf5Writer, enabled : Bool) -> Unit {
   self.share_fills = enabled
+}
+
+///|
+/// Enables or disables writing complete filter-pipeline messages through the
+/// SOHM table. Pipelines with equal encoded messages reuse one heap ID.
+pub fn Hdf5Writer::set_filter_sharing(
+  self : Hdf5Writer,
+  enabled : Bool,
+) -> Unit {
+  self.share_filters = enabled
 }
 
 ///|
@@ -1698,13 +1718,16 @@ fn validate_writer_filters_for_values(
   values : Hdf5WriteValues,
   filters : Array[Hdf5WriteFilter],
 ) -> Unit raise Hdf5Error {
-  guard filters.length() == 0 || !writer_values_contain_vlen(values) else {
-    raise UnsupportedFeature(
-      "filters are not supported for variable-length datasets",
-    )
-  }
+  let contains_vlen = writer_values_contain_vlen(values)
   for filter in filters {
     match filter {
+      Fletcher32 => {
+        guard !contains_vlen else {
+          raise UnsupportedFeature(
+            "Fletcher32 is not supported for variable-length datasets",
+          )
+        }
+      }
       ScaleOffset(scale) => {
         let (element_size, _, datatype_class) = writer_scaleoffset_layout(
           values,
@@ -1792,13 +1815,6 @@ fn validated_write_fill(
 ) -> Hdf5WriteValues? raise Hdf5Error {
   match fill_value {
     Some(fill) => {
-      let vlen_string_fill = fill is VariableStringValues(_) &&
-        values is VariableStringValues(_)
-      guard vlen_string_fill || !writer_values_contain_vlen(values) else {
-        raise UnsupportedFeature(
-          "custom variable-length sequence fills are not supported yet",
-        )
-      }
       guard writer_value_count(fill) == 1 && same_write_datatype(values, fill) else {
         raise InvalidArgument(
           "fill value must be one value of the dataset type",
@@ -1879,22 +1895,66 @@ fn Hdf5Writer::writer_dataset_index(
 ///|
 fn writer_dataset_chunk_grid(
   dataset : WritableDataset,
-) -> (Array[UInt32], Array[Hdf5WriteFilter], Array[UInt64]) raise Hdf5Error {
+) -> (Array[UInt32], Array[Hdf5WriteFilter], Array[Int32], Array[UInt64]) raise Hdf5Error {
   match dataset.storage {
-    WritableChunked(dimensions, filters) =>
-      (dimensions, filters, dataset.dimensions.copy())
+    WritableChunked(dimensions, filters) => {
+      let order : Array[Int32] = []
+      for axis in 0..<dimensions.length() {
+        order.push(axis)
+      }
+      (dimensions, filters, order, dataset.dimensions.copy())
+    }
     WritableExtensible(dimensions, filters, unlimited_axes) => {
+      let order : Array[Int32] = []
+      if unlimited_axes.length() == 1 {
+        order.push(unlimited_axes[0])
+      } else {
+        for axis in 0..<dimensions.length() {
+          order.push(axis)
+        }
+      }
       let grid_dimensions = dataset.dimensions.copy()
       for axis in 0..<grid_dimensions.length() {
         if !unlimited_axes.contains(axis) {
+          if unlimited_axes.length() == 1 {
+            order.push(axis)
+          }
           grid_dimensions[axis] = dataset.maximum_dimensions[axis]
         }
       }
-      (dimensions, filters, grid_dimensions)
+      (dimensions, filters, order, grid_dimensions)
     }
     WritableContiguous | WritableExternal(_) =>
       raise InvalidArgument("dataset does not use chunked storage")
   }
+}
+
+///|
+fn writer_chunk_coordinates(
+  chunk_index : Int32,
+  grid : Array[Int32],
+  order : Array[Int32],
+) -> Array[UInt64] raise Hdf5Error {
+  guard chunk_index >= 0 else {
+    raise InvalidArgument("chunk index is outside the dataset grid")
+  }
+  let coordinates = Array::make(order.length(), 0UL)
+  let mut remaining = chunk_index
+  let mut position = order.length()
+  while position > 0 {
+    position = position - 1
+    let axis = order[position]
+    let count = grid[axis]
+    guard count > 0 else {
+      raise InvalidArgument("chunk index is outside the dataset grid")
+    }
+    coordinates[axis] = (remaining % count).to_uint64()
+    remaining = remaining / count
+  }
+  guard remaining == 0 else {
+    raise InvalidArgument("chunk index is outside the dataset grid")
+  }
+  coordinates
 }
 
 ///|
@@ -1910,7 +1970,7 @@ pub fn Hdf5Writer::set_chunk_filter_mask(
 ) -> Unit raise Hdf5Error {
   let index = self.writer_dataset_index(path)
   let dataset = self.datasets[index]
-  let (chunk_dimensions, filters, grid_dimensions) = writer_dataset_chunk_grid(
+  let (chunk_dimensions, filters, order, grid_dimensions) = writer_dataset_chunk_grid(
     dataset,
   )
   guard filters.length() > 0 else {
@@ -1919,16 +1979,17 @@ pub fn Hdf5Writer::set_chunk_filter_mask(
   guard filters.length() == 32 || filter_mask >> filters.length() == 0U else {
     raise InvalidArgument("chunk filter mask exceeds the filter pipeline")
   }
-  let (_, chunk_count) = chunk_grid(grid_dimensions, chunk_dimensions)
+  let (grid, chunk_count) = chunk_grid(grid_dimensions, chunk_dimensions)
   guard chunk_index >= 0 && chunk_index < chunk_count else {
     raise InvalidArgument("chunk index is outside the dataset grid")
   }
+  let coordinates = writer_chunk_coordinates(chunk_index, grid, order)
   let masks = dataset.chunk_filter_masks.copy()
-  if masks.search_by(entry => entry.chunk_index == chunk_index)
+  if masks.search_by(entry => entry.coordinates == coordinates)
     is Some(mask_index) {
-    masks[mask_index] = { chunk_index, filter_mask, }
+    masks[mask_index] = { coordinates, filter_mask, }
   } else {
-    masks.push({ chunk_index, filter_mask, })
+    masks.push({ coordinates, filter_mask, })
   }
   self.datasets[index] = {
     path: dataset.path,
@@ -1944,11 +2005,11 @@ pub fn Hdf5Writer::set_chunk_filter_mask(
 ///|
 fn dataset_chunk_filter_mask(
   dataset : WritableDataset,
-  chunk_index : Int32,
+  coordinates : Array[UInt64],
 ) -> UInt32 {
   match
     dataset.chunk_filter_masks.search_by(entry => {
-      entry.chunk_index == chunk_index
+      entry.coordinates == coordinates
     }) {
     Some(index) => dataset.chunk_filter_masks[index].filter_mask
     None => 0U
@@ -2138,10 +2199,12 @@ fn writer_linear_destination(
   source_index : Int32,
   source_dimensions : Array[UInt64],
   destination_dimensions : Array[UInt64],
-  axis_offset : Int32,
-  offset : UInt64,
+  offsets : Array[UInt64],
 ) -> Int32? {
   let rank = source_dimensions.length()
+  if offsets.length() != rank {
+    return None
+  }
   let coordinates = Array::make(rank, 0UL)
   let mut remaining = source_index.to_uint64()
   let mut axis = rank
@@ -2156,8 +2219,7 @@ fn writer_linear_destination(
   }
   let mut destination = 0UL
   for dimension in 0..<rank {
-    let coordinate = coordinates[dimension] +
-      (if dimension == axis_offset { offset } else { 0UL })
+    let coordinate = coordinates[dimension] + offsets[dimension]
     if coordinate >= destination_dimensions[dimension] {
       return None
     }
@@ -2251,8 +2313,8 @@ pub fn Hdf5Writer::resize_dataset(
     dataset.values,
     dataset.dimensions,
     dimensions,
-    -1,
-    0UL,
+    Array::make(dimensions.length(), 0UL),
+    false,
   )
   self.datasets[index] = {
     path: dataset.path,
@@ -2271,17 +2333,17 @@ fn[T] overlay_array(
   items : Array[T],
   source_dimensions : Array[UInt64],
   destination_dimensions : Array[UInt64],
-  axis : Int32,
-  offset : UInt64,
+  offsets : Array[UInt64],
+  strict : Bool,
 ) -> Array[T] raise Hdf5Error {
   for index in 0..<items.length() {
     match
       writer_linear_destination(
-        index, source_dimensions, destination_dimensions, axis, offset,
+        index, source_dimensions, destination_dimensions, offsets,
       ) {
       Some(destination) => output[destination] = items[index]
       None =>
-        if axis >= 0 {
+        if strict {
           raise InvalidArgument(
             "appended value is outside the destination shape",
           )
@@ -2297,75 +2359,75 @@ fn overlay_write_values(
   source : Hdf5WriteValues,
   source_dimensions : Array[UInt64],
   destination_dimensions : Array[UInt64],
-  axis : Int32,
-  offset : UInt64,
+  offsets : Array[UInt64],
+  strict : Bool,
 ) -> Hdf5WriteValues raise Hdf5Error {
   match (target, source) {
     (Int8Values(output), Int8Values(items)) =>
       Int8Values(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (Int16Values(output), Int16Values(items)) =>
       Int16Values(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (Int32Values(output), Int32Values(items)) =>
       Int32Values(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (Int64Values(output), Int64Values(items)) =>
       Int64Values(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (UInt8Values(output), UInt8Values(items)) =>
       UInt8Values(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (UInt16Values(output), UInt16Values(items)) =>
       UInt16Values(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (UInt32Values(output), UInt32Values(items)) =>
       UInt32Values(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (UInt64Values(output), UInt64Values(items)) =>
       UInt64Values(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (Float32Values(output), Float32Values(items)) =>
       Float32Values(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (Float64Values(output), Float64Values(items)) =>
       Float64Values(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (StructuredValues(datatype, output), StructuredValues(_, items)) =>
       StructuredValues(
         datatype,
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (FixedStringValues(output, width), FixedStringValues(items, source_width)) => {
@@ -2374,7 +2436,7 @@ fn overlay_write_values(
       }
       FixedStringValues(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
         width,
       )
@@ -2382,25 +2444,25 @@ fn overlay_write_values(
     (VariableStringValues(output), VariableStringValues(items)) =>
       VariableStringValues(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (ObjectReferenceValues(output), ObjectReferenceValues(items)) =>
       ObjectReferenceValues(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (Complex64Values(output), Complex64Values(items)) =>
       Complex64Values(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     (Complex128Values(output), Complex128Values(items)) =>
       Complex128Values(
         overlay_array(
-          output, items, source_dimensions, destination_dimensions, axis, offset,
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
       )
     _ => raise InvalidArgument("appended values must match the dataset type")
@@ -2408,7 +2470,12 @@ fn overlay_write_values(
 }
 
 ///|
-/// Appends a block along the dataset's unlimited dimension.
+/// Appends a block at the trailing corner of the dataset's unlimited axes.
+///
+/// Fixed axes must match the current dataset shape. Each unlimited axis grows
+/// by the corresponding block extent. A one-unlimited-axis dataset therefore
+/// appends along that axis, while a multi-unlimited dataset grows every
+/// unlimited axis and places the block at the old shape's trailing corner.
 pub fn Hdf5Writer::append_dataset(
   self : Hdf5Writer,
   path : String,
@@ -2421,12 +2488,6 @@ pub fn Hdf5Writer::append_dataset(
     WritableExtensible(_, _, axes) => axes
     _ => raise InvalidArgument("only extensible datasets can be appended")
   }
-  guard unlimited_axes.length() == 1 else {
-    raise InvalidArgument(
-      "append_dataset requires one unlimited dimension; use resize_dataset for multiple unlimited dimensions",
-    )
-  }
-  let unlimited_axis = unlimited_axes[0]
   guard dimensions.length() == dataset.dimensions.length() else {
     raise InvalidArgument("appended dataset rank does not match")
   }
@@ -2434,21 +2495,24 @@ pub fn Hdf5Writer::append_dataset(
   guard same_write_datatype(dataset.values, values) else {
     raise InvalidArgument("appended values must match the dataset type")
   }
-  for axis in 0..<dimensions.length() {
-    if axis != unlimited_axis && dimensions[axis] != dataset.dimensions[axis] {
-      raise InvalidArgument(
-        "appended block must match fixed dataset dimensions",
-      )
-    }
-  }
-  guard dataset.dimensions[unlimited_axis] <=
-    0x7FFFFFFFUL - dimensions[unlimited_axis] else {
-    raise InvalidArgument("appended dataset dimension is too large")
-  }
   let old_dimensions = dataset.dimensions.copy()
   let new_dimensions = old_dimensions.copy()
-  new_dimensions[unlimited_axis] = new_dimensions[unlimited_axis] +
-    dimensions[unlimited_axis]
+  let offsets = Array::make(dimensions.length(), 0UL)
+  for axis in 0..<dimensions.length() {
+    if !unlimited_axes.contains(axis) {
+      guard dimensions[axis] == old_dimensions[axis] else {
+        raise InvalidArgument(
+          "appended block must match fixed dataset dimensions",
+        )
+      }
+    } else {
+      guard old_dimensions[axis] <= 0x7FFFFFFFUL - dimensions[axis] else {
+        raise InvalidArgument("appended dataset dimension is too large")
+      }
+      offsets[axis] = old_dimensions[axis]
+      new_dimensions[axis] = old_dimensions[axis] + dimensions[axis]
+    }
+  }
   self.resize_dataset(path, new_dimensions)
   let resized = self.datasets[index]
   self.datasets[index] = {
@@ -2460,8 +2524,8 @@ pub fn Hdf5Writer::append_dataset(
       values,
       dimensions,
       new_dimensions,
-      unlimited_axis,
-      old_dimensions[unlimited_axis],
+      offsets,
+      true,
     ),
     storage: resized.storage,
     fill_value: resized.fill_value,
@@ -3991,38 +4055,9 @@ fn encode_dataset_chunks(
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
 ) -> Array[EncodedChunkEntry] raise Hdf5Error {
-  let (chunk_dimensions, filters, order, grid_dimensions) = match
-    dataset.storage {
-    WritableChunked(dimensions, filters) => {
-      let order = Array::make(dimensions.length(), 0)
-      for axis in 0..<order.length() {
-        order[axis] = axis
-      }
-      (dimensions, filters, order, dataset.dimensions)
-    }
-    WritableExtensible(dimensions, filters, unlimited_axes) => {
-      let order : Array[Int32] = []
-      let grid_dimensions = dataset.dimensions.copy()
-      if unlimited_axes.length() == 1 {
-        order.push(unlimited_axes[0])
-      } else {
-        for axis in 0..<dimensions.length() {
-          order.push(axis)
-        }
-      }
-      for axis in 0..<dimensions.length() {
-        if !unlimited_axes.contains(axis) {
-          if unlimited_axes.length() == 1 {
-            order.push(axis)
-          }
-          grid_dimensions[axis] = dataset.maximum_dimensions[axis]
-        }
-      }
-      (dimensions, filters, order, grid_dimensions)
-    }
-    WritableContiguous | WritableExternal(_) =>
-      raise InvalidField("expected chunked writer dataset")
-  }
+  let (chunk_dimensions, filters, order, grid_dimensions) = writer_dataset_chunk_grid(
+    dataset,
+  )
   let encoded = encode_write_values(dataset.values, heap~, objects~)
   let fill = match dataset.fill_value {
     Some(value) => encode_write_values(value, heap~, objects~).payload
@@ -4099,7 +4134,8 @@ fn encode_dataset_chunks(
   }
   let entries : Array[EncodedChunkEntry] = []
   for index in 0..<chunk_count {
-    let filter_mask = dataset_chunk_filter_mask(dataset, index)
+    let coordinates = writer_chunk_coordinates(index, grid, order)
+    let filter_mask = dataset_chunk_filter_mask(dataset, coordinates)
     let data = if allocated[index] {
       encode_chunk_filters(
         chunk_buffers[index].unsafe_reinterpret_as_bytes(),
@@ -5431,6 +5467,17 @@ fn writer_shared_fill(
 }
 
 ///|
+fn writer_shared_filter(
+  filters : Array[WritableSharedFilter],
+  path : String,
+) -> WritableSharedFilter? {
+  match filters.search_by(filter => filter.path == path) {
+    Some(index) => Some(filters[index])
+    None => None
+  }
+}
+
+///|
 fn encode_writer_shared_message(heap_id : Bytes) -> Bytes raise Hdf5Error {
   guard heap_id.length() == 8 else {
     raise InvalidField("writer shared-message heap ID has an invalid size")
@@ -5795,6 +5842,54 @@ fn Hdf5Writer::shared_fill_candidates(
     }
   }
   fills
+}
+
+///|
+fn Hdf5Writer::shared_filter_candidates(
+  self : Hdf5Writer,
+  objects : Array[WritableObject],
+  heap : WritableGlobalHeap,
+) -> Array[WritableSharedFilter] raise Hdf5Error {
+  let filters : Array[WritableSharedFilter] = []
+  if !self.share_filters {
+    return filters
+  }
+  let empty_id = Bytes::make(8, b'\x00')
+  for object in objects {
+    match object.kind {
+      WritableDatasetObject(index) => {
+        let dataset = self.datasets[index]
+        let (chunk_dimensions, pipeline) = match dataset.storage {
+          WritableChunked(dimensions, filters) => (dimensions, filters)
+          WritableExtensible(dimensions, filters, _) => (dimensions, filters)
+          WritableContiguous | WritableExternal(_) => continue
+        }
+        if pipeline.length() == 0 {
+          continue
+        }
+        let encoded = encode_write_values(dataset.values, heap~, objects~)
+        let fill = match dataset.fill_value {
+          Some(fill) => encode_write_values(fill, heap~, objects~).payload
+          None => Bytes::make(encoded.element_size, b'\x00')
+        }
+        let data = encode_filter_pipeline(
+          pipeline,
+          encoded.element_size,
+          writer_chunk_element_count(chunk_dimensions),
+          dataset.values,
+          fill,
+        )
+        if data.length() <= writer_shared_max_managed_size {
+          filters.push({ path: object.path, data, id: empty_id, })
+        }
+      }
+      WritableGroup | WritableCommittedDatatype(_) => ()
+    }
+  }
+  guard filters.length() <= 65535 else {
+    raise InvalidArgument("writer has too many shared filters")
+  }
+  filters
 }
 
 ///|
@@ -6521,6 +6616,7 @@ fn Hdf5Writer::object_payload(
   external_addresses_final : Bool,
   shared~ : Array[WritableSharedAttribute] = [],
   fills~ : Array[WritableSharedFill] = [],
+  shared_filters~ : Array[WritableSharedFilter] = [],
 ) -> Bytes raise Hdf5Error {
   let buffer = @buffer.Buffer::Buffer()
   match object.kind {
@@ -6645,17 +6741,27 @@ fn Hdf5Writer::object_payload(
         }
         WritableChunked(chunk_dimensions, filters) => {
           if filters.length() > 0 {
-            write_header_message(
-              buffer,
-              msg_filter_pipeline,
-              encode_filter_pipeline(
-                filters,
-                encoded.element_size,
-                writer_chunk_element_count(chunk_dimensions),
-                dataset.values,
-                filter_fill,
-              ),
-            )
+            match writer_shared_filter(shared_filters, object.path) {
+              Some(shared_filter) =>
+                write_header_message_with_flags(
+                  buffer,
+                  msg_filter_pipeline,
+                  encode_writer_shared_message(shared_filter.id),
+                  shared_message_flag.to_byte(),
+                )
+              None =>
+                write_header_message(
+                  buffer,
+                  msg_filter_pipeline,
+                  encode_filter_pipeline(
+                    filters,
+                    encoded.element_size,
+                    writer_chunk_element_count(chunk_dimensions),
+                    dataset.values,
+                    filter_fill,
+                  ),
+                )
+            }
           }
           write_header_message(
             buffer,
@@ -6669,17 +6775,27 @@ fn Hdf5Writer::object_payload(
         }
         WritableExtensible(chunk_dimensions, filters, unlimited_axes) => {
           if filters.length() > 0 {
-            write_header_message(
-              buffer,
-              msg_filter_pipeline,
-              encode_filter_pipeline(
-                filters,
-                encoded.element_size,
-                writer_chunk_element_count(chunk_dimensions),
-                dataset.values,
-                filter_fill,
-              ),
-            )
+            match writer_shared_filter(shared_filters, object.path) {
+              Some(shared_filter) =>
+                write_header_message_with_flags(
+                  buffer,
+                  msg_filter_pipeline,
+                  encode_writer_shared_message(shared_filter.id),
+                  shared_message_flag.to_byte(),
+                )
+              None =>
+                write_header_message(
+                  buffer,
+                  msg_filter_pipeline,
+                  encode_filter_pipeline(
+                    filters,
+                    encoded.element_size,
+                    writer_chunk_element_count(chunk_dimensions),
+                    dataset.values,
+                    filter_fill,
+                  ),
+                )
+            }
           }
           write_header_message(
             buffer,
@@ -7082,14 +7198,17 @@ fn assign_writable_addresses(
     templates, empty_heap,
   )
   let shared_fills = writer.shared_fill_candidates(templates, empty_heap)
+  let shared_filters = writer.shared_filter_candidates(templates, empty_heap)
   let shared_message_types = (if shared_candidates.length() > 0 {
       1 << 0x0C
     } else {
       0
     }) |
-    (if shared_fills.length() > 0 { 1 << 5 } else { 0 })
+    (if shared_fills.length() > 0 { 1 << 5 } else { 0 }) |
+    (if shared_filters.length() > 0 { 1 << 0x0B } else { 0 })
   let has_shared_messages = shared_candidates.length() > 0 ||
-    shared_fills.length() > 0
+    shared_fills.length() > 0 ||
+    shared_filters.length() > 0
   let lengths : Array[Int32] = []
   for object in templates {
     lengths.push(
@@ -7103,6 +7222,7 @@ fn assign_writable_addresses(
           false,
           shared=shared_candidates,
           fills=shared_fills,
+          shared_filters~,
         ),
         0UL,
         creation_order=writer_dense_entries_fit(
@@ -7334,6 +7454,8 @@ fn assign_writable_addresses(
       attribute_message_indices.push(message_index)
     }
     let fills : Array[WritableSharedFill] = []
+    let fill_messages : Array[Bytes] = []
+    let fill_message_indices : Array[Int32] = []
     for candidate in shared_fills {
       let dataset = writer.datasets[writer.writer_dataset_index(candidate.path)]
       let fill = match dataset.fill_value {
@@ -7344,11 +7466,63 @@ fn assign_writable_addresses(
       guard data.length() <= writer_shared_max_managed_size else {
         raise InvalidField("writer shared fill changed size")
       }
+      let message_index = match
+        fill_messages.search_by(message => message == data) {
+        Some(index) => index
+        None => {
+          fill_messages.push(data)
+          fill_messages.length() - 1
+        }
+      }
       fills.push({ path: candidate.path, data, id: b"", })
+      fill_message_indices.push(message_index)
+    }
+    let filters : Array[WritableSharedFilter] = []
+    let filter_messages : Array[Bytes] = []
+    let filter_message_indices : Array[Int32] = []
+    for candidate in shared_filters {
+      let dataset = writer.datasets[writer.writer_dataset_index(candidate.path)]
+      let (chunk_dimensions, pipeline) = match dataset.storage {
+        WritableChunked(dimensions, filters) => (dimensions, filters)
+        WritableExtensible(dimensions, filters, _) => (dimensions, filters)
+        WritableContiguous | WritableExternal(_) =>
+          raise InvalidField("writer shared filter disappeared")
+      }
+      guard pipeline.length() > 0 else {
+        raise InvalidField("writer shared filter disappeared")
+      }
+      let encoded = encode_write_values(dataset.values, heap~, objects~)
+      let fill = match dataset.fill_value {
+        Some(fill) => encode_write_values(fill, heap~, objects~).payload
+        None => Bytes::make(encoded.element_size, b'\x00')
+      }
+      let data = encode_filter_pipeline(
+        pipeline,
+        encoded.element_size,
+        writer_chunk_element_count(chunk_dimensions),
+        dataset.values,
+        fill,
+      )
+      guard data.length() <= writer_shared_max_managed_size else {
+        raise InvalidField("writer shared filter changed size")
+      }
+      let message_index = match
+        filter_messages.search_by(message => message == data) {
+        Some(index) => index
+        None => {
+          filter_messages.push(data)
+          filter_messages.length() - 1
+        }
+      }
+      filters.push({ path: candidate.path, data, id: b"", })
+      filter_message_indices.push(message_index)
     }
     let messages : Array[Bytes] = []
-    for fill in fills {
-      messages.push(fill.data)
+    for fill in fill_messages {
+      messages.push(fill)
+    }
+    for filter in filter_messages {
+      messages.push(filter)
     }
     for attribute in attribute_messages {
       messages.push(attribute)
@@ -7362,11 +7536,20 @@ fn assign_writable_addresses(
       resolved_fills.push({
         path: fills[index].path,
         data: fills[index].data,
-        id: ids[index],
+        id: ids[fill_message_indices[index]],
+      })
+    }
+    let resolved_filters : Array[WritableSharedFilter] = []
+    let filter_id_start = fill_messages.length()
+    for index in 0..<filters.length() {
+      resolved_filters.push({
+        path: filters[index].path,
+        data: filters[index].data,
+        id: ids[filter_id_start + filter_message_indices[index]],
       })
     }
     let resolved : Array[WritableSharedAttribute] = []
-    let attribute_id_start = fills.length()
+    let attribute_id_start = fill_messages.length() + filter_messages.length()
     for index in 0..<attributes.length() {
       resolved.push({
         path: attributes[index].path,
@@ -7381,6 +7564,7 @@ fn assign_writable_addresses(
       table_address,
       heap_address,
       fills: resolved_fills,
+      filters: resolved_filters,
       attributes: resolved,
       message_types: shared_message_types,
       message_count: messages.length(),
@@ -7424,6 +7608,10 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
     Some(shared) => shared.fills
     None => []
   }
+  let shared_filters = match layout.shared {
+    Some(shared) => shared.filters
+    None => []
+  }
   let encoded_headers : Array[Bytes] = []
   let mut eof = 48
   for object in objects {
@@ -7441,6 +7629,7 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
         true,
         shared=shared_attributes,
         fills=shared_fills,
+        shared_filters~,
       ),
       object.address,
       creation_order~,
@@ -7539,8 +7728,23 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
   let shared_payloads : Array[(UInt64, Bytes)] = []
   if layout.shared is Some(shared) {
     let messages : Array[Bytes] = []
+    let fill_messages : Array[Bytes] = []
     for fill in shared.fills {
-      messages.push(fill.data)
+      if !fill_messages.contains(fill.data) {
+        fill_messages.push(fill.data)
+      }
+    }
+    for message in fill_messages {
+      messages.push(message)
+    }
+    let filter_messages : Array[Bytes] = []
+    for filter in shared.filters {
+      if !filter_messages.contains(filter.data) {
+        filter_messages.push(filter.data)
+      }
+    }
+    for message in filter_messages {
+      messages.push(message)
     }
     let attribute_messages : Array[Bytes] = []
     for attribute in shared.attributes {
@@ -7564,8 +7768,20 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
       messages,
     )
     let expected_ids : Array[Bytes] = []
-    for fill in shared.fills {
+    for message in fill_messages {
+      let fill = match shared.fills.search_by(fill => fill.data == message) {
+        Some(index) => shared.fills[index]
+        None => raise InvalidField("shared fill message disappeared")
+      }
       expected_ids.push(fill.id)
+    }
+    for message in filter_messages {
+      let filter = match
+        shared.filters.search_by(filter => filter.data == message) {
+        Some(index) => shared.filters[index]
+        None => raise InvalidField("shared filter message disappeared")
+      }
+      expected_ids.push(filter.id)
     }
     for message in attribute_messages {
       let attribute = match

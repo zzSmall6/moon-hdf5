@@ -84,7 +84,7 @@ verifies the committed files.
 | `datatypes_v114*.h5`, `datatypes_v200.h5` | HDF5 1.14.6 and 2.0 datatype-message versions, including compound/array/complex |
 | `interop_earliest.h5`, `interop_v108.h5`, `interop_v110.h5`, `interop_32.h5` | Cross-version object matrix and 4-/8-byte addresses |
 | `references*.h5`, `references_layouts_32.h5` | Object/region references, null/dangling targets, layouts and selection versions |
-| `shared_messages.h5` | SOHM table/indexes/heaps, field and whole-message sharing, dense shared records and committed targets |
+| `shared_messages.h5` | SOHM table/indexes/heaps, reserved indexes, field, fill and filter-pipeline sharing, dense shared records and committed targets |
 | `external_storage*.h5`, `external_storage_*.bin` | Multi-file/offset/unaligned raw-data slots and 4-byte-address storage |
 | `vlen_fills.h5` | Default/custom variable-length string fills from producer files |
 | `hard_links.h5` | Named hard-link aliases and ancestor-cycle traversal |

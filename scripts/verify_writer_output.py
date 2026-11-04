@@ -80,9 +80,12 @@ def verify_file(path: Path) -> None:
             "external",
             "external_raw",
             "fill_names",
+            "filtered_events",
+            "filtered_names",
             "labels",
             "latest",
             "metrics",
+            "multi_append",
             "multi_deep",
             "multi_filtered",
             "multi_growth",
@@ -193,6 +196,16 @@ def verify_file(path: Path) -> None:
             "string_fill": h5py.h5o.get_info(
                 handle["experiment/string_fill"].id
             ).addr,
+            "fill_names": h5py.h5o.get_info(
+                handle["experiment/fill_names"].id
+            ).addr,
+        }
+        shared_filter_addresses = {
+            "chunked": h5py.h5o.get_info(chunked.id).addr,
+            "series": h5py.h5o.get_info(handle["experiment/series"].id).addr,
+            "multi_filtered": h5py.h5o.get_info(
+                handle["experiment/multi_filtered"].id
+            ).addr,
         }
         deduplicated_attribute_addresses = {
             "experiment": h5py.h5o.get_info(handle["experiment"].id).addr,
@@ -224,6 +237,15 @@ def verify_file(path: Path) -> None:
         assert multi_growth.fillvalue == -1
         assert multi_growth.id.get_num_chunks() == 2
         assert layout_index_type(data, multi_growth) == 5
+        multi_append = handle["experiment/multi_append"]
+        np.testing.assert_array_equal(
+            multi_append[:], [[1, 2, -1], [3, 4, -1], [-1, -1, 5]]
+        )
+        assert multi_append.maxshape == (None, None)
+        assert multi_append.chunks == (1, 2)
+        assert multi_append.fillvalue == -1
+        assert multi_append.id.get_num_chunks() == 3
+        assert layout_index_type(data, multi_append) == 5
         multi_filtered = handle["experiment/multi_filtered"]
         np.testing.assert_array_equal(
             multi_filtered[:],
@@ -258,6 +280,27 @@ def verify_file(path: Path) -> None:
             "",
         ]
         assert chunked_names.chunks == (2,)
+        filtered_names = handle["experiment/filtered_names"]
+        assert filtered_names.asstr()[:].tolist() == [
+            "alpha",
+            "",
+            "数据",
+            "alpha",
+            "beta",
+            "",
+            "数据",
+        ]
+        assert filtered_names.chunks == (3,)
+        assert filtered_names.shuffle
+        assert filtered_names.compression == "gzip"
+        assert filtered_names.compression_opts == 6
+        filtered_events = handle["experiment/filtered_events"]
+        assert filtered_events.asstr()[:].tolist() == ["first", "", ""]
+        assert filtered_events.maxshape == (None,)
+        assert filtered_events.chunks == (2,)
+        assert filtered_events.shuffle
+        assert filtered_events.compression == "gzip"
+        assert filtered_events.compression_opts == 6
         assert chunked_names.compression is None
         assert not chunked_names.fletcher32
         assert chunked_names.id.get_num_chunks() == 3
@@ -434,6 +477,33 @@ def verify_file(path: Path) -> None:
             [-1, 0],
         ]
         assert sequences.attrs["prototype"].tolist() == [7, 8]
+        filtered_sequences = handle["types/filtered_sequences"]
+        assert filtered_sequences.dtype == h5py.vlen_dtype(np.dtype("<i4"))
+        assert [item.tolist() for item in filtered_sequences[:]] == [
+            [],
+            [1, -2, 3],
+            [1, -2, 3],
+            [-1, 0],
+        ]
+        assert filtered_sequences.chunks == (2,)
+        assert filtered_sequences.shuffle
+        assert filtered_sequences.compression == "gzip"
+        assert filtered_sequences.compression_opts == 6
+        sequence_fill = handle["types/sequence_fill"]
+        assert sequence_fill.dtype == h5py.vlen_dtype(np.dtype("<i4"))
+        # h5py 3.13.0 corrupts its heap when materializing a vlen-sequence
+        # fillvalue, so check the policy and allocated values instead.
+        assert sequence_fill.id.get_create_plist().fill_value_defined() == 2
+        assert [item.tolist() for item in sequence_fill[:]] == [
+            [7, 8],
+            [7, 8],
+            [7, 8],
+        ]
+        assert sequence_fill.maxshape == (None,)
+        assert sequence_fill.chunks == (1,)
+        assert sequence_fill.shuffle
+        assert sequence_fill.compression == "gzip"
+        assert sequence_fill.compression_opts == 6
         chunked_i16 = handle["types/chunked_i16"]
         np.testing.assert_array_equal(chunked_i16[:], [-7, 2, -7, 4, -7])
         assert chunked_i16.dtype == np.dtype("<i2")
@@ -683,6 +753,7 @@ def verify_file(path: Path) -> None:
         events.resize((4,))
         events[3] = "continued"
         assert events.asstr()[3] == "continued"
+    fill_ids = {}
     for name, address in shared_fill_addresses.items():
         fill_messages = [
             (flags, payload)
@@ -690,10 +761,35 @@ def verify_file(path: Path) -> None:
             if kind == 0x05
         ]
         assert fill_messages, f"{name} has no fill-value message"
-        assert any(
-            flags & SHARED_FLAG and payload[:2] == b"\x03\x01"
+        ids = {
+            payload[2:10]
             for flags, payload in fill_messages
-        ), f"{name} fill value is not stored through SOHM"
+            if flags & SHARED_FLAG and payload[:2] == b"\x03\x01"
+        }
+        assert len(ids) == 1, f"{name} fill value is not stored through SOHM"
+        fill_ids[name] = ids.pop()
+    assert fill_ids["string_fill"] == fill_ids["fill_names"], (
+        "equal fill values do not reuse one SOHM heap ID"
+    )
+    assert fill_ids["string_fill"] != fill_ids["chunked"], (
+        "different fill values unexpectedly share one SOHM heap ID"
+    )
+    filter_ids = {}
+    for name, address in shared_filter_addresses.items():
+        ids = {
+            payload[2:10]
+            for kind, flags, payload in object_header_messages(data, address)
+            if kind == 0x0B
+            and flags & SHARED_FLAG
+            and payload[:2] == b"\x03\x01"
+        }
+        assert len(ids) == 1, f"{name} filter pipeline is not stored through SOHM"
+        filter_ids[name] = ids.pop()
+    assert (
+        filter_ids["chunked"]
+        == filter_ids["series"]
+        == filter_ids["multi_filtered"]
+    ), "equal filter pipelines do not reuse one SOHM heap ID"
     attribute_ids = {}
     for name, address in deduplicated_attribute_addresses.items():
         attribute_ids[name] = {

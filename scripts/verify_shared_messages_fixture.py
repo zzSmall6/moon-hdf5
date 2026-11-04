@@ -75,6 +75,10 @@ def verify(path: Path) -> None:
         np.testing.assert_array_equal(
             handle["chunked"][:], np.arange(20).reshape(4, 5)
         )
+        for index in range(3):
+            np.testing.assert_array_equal(
+                handle[f"filtered{index}"][:], np.arange(20).reshape(4, 5)
+            )
 
         addresses = {
             name: h5py.h5o.get_info(handle[name].id).addr
@@ -87,6 +91,9 @@ def verify(path: Path) -> None:
                 "fill1",
                 "fill2",
                 "fill3",
+                "filtered0",
+                "filtered1",
+                "filtered2",
             )
         }
 
@@ -94,6 +101,19 @@ def verify(path: Path) -> None:
     assert data[8] == 2 and data[9] == 8 and data[10] == 8
     assert data.count(b"SMTB") == 1
     assert data.count(b"FRHP") >= 3
+    extension = uint(data, 20, 8)
+    assert data[extension] == 1
+    assert uint(data, extension + 16, 2) == 0x0F
+    payload = extension + 24
+    assert data[payload] == 0 and data[payload + 9] == 5
+    table = uint(data, payload + 1, 8)
+    assert data[table : table + 4] == b"SMTB"
+    undefined_heaps = 0
+    for index in range(5):
+        record = table + 4 + index * 30
+        if uint(data, record + 22, 8) == 0xFFFFFFFFFFFFFFFF:
+            undefined_heaps += 1
+    assert undefined_heaps == 1, "expected one unused SOHM index"
 
     small_messages = object_header_messages(data, addresses["d0"])
     small_attributes = [payload for kind, _, payload in small_messages if kind == 0x0C]
@@ -117,6 +137,14 @@ def verify(path: Path) -> None:
                 assert payload[0] == 3 and payload[1] == 1
                 fill_shared = True
     assert fill_shared, "custom fill value is not stored in a SOHM heap"
+
+    shared_filters = 0
+    for name in ("filtered0", "filtered1", "filtered2"):
+        for kind, flags, payload in object_header_messages(data, addresses[name]):
+            if kind == 0x0B and flags & SHARED_FLAG:
+                assert payload[0] == 3 and payload[1] == 1
+                shared_filters += 1
+    assert shared_filters >= 2, "filter pipeline is not stored in a SOHM heap"
 
     for name in ("dense0", "dense1"):
         records = dense_attribute_records(data, addresses[name])

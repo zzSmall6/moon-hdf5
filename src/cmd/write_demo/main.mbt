@@ -7,6 +7,7 @@ fn run(args : Array[String]) -> Int32 {
   let writer = @lib.Hdf5Writer::new()
   writer.set_attribute_sharing(true)
   writer.set_fill_sharing(true)
+  writer.set_filter_sharing(true)
   try {
     writer.add_group("/experiment")
     writer.add_dataset(
@@ -156,6 +157,19 @@ fn run(args : Array[String]) -> Int32 {
     )
     writer.resize_dataset("/experiment/multi_growth", [3UL, 3UL])
     writer.add_extensible_dataset(
+      "/experiment/multi_append",
+      [2UL, 2UL],
+      [None, None],
+      [1U, 2U],
+      Int64Values([1L, 2L, 3L, 4L]),
+      fill_value=Int64Values([-1L]),
+    )
+    writer.append_dataset(
+      "/experiment/multi_append",
+      [1UL, 1UL],
+      Int64Values([5L]),
+    )
+    writer.add_extensible_dataset(
       "/experiment/multi_filtered",
       [2UL, 2UL],
       [None, None],
@@ -204,6 +218,29 @@ fn run(args : Array[String]) -> Int32 {
       [2U],
       VariableStringValues(["alpha", "", "数据", "alpha", ""]),
     )
+    writer.add_chunked_dataset(
+      "/experiment/filtered_names",
+      [7UL],
+      [3U],
+      VariableStringValues([
+        "alpha", "", "数据", "alpha", "beta", "", "数据",
+      ]),
+      filters=[Shuffle, Deflate(6)],
+    )
+    writer.add_extensible_dataset(
+      "/experiment/filtered_events",
+      [0UL],
+      [None],
+      [2U],
+      VariableStringValues([]),
+      filters=[Shuffle, Deflate(6)],
+    )
+    writer.append_dataset(
+      "/experiment/filtered_events",
+      [2UL],
+      VariableStringValues(["first", ""]),
+    )
+    writer.resize_dataset("/experiment/filtered_events", [3UL])
     writer.add_extensible_dataset(
       "/experiment/bounded_names",
       [1UL, 2UL],
@@ -523,6 +560,38 @@ fn run(args : Array[String]) -> Int32 {
         @lib.Sequence([@lib.SignedInteger(-1L), @lib.SignedInteger(0L)]),
       ]),
     )
+    writer.add_chunked_dataset(
+      "/types/filtered_sequences",
+      [4UL],
+      [2U],
+      StructuredValues(int_sequence, [
+        @lib.Sequence([]),
+        @lib.Sequence([
+          @lib.SignedInteger(1L),
+          @lib.SignedInteger(-2L),
+          @lib.SignedInteger(3L),
+        ]),
+        @lib.Sequence([
+          @lib.SignedInteger(1L),
+          @lib.SignedInteger(-2L),
+          @lib.SignedInteger(3L),
+        ]),
+        @lib.Sequence([@lib.SignedInteger(-1L), @lib.SignedInteger(0L)]),
+      ]),
+      filters=[Shuffle, Deflate(6)],
+    )
+    writer.add_extensible_dataset(
+      "/types/sequence_fill",
+      [0UL],
+      [None],
+      [1U],
+      StructuredValues(int_sequence, []),
+      fill_value=StructuredValues(int_sequence, [
+        @lib.Sequence([@lib.SignedInteger(7L), @lib.SignedInteger(8L)]),
+      ]),
+      filters=[Shuffle, Deflate(6)],
+    )
+    writer.resize_dataset("/types/sequence_fill", [3UL])
     writer.add_attribute(
       "/types/sequences",
       "prototype",

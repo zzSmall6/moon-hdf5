@@ -33,6 +33,7 @@ fn dataset_fill_value(
     raise UnsupportedFeature("shared fill value messages are not supported yet")
   }
   let reader = Reader::new(message.data)
+  let mut fill_enabled = true
   if message.msg_type == msg_fill_value {
     let version = reader.read_u8().to_int()
     let (allocation, writing, defined, has_value) = match version {
@@ -57,11 +58,10 @@ fn dataset_fill_value(
     guard allocation >= 1 && allocation <= 3 && writing <= 2 else {
       raise InvalidField("invalid fill value allocation or writing policy")
     }
-    guard defined && writing != 1 else {
-      raise UnsupportedFeature(
-        "undefined or disabled fill values are not supported yet",
-      )
-    }
+    // HDF5 reads unallocated storage as zero when no fill value is defined or
+    // when the fill value is not written. Keep parsing an explicitly stored
+    // payload so malformed messages are still rejected, but do not use it.
+    fill_enabled = defined && writing != 1
     if !has_value {
       return b""
     }
@@ -74,12 +74,12 @@ fn dataset_fill_value(
   guard size == datatype.size else {
     raise InvalidField("fill value size does not match datatype")
   }
-  guard datatype.class != 9 || datatype.vlen_is_string else {
-    raise UnsupportedFeature(
-      "custom variable-length sequence fills are not supported yet",
-    )
+  let fill = reader.read_bytes(size)
+  if fill_enabled {
+    fill
+  } else {
+    b""
   }
-  reader.read_bytes(size)
 }
 
 ///|
