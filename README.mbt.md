@@ -50,8 +50,8 @@ instead, use the commands in [Quick Start](#quick-start).
 
 ## Quick Start
 
-Install the [MoonBit toolchain](https://www.moonbitlang.com/download); the native
-target also needs a C compiler.
+Install the [MoonBit toolchain](https://www.moonbitlang.com/download); version
+0.10.19 or newer is required. The native target also needs a C compiler.
 
 ```sh
 git clone https://github.com/zzSmall6/moon-hdf5.git
