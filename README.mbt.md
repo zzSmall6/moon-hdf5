@@ -54,7 +54,7 @@ Install the [MoonBit toolchain](https://www.moonbitlang.com/download); the nativ
 target also needs a C compiler.
 
 ```sh
-git clone https://github.com/Zz04321/moon-hdf5.git
+git clone https://github.com/zzSmall6/moon-hdf5.git
 cd moon-hdf5
 moon update
 moon run src/cmd/main --target native -- testdata/basic_v0.h5

@@ -17,7 +17,7 @@ version = "0.1.0"
 
 readme = "README.mbt.md"
 
-repository = "https://github.com/Zz04321/moon-hdf5"
+repository = "https://github.com/zzSmall6/moon-hdf5"
 
 license = "Apache-2.0"
 
