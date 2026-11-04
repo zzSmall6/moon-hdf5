@@ -1,4 +1,5 @@
 ///|
+#derive(@debug.Debug)
 priv enum ChunkIndex {
   BTreeV1
   Single(UInt64?, UInt32)
@@ -6,17 +7,18 @@ priv enum ChunkIndex {
   FixedArray(Int32)
   ExtensibleArray(ExtensibleArrayConfig)
   BTreeV2(BTreeV2Config)
-} derive(@debug.Debug)
+}
 
 ///|
 /// The storage strategy used for a dataset payload.
+#derive(Eq, @debug.Debug)
 pub(all) enum DatasetLayoutKind {
   Compact
   Contiguous
   Chunked
   Virtual
   Unknown
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend DatasetLayoutKind with Eq::{not_equal, equal}
@@ -25,22 +27,25 @@ pub extend DatasetLayoutKind with Eq::{not_equal, equal}
 pub extend DatasetLayoutKind with @debug.Debug::{to_repr}
 
 ///|
+#derive(@debug.Debug)
 priv struct BTreeV2Config {
   node_size : Int32
   split_percent : Int32
   merge_percent : Int32
-} derive(@debug.Debug)
+}
 
 ///|
+#derive(Eq, @debug.Debug)
 priv struct ExtensibleArrayConfig {
   max_bits : Int32
   index_elements : Int32
   min_pointers : Int32
   min_elements : Int32
   page_bits : Int32
-} derive(Eq, @debug.Debug)
+}
 
 ///|
+#derive(@debug.Debug)
 pub struct DataLayout {
   priv version : Int32
   priv layout_class : Int32
@@ -50,7 +55,7 @@ pub struct DataLayout {
   priv element_size : Int32
   priv compact_data : Bytes
   priv chunk_index : ChunkIndex
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend DataLayout with @debug.Debug::{to_repr}

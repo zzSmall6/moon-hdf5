@@ -3,11 +3,12 @@
 ///
 /// `path` is the first hard-link path found by a bounded hierarchy walk. It is
 /// `None` when the target is valid but has no named hard link.
+#derive(Eq, @debug.Debug)
 pub(all) struct Hdf5ReferenceTarget {
   address : UInt64
   kind : Hdf5ObjectKind
   path : String?
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend Hdf5ReferenceTarget with Eq::{not_equal, equal}

@@ -1,10 +1,11 @@
 ///|
 /// One value in an enumeration datatype, preserving the signedness of its
 /// integer base type.
+#derive(Eq, @debug.Debug)
 pub(all) enum EnumValue {
   Signed(Int64)
   Unsigned(UInt64)
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend EnumValue with Eq::{not_equal, equal}
@@ -14,26 +15,29 @@ pub extend EnumValue with @debug.Debug::{to_repr}
 
 ///|
 /// A named member of an enumeration datatype.
+#derive(@debug.Debug)
 pub(all) struct EnumMember {
   name : String
   value : EnumValue
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend EnumMember with @debug.Debug::{to_repr}
 
 ///|
 /// A named field within a compound datatype.
+#derive(@debug.Debug)
 pub(all) struct CompoundMember {
   name : String
   offset : Int32
   datatype : Datatype
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend CompoundMember with @debug.Debug::{to_repr}
 
 ///|
+#derive(@debug.Debug)
 pub(all) struct Datatype {
   class : Int32
   version : Int32
@@ -58,7 +62,7 @@ pub(all) struct Datatype {
   string_charset : Int32
   opaque_tag : String
   reference_kind : Int32
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend Datatype with @debug.Debug::{to_repr}

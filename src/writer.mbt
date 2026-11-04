@@ -1,5 +1,6 @@
 ///|
 /// Values accepted by the HDF5 new-file writer.
+#derive(@debug.Debug)
 pub(all) enum Hdf5WriteValues {
   Int8Values(Array[Int32])
   Int16Values(Array[Int32])
@@ -17,7 +18,7 @@ pub(all) enum Hdf5WriteValues {
   Complex64Values(Array[(Float, Float)])
   Complex128Values(Array[(Double, Double)])
   StructuredValues(Datatype, Array[DatasetValue])
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend Hdf5WriteValues with @debug.Debug::{to_repr}
@@ -276,13 +277,14 @@ pub fn Datatype::write_compound(
 
 ///|
 /// Filters available for chunked writer datasets.
+#derive(Eq, @debug.Debug)
 pub(all) enum Hdf5WriteFilter {
   Shuffle
   Deflate(Int32)
   Fletcher32
   /// Integer bits or decimal digits for floats; zero selects automatic bits for integers.
   ScaleOffset(Int32)
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend Hdf5WriteFilter with Eq::{not_equal, equal}
@@ -423,10 +425,11 @@ priv struct WritableGlobalHeap {
 }
 
 ///|
+#derive(Eq)
 priv enum WritableDenseKind {
   WritableDenseLinks
   WritableDenseAttributes
-} derive(Eq)
+}
 
 ///|
 priv struct WritableDenseMetadata {

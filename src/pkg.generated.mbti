@@ -8,6 +8,7 @@ import {
 // Values
 
 // Errors
+#derive(Eq, @debug.Debug)
 pub(all) suberror Hdf5Error {
   UnexpectedEof(Int64)
   InvalidSignature
@@ -16,56 +17,62 @@ pub(all) suberror Hdf5Error {
   UnsupportedFeature(String)
   InvalidArgument(String)
   InvalidField(String)
-} derive(Eq, @debug.Debug)
+}
 pub fn Hdf5Error::equal(Self, Self) -> Bool
 pub fn Hdf5Error::message(Self) -> String
 pub fn Hdf5Error::not_equal(Self, Self) -> Bool
 pub fn Hdf5Error::to_repr(Self) -> @debug.Repr
 
 // Types and methods
+#derive(@debug.Debug)
 pub(all) struct Attribute {
   name : String
   dataspace : Dataspace
   datatype : Datatype
   values : DatasetValues?
-} derive(@debug.Debug)
+}
 pub fn Attribute::to_repr(Self) -> @debug.Repr
 
+#derive(Eq, @debug.Debug)
 pub(all) struct CompoundFieldValue {
   name : String
   value : DatasetValue
-} derive(Eq, @debug.Debug)
+}
 pub fn CompoundFieldValue::equal(Self, Self) -> Bool
 pub fn CompoundFieldValue::not_equal(Self, Self) -> Bool
 pub fn CompoundFieldValue::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
 pub(all) struct CompoundMember {
   name : String
   offset : Int32
   datatype : Datatype
-} derive(@debug.Debug)
+}
 pub fn CompoundMember::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
 pub struct DataLayout {
   // private fields
-} derive(@debug.Debug)
+}
 pub fn DataLayout::chunk_shape(Self) -> Array[UInt32]
 pub fn DataLayout::kind(Self) -> DatasetLayoutKind
 pub fn DataLayout::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
 pub(all) struct Dataset {
   dataspace : Dataspace
   datatype : Datatype
   layout : DataLayout
   values : DatasetValues
-} derive(@debug.Debug)
+}
 pub fn Dataset::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
 pub(all) struct DatasetChunk {
   offset : Array[UInt64]
   dimensions : Array[UInt64]
   values : DatasetValues
-} derive(@debug.Debug)
+}
 pub fn DatasetChunk::to_repr(Self) -> @debug.Repr
 
 pub struct DatasetChunkIterator {
@@ -73,37 +80,42 @@ pub struct DatasetChunkIterator {
 }
 pub fn DatasetChunkIterator::next(Self) -> DatasetChunk? raise Hdf5Error
 
+#derive(Eq, @debug.Debug)
 pub(all) enum DatasetLayoutKind {
   Compact
   Contiguous
   Chunked
   Virtual
   Unknown
-} derive(Eq, @debug.Debug)
+}
 pub fn DatasetLayoutKind::equal(Self, Self) -> Bool
 pub fn DatasetLayoutKind::not_equal(Self, Self) -> Bool
 pub fn DatasetLayoutKind::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
 pub(all) struct DatasetMetadata {
   dataspace : Dataspace
   datatype : Datatype
   layout : DataLayout
-} derive(@debug.Debug)
+}
 pub fn DatasetMetadata::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
 pub(all) enum DatasetSelection {
   Hyperslab(Array[UInt64], Array[UInt64], Array[UInt64])
   Points(Array[Array[UInt64]])
-} derive(@debug.Debug)
+}
 pub fn DatasetSelection::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
 pub(all) struct DatasetSelectionResult {
   dimensions : Array[UInt64]
   datatype : Datatype
   values : DatasetValues
-} derive(@debug.Debug)
+}
 pub fn DatasetSelectionResult::to_repr(Self) -> @debug.Repr
 
+#derive(Eq, @debug.Debug)
 pub(all) enum DatasetValue {
   SignedInteger(Int64)
   UnsignedInteger(UInt64)
@@ -120,11 +132,12 @@ pub(all) enum DatasetValue {
   Sequence(Array[DatasetValue])
   Time(UInt64)
   Complex(Double, Double)
-} derive(Eq, @debug.Debug)
+}
 pub fn DatasetValue::equal(Self, Self) -> Bool
 pub fn DatasetValue::not_equal(Self, Self) -> Bool
 pub fn DatasetValue::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
 pub(all) enum DatasetValues {
   Integers(Array[Int64])
   UnsignedIntegers(Array[UInt64])
@@ -132,26 +145,29 @@ pub(all) enum DatasetValues {
   Strings(Array[String])
   Enums(Array[String])
   Structured(Array[DatasetValue])
-} derive(@debug.Debug)
+}
 pub fn DatasetValues::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
 pub(all) struct Dataspace {
   kind : DataspaceKind
   dimensions : Array[UInt64]
   maximum_dimensions : Array[UInt64]
-} derive(@debug.Debug)
+}
 pub fn Dataspace::element_count(Self) -> Int64 raise Hdf5Error
 pub fn Dataspace::to_repr(Self) -> @debug.Repr
 
+#derive(Eq, @debug.Debug)
 pub(all) enum DataspaceKind {
   Scalar
   Simple
   Null
-} derive(Eq, @debug.Debug)
+}
 pub fn DataspaceKind::equal(Self, Self) -> Bool
 pub fn DataspaceKind::not_equal(Self, Self) -> Bool
 pub fn DataspaceKind::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
 pub(all) struct Datatype {
   class : Int32
   version : Int32
@@ -176,7 +192,7 @@ pub(all) struct Datatype {
   string_charset : Int32
   opaque_tag : String
   reference_kind : Int32
-} derive(@debug.Debug)
+}
 pub fn Datatype::to_repr(Self) -> @debug.Repr
 pub fn Datatype::write_array(Self, Array[UInt64]) -> Self raise Hdf5Error
 pub fn Datatype::write_bitfield(Int32, Int32, offset? : Int32, little_endian? : Bool) -> Self raise Hdf5Error
@@ -193,16 +209,18 @@ pub fn Datatype::write_region_reference() -> Self
 pub fn Datatype::write_time(Int32, little_endian? : Bool) -> Self raise Hdf5Error
 pub fn Datatype::write_vlen_sequence(Self) -> Self raise Hdf5Error
 
+#derive(@debug.Debug)
 pub(all) struct EnumMember {
   name : String
   value : EnumValue
-} derive(@debug.Debug)
+}
 pub fn EnumMember::to_repr(Self) -> @debug.Repr
 
+#derive(Eq, @debug.Debug)
 pub(all) enum EnumValue {
   Signed(Int64)
   Unsigned(UInt64)
-} derive(Eq, @debug.Debug)
+}
 pub fn EnumValue::equal(Self, Self) -> Bool
 pub fn EnumValue::not_equal(Self, Self) -> Bool
 pub fn EnumValue::to_repr(Self) -> @debug.Repr
@@ -230,68 +248,75 @@ pub fn Hdf5File::resolve_region_reference(Self, Bytes) -> Hdf5RegionReferenceTar
 pub fn Hdf5File::superblock_version(Self) -> Int32
 pub fn Hdf5File::walk(Self) -> Array[Hdf5Node] raise Hdf5Error
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Hdf5Node {
   path : String
   address : UInt64
   kind : Hdf5ObjectKind
-} derive(Eq, @debug.Debug)
+}
 pub fn Hdf5Node::equal(Self, Self) -> Bool
 pub fn Hdf5Node::not_equal(Self, Self) -> Bool
 pub fn Hdf5Node::to_repr(Self) -> @debug.Repr
 
+#derive(Eq, @debug.Debug)
 pub(all) enum Hdf5ObjectKind {
   Group
   Dataset
   Datatype
   Unknown
-} derive(Eq, @debug.Debug)
+}
 pub fn Hdf5ObjectKind::equal(Self, Self) -> Bool
 pub fn Hdf5ObjectKind::not_equal(Self, Self) -> Bool
 pub fn Hdf5ObjectKind::to_repr(Self) -> @debug.Repr
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Hdf5ReferenceTarget {
   address : UInt64
   kind : Hdf5ObjectKind
   path : String?
-} derive(Eq, @debug.Debug)
+}
 pub fn Hdf5ReferenceTarget::equal(Self, Self) -> Bool
 pub fn Hdf5ReferenceTarget::not_equal(Self, Self) -> Bool
 pub fn Hdf5ReferenceTarget::to_repr(Self) -> @debug.Repr
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Hdf5RegionBlock {
   start : Array[UInt64]
   end : Array[UInt64]
-} derive(Eq, @debug.Debug)
+}
 pub fn Hdf5RegionBlock::equal(Self, Self) -> Bool
 pub fn Hdf5RegionBlock::not_equal(Self, Self) -> Bool
 pub fn Hdf5RegionBlock::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
 pub(all) struct Hdf5RegionReferenceTarget {
   address : UInt64
   kind : Hdf5ObjectKind
   path : String?
   dataspace : Dataspace
   selection : Hdf5RegionSelection
-} derive(@debug.Debug)
+}
 pub fn Hdf5RegionReferenceTarget::to_repr(Self) -> @debug.Repr
 
+#derive(Eq, @debug.Debug)
 pub(all) enum Hdf5RegionSelection {
   RegionEmpty
   RegionAll
   RegionPoints(Array[Array[UInt64]])
   RegionHyperslab(Array[UInt64], Array[UInt64], Array[UInt64], Array[UInt64])
   RegionBlocks(Array[Hdf5RegionBlock])
-} derive(Eq, @debug.Debug)
+}
 pub fn Hdf5RegionSelection::equal(Self, Self) -> Bool
 pub fn Hdf5RegionSelection::not_equal(Self, Self) -> Bool
 pub fn Hdf5RegionSelection::to_repr(Self) -> @debug.Repr
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Hdf5ResolvedNode {
   file : String
   path : String
   address : UInt64
   kind : Hdf5ObjectKind
-} derive(Eq, @debug.Debug)
+}
 pub fn Hdf5ResolvedNode::equal(Self, Self) -> Bool
 pub fn Hdf5ResolvedNode::not_equal(Self, Self) -> Bool
 pub fn Hdf5ResolvedNode::to_repr(Self) -> @debug.Repr
@@ -309,16 +334,18 @@ pub fn Hdf5Resolver::read_dataset_metadata(Self, String) -> DatasetMetadata rais
 pub fn Hdf5Resolver::read_dataset_selection(Self, String, DatasetSelection) -> DatasetSelectionResult raise Hdf5Error
 pub fn Hdf5Resolver::resolve(Self, String) -> Hdf5ResolvedNode raise Hdf5Error
 
+#derive(Eq, @debug.Debug)
 pub(all) enum Hdf5WriteFilter {
   Shuffle
   Deflate(Int32)
   Fletcher32
   ScaleOffset(Int32)
-} derive(Eq, @debug.Debug)
+}
 pub fn Hdf5WriteFilter::equal(Self, Self) -> Bool
 pub fn Hdf5WriteFilter::not_equal(Self, Self) -> Bool
 pub fn Hdf5WriteFilter::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
 pub(all) enum Hdf5WriteValues {
   Int8Values(Array[Int32])
   Int16Values(Array[Int32])
@@ -336,7 +363,7 @@ pub(all) enum Hdf5WriteValues {
   Complex64Values(Array[(Float, Float)])
   Complex128Values(Array[(Double, Double)])
   StructuredValues(Datatype, Array[DatasetValue])
-} derive(@debug.Debug)
+}
 pub fn Hdf5WriteValues::to_repr(Self) -> @debug.Repr
 
 pub struct Hdf5Writer {

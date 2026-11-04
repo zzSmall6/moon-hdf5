@@ -1,10 +1,11 @@
 ///|
+#derive(@debug.Debug)
 priv struct CountingSource {
   bytes : Bytes
   mut reads : Int32
   mut requested : UInt64
   mut largest_read : Int32
-} derive(@debug.Debug)
+}
 
 ///|
 impl Hdf5Source for CountingSource with fn length(self : CountingSource) -> UInt64 {
@@ -26,11 +27,12 @@ impl Hdf5Source for CountingSource with fn read_at(
 }
 
 ///|
+#derive(@debug.Debug)
 priv struct SparseSource {
   window_start : UInt64
   bytes : Bytes
   virtual_length : UInt64
-} derive(@debug.Debug)
+}
 
 ///|
 impl Hdf5Source for SparseSource with fn length(self : SparseSource) -> UInt64 {

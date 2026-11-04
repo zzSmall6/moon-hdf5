@@ -1,5 +1,6 @@
 ///|
 /// Values decoded from an HDF5 dataset.
+#derive(@debug.Debug)
 pub(all) enum DatasetValues {
   Integers(Array[Int64])
   UnsignedIntegers(Array[UInt64])
@@ -7,13 +8,14 @@ pub(all) enum DatasetValues {
   Strings(Array[String])
   Enums(Array[String])
   Structured(Array[DatasetValue])
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend DatasetValues with @debug.Debug::{to_repr}
 
 ///|
 /// One recursively decoded value for structured HDF5 datatypes.
+#derive(Eq, @debug.Debug)
 pub(all) enum DatasetValue {
   SignedInteger(Int64)
   UnsignedInteger(UInt64)
@@ -32,7 +34,7 @@ pub(all) enum DatasetValue {
   Sequence(Array[DatasetValue])
   Time(UInt64)
   Complex(Double, Double)
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend DatasetValue with Eq::{not_equal, equal}
@@ -42,10 +44,11 @@ pub extend DatasetValue with @debug.Debug::{to_repr}
 
 ///|
 /// A named value decoded from a compound datatype member.
+#derive(Eq, @debug.Debug)
 pub(all) struct CompoundFieldValue {
   name : String
   value : DatasetValue
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend CompoundFieldValue with Eq::{not_equal, equal}
@@ -55,23 +58,25 @@ pub extend CompoundFieldValue with @debug.Debug::{to_repr}
 
 ///|
 /// Dataset metadata that can be inspected without reading its stored values.
+#derive(@debug.Debug)
 pub(all) struct DatasetMetadata {
   dataspace : Dataspace
   datatype : Datatype
   layout : DataLayout
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend DatasetMetadata with @debug.Debug::{to_repr}
 
 ///|
 /// A dataset together with its decoded values.
+#derive(@debug.Debug)
 pub(all) struct Dataset {
   dataspace : Dataspace
   datatype : Datatype
   layout : DataLayout
   values : DatasetValues
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend Dataset with @debug.Debug::{to_repr}

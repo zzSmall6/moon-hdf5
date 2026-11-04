@@ -4,12 +4,13 @@
 /// `file` is the registered source name, or `<root>` for the source passed to
 /// `Hdf5Resolver::new`. `path` is the canonical path inside that source after
 /// following soft and external links.
+#derive(Eq, @debug.Debug)
 pub(all) struct Hdf5ResolvedNode {
   file : String
   path : String
   address : UInt64
   kind : Hdf5ObjectKind
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend Hdf5ResolvedNode with Eq::{not_equal, equal}

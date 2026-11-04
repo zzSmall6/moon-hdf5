@@ -1,11 +1,12 @@
 ///|
 /// An attribute attached to an HDF5 object.
+#derive(@debug.Debug)
 pub(all) struct Attribute {
   name : String
   dataspace : Dataspace
   datatype : Datatype
   values : DatasetValues?
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend Attribute with @debug.Debug::{to_repr}

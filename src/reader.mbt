@@ -1,5 +1,6 @@
 ///|
 /// Errors raised by HDF5 reading and writing operations.
+#derive(Eq, @debug.Debug)
 pub(all) suberror Hdf5Error {
   UnexpectedEof(Int64)
   InvalidSignature
@@ -8,7 +9,7 @@ pub(all) suberror Hdf5Error {
   UnsupportedFeature(String)
   InvalidArgument(String)
   InvalidField(String)
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend Hdf5Error with Eq::{not_equal, equal}

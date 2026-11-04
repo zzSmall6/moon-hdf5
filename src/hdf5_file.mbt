@@ -1,11 +1,12 @@
 ///|
 /// The kind of object stored under an HDF5 link.
+#derive(Eq, @debug.Debug)
 pub(all) enum Hdf5ObjectKind {
   Group
   Dataset
   Datatype
   Unknown
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend Hdf5ObjectKind with Eq::{not_equal, equal}
@@ -15,11 +16,12 @@ pub extend Hdf5ObjectKind with @debug.Debug::{to_repr}
 
 ///|
 /// One named object in the file hierarchy.
+#derive(Eq, @debug.Debug)
 pub(all) struct Hdf5Node {
   path : String
   address : UInt64
   kind : Hdf5ObjectKind
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend Hdf5Node with Eq::{not_equal, equal}

@@ -1,9 +1,10 @@
 ///|
 /// One inclusive block in a serialized HDF5 hyperslab selection.
+#derive(Eq, @debug.Debug)
 pub(all) struct Hdf5RegionBlock {
   start : Array[UInt64]
   end : Array[UInt64]
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend Hdf5RegionBlock with Eq::{not_equal, equal}
@@ -13,13 +14,14 @@ pub extend Hdf5RegionBlock with @debug.Debug::{to_repr}
 
 ///|
 /// The dataspace selection stored in an HDF5 1.14 region reference.
+#derive(Eq, @debug.Debug)
 pub(all) enum Hdf5RegionSelection {
   RegionEmpty
   RegionAll
   RegionPoints(Array[Array[UInt64]])
   RegionHyperslab(Array[UInt64], Array[UInt64], Array[UInt64], Array[UInt64])
   RegionBlocks(Array[Hdf5RegionBlock])
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend Hdf5RegionSelection with Eq::{not_equal, equal}
@@ -29,13 +31,14 @@ pub extend Hdf5RegionSelection with @debug.Debug::{to_repr}
 
 ///|
 /// The dataset and dataspace selection reached by a region reference.
+#derive(@debug.Debug)
 pub(all) struct Hdf5RegionReferenceTarget {
   address : UInt64
   kind : Hdf5ObjectKind
   path : String?
   dataspace : Dataspace
   selection : Hdf5RegionSelection
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend Hdf5RegionReferenceTarget with @debug.Debug::{to_repr}

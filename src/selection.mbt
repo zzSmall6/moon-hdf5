@@ -1,11 +1,12 @@
 ///|
 /// A selection of elements from a dataset.
+#derive(@debug.Debug)
 pub(all) enum DatasetSelection {
   /// Selects `count` elements per axis from `start` at each `stride`.
   Hyperslab(Array[UInt64], Array[UInt64], Array[UInt64])
   /// Selects coordinates in the given order and preserves duplicates.
   Points(Array[Array[UInt64]])
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend DatasetSelection with @debug.Debug::{to_repr}
@@ -13,11 +14,12 @@ pub extend DatasetSelection with @debug.Debug::{to_repr}
 ///|
 /// Values and shape produced by a dataset selection. Hyperslabs use their
 /// count as the shape; point selections use a one-dimensional point count.
+#derive(@debug.Debug)
 pub(all) struct DatasetSelectionResult {
   dimensions : Array[UInt64]
   datatype : Datatype
   values : DatasetValues
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend DatasetSelectionResult with @debug.Debug::{to_repr}

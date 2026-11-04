@@ -1,9 +1,10 @@
 ///|
+#derive(Eq, @debug.Debug)
 pub(all) enum DataspaceKind {
   Scalar
   Simple
   Null
-} derive(Eq, @debug.Debug)
+}
 
 ///|
 pub extend DataspaceKind with Eq::{not_equal, equal}
@@ -12,11 +13,12 @@ pub extend DataspaceKind with Eq::{not_equal, equal}
 pub extend DataspaceKind with @debug.Debug::{to_repr}
 
 ///|
+#derive(@debug.Debug)
 pub(all) struct Dataspace {
   kind : DataspaceKind
   dimensions : Array[UInt64]
   maximum_dimensions : Array[UInt64]
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend Dataspace with @debug.Debug::{to_repr}

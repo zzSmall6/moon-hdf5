@@ -1,11 +1,12 @@
 ///|
 /// One decoded tile from a dataset. `offset` is the tile origin in dataset
 /// coordinates and `dimensions` is the edge-clipped tile shape.
+#derive(@debug.Debug)
 pub(all) struct DatasetChunk {
   offset : Array[UInt64]
   dimensions : Array[UInt64]
   values : DatasetValues
-} derive(@debug.Debug)
+}
 
 ///|
 pub extend DatasetChunk with @debug.Debug::{to_repr}
