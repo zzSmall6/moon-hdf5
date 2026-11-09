@@ -15,7 +15,9 @@ moon-hdf5 implements a documented subset of HDF5. The
 - `Hdf5Writer` creates complete new files in memory.
 - `Hdf5Resolver` follows registered external links and reads resolver-backed
   external raw data.
-- In-place editing of an existing file is not supported.
+- `patch_contiguous_dataset` replaces the values of an allocated contiguous
+  dataset and returns a new byte image; metadata editing and other layouts
+  remain unsupported.
 
 ## Installation
 
@@ -47,6 +49,8 @@ instead, use the commands in [Quick Start](#quick-start).
 - New-file output for groups, datasets, attributes, links, committed datatypes,
   filters, fills, references, contiguous external raw-data slots and one or more
   unlimited dataset dimensions.
+- Value replacement for fixed-size, unfiltered contiguous datasets in a
+  bytes-backed file.
 
 ## Quick Start
 
@@ -205,6 +209,27 @@ let output = writer.encode()
 - Variable-length strings and sequences share a global heap. Sequence bases must
   be fixed-size and cannot contain region references.
 
+### Patching contiguous values
+
+```moonbit nocheck
+///|
+let original = @fs.read_file_to_bytes("data.h5")
+let file = @lib.Hdf5File::parse(original)
+let patched = file.patch_contiguous_dataset(
+  "/group/values",
+  @lib.Int64Values([10L, 20L, 30L, 40L]),
+)
+@fs.write_bytes_to_file("patched.h5", patched)
+```
+
+`patch_contiguous_dataset` requires an allocated contiguous dataset in a
+bytes-backed `Hdf5File`. The replacement must have exactly the declared shape
+and a compatible fixed-size datatype. Object headers, attributes, links,
+checksums and all bytes outside the dataset value region are preserved. Chunked,
+compact, external, filtered and unallocated storage is rejected, as are
+variable-length and reference datatypes. The operation returns a complete new
+byte image; it does not modify the input or resize/relayout the dataset.
+
 Run the larger example and verify it independently with h5py:
 
 ```sh
@@ -239,9 +264,11 @@ the items below summarize the main user-visible gaps.
   selections; both read in bounded pages and never allocate the complete
   result.
 - **Writer lifecycle:** `Hdf5Writer` is an in-memory builder and `encode` returns
-  the complete file. There is no streaming writer, in-place edit or file
-  patching. Multi-unlimited resizing and v2 B-tree output are rebuilt for the
-  current in-memory shape.
+  the complete file. `patch_contiguous_dataset` can replace values in an
+  allocated contiguous dataset and returns another complete byte image, but
+  streaming output and general in-place metadata editing are unsupported.
+  Multi-unlimited resizing and v2 B-tree output are rebuilt for the current
+  in-memory shape.
 - **Read coverage:** virtual datasets, SWMR, parallel HDF5 and third-party or
   custom filters are outside the profile. Unsupported layouts, indexes,
   datatypes and required unknown filters raise `UnsupportedFeature`; detection

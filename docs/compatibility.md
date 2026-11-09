@@ -12,9 +12,9 @@ post-v1.0 extension. HDF5 2.0 datatype fixtures are forward-compatibility
 evidence, not part of the 1.14.6 baseline.
 
 Outside the profile: virtual datasets, SWMR, parallel HDF5, third-party filters,
-in-place editing, netCDF-4/MATLAB high-level semantics, version-4 encoded
-references, numeric storage wider than 8 bytes and non-implied-MSB binary
-floats.
+general in-place metadata editing, netCDF-4/MATLAB high-level semantics,
+version-4 encoded references, numeric storage wider than 8 bytes and
+non-implied-MSB binary floats.
 
 The release gate is `scripts/release_check.sh`: formatting, documentation and
 package checks; wasm/native tests; writer demo; and independent h5py
@@ -71,7 +71,8 @@ h5py 3.13.0/HDF5 1.14.6.
 | Filters | Shuffle, deflate, Fletcher32, integer and f32/f64 decimal scale-offset, per-chunk masks | Fixed-size values support the full set; variable-length values support shuffle/deflate, not Fletcher32 or scale-offset; scale-offset must lead; floating scale-offset cannot use Fletcher32 |
 | Fills | Default, fixed-size/structured, vlen-string and vlen-sequence fills; optional SOHM | Variable-length fills use the global heap |
 | Shared messages | One SOHM table/heap for whole attributes, fills and filter pipelines; equal fills, attributes and pipelines reuse one message; committed datatypes use wrapper v3 type 2 | Multiple SOHM tables/heaps are not written |
-| Extension | One or more unlimited axes with in-memory resize, append and arbitrary rectangular slab writes; chunk filter masks stay attached to chunk coordinates across shape changes | Multiple unlimited axes use a v2 B-tree; `append_dataset` writes at the trailing corner, `write_dataset_slab` writes at arbitrary coordinates and grows unlimited axes to the slab edge; existing files are not edited in place |
+| Extension | One or more unlimited axes with in-memory resize, append and arbitrary rectangular slab writes; chunk filter masks stay attached to chunk coordinates across shape changes | Multiple unlimited axes use a v2 B-tree; `append_dataset` writes at the trailing corner, `write_dataset_slab` writes at arbitrary coordinates and grows unlimited axes to the slab edge |
+| Value patching | `patch_contiguous_dataset` replaces fixed-size values in an allocated, unfiltered contiguous dataset and returns a complete byte image | Bytes-backed `Hdf5File` only; shape and datatype must match; chunked, compact, external, filtered, unallocated, variable-length and reference storage is rejected; metadata is not edited and the dataset is not resized or relaid out |
 
 ## Reproduce
 
