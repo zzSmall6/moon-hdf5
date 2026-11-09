@@ -342,6 +342,9 @@ fn SharedMessageContext::resolve_object_header(
         msg_type: message.msg_type,
         flags: (message.flags.to_int() & (0xFF ^ shared_message_flag)).to_byte(),
         data,
+        data_offset: -1,
+        chunk_start: -1,
+        checksum_offset: -1,
       })
     } else {
       messages.push(message)

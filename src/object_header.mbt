@@ -65,6 +65,9 @@ priv struct HeaderMessage {
   msg_type : Int32
   flags : Byte
   data : Bytes
+  data_offset : Int32
+  chunk_start : Int32
+  checksum_offset : Int32
 }
 
 ///|
@@ -107,8 +110,16 @@ fn parse_v1_message_block(
     let size = block.read_u16_le().to_int()
     let flags = block.read_u8()
     block.skip(3)
+    let data_offset = block.position()
     let data = block.read_bytes(size)
-    messages.push({ msg_type, flags, data, })
+    messages.push({
+      msg_type,
+      flags,
+      data,
+      data_offset,
+      chunk_start: -1,
+      checksum_offset: -1,
+    })
     if msg_type == msg_object_continuation {
       let continuation = Reader::new(data)
       let address = continuation.read_uint_le(offset_size)
@@ -173,6 +184,8 @@ fn parse_v2_message_block(
   length_size : Int32,
   base_address : UInt64,
   creation_order_size : Int32,
+  chunk_start : Int32,
+  checksum_offset : Int32,
   visited : Array[Int32],
   messages : Array[HeaderMessage],
 ) -> Unit raise Hdf5Error {
@@ -184,8 +197,16 @@ fn parse_v2_message_block(
     if creation_order_size == 2 {
       block.skip(2)
     }
+    let data_offset = block.position()
     let data = block.read_bytes(size)
-    messages.push({ msg_type, flags, data, })
+    messages.push({
+      msg_type,
+      flags,
+      data,
+      data_offset,
+      chunk_start,
+      checksum_offset,
+    })
     if msg_type == msg_object_continuation {
       let continuation = Reader::new(data)
       let address = continuation.read_uint_le(offset_size)
@@ -215,6 +236,8 @@ fn parse_v2_message_block(
           length_size,
           base_address,
           creation_order_size,
+          continuation_offset,
+          continuation_offset + length.to_int() - metadata_checksum_size,
           visited,
           messages,
         )
@@ -264,7 +287,15 @@ fn parse_object_header_v2(
   let messages : Array[HeaderMessage] = []
   let visited : Array[Int32] = [address]
   parse_v2_message_block(
-    bytes, block, offset_size, length_size, base_address, creation_order_size, visited,
+    bytes,
+    block,
+    offset_size,
+    length_size,
+    base_address,
+    creation_order_size,
+    address,
+    payload_start + chunk_size,
+    visited,
     messages,
   )
   { _version: version, messages, }

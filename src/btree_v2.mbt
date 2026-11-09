@@ -33,6 +33,7 @@ priv struct ChunkBTreeV2 {
   filters : Array[Filter]
   output : FixedArray[Byte]
   selection : Array[UInt64]?
+  records : Array[RawChunkRecord]?
   config : BTreeV2Config
   client : Int32
   record_size : Int32
@@ -89,6 +90,7 @@ fn ChunkBTreeV2::record(
     }
   }
   self.previous = Some(coordinates)
+  push_raw_chunk_record(self.records, offsets, address, stored_size)
   if !chunk_contains_selection(
       offsets,
       self.layout.chunk_dimensions,
@@ -199,6 +201,7 @@ fn read_btree_v2_chunks(
   undefined : UInt64,
   config : BTreeV2Config,
   selection : Array[UInt64]?,
+  records~ : Array[RawChunkRecord]? = None,
 ) -> Unit raise Hdf5Error {
   let sources : Array[&Hdf5Source] = [bytes]
   read_source_btree_v2_chunks(
@@ -214,6 +217,7 @@ fn read_btree_v2_chunks(
     undefined,
     config,
     selection,
+    records~,
   )
 }
 
@@ -231,6 +235,7 @@ fn read_source_btree_v2_chunks(
   undefined : UInt64,
   config : BTreeV2Config,
   selection : Array[UInt64]?,
+  records~ : Array[RawChunkRecord]? = None,
 ) -> Unit raise Hdf5Error {
   validate_btree_v2_config(config)
   let header_offset = source_address_to_offset(
@@ -314,6 +319,7 @@ fn read_source_btree_v2_chunks(
     filters,
     output,
     selection,
+    records,
     config,
     client,
     record_size,

@@ -138,16 +138,18 @@ creation-order index sharing the same heap IDs. Larger sets remain compact and
 use OCHK continuation when needed. Indirect/huge heap blocks and a free-space
 manager are not emitted.
 
-The writer supports contiguous datasets, contiguous external raw-data slots,
-finite chunked datasets with fixed-array indexes, one-unlimited-dimension
-datasets with extensible-array indexes, and multi-unlimited datasets with v2
-B-tree chunk indexes. Extensible arrays use inline, direct, super-block or paged
-forms. The v2 B-tree is bulk-built in row-major chunk order, with client type 10
-for unfiltered chunks and 11 for filtered chunks. Fixed axes must match the
-current shape when appending; each unlimited axis grows by the block extent and
-the block is written at the old shape's trailing corner. Fill-only chunks keep
-undefined addresses except for variable-length datasets, which allocate in-shape
-chunks so empty strings do not depend on undefined vlen storage.
+The writer supports compact datasets, contiguous datasets, contiguous external
+raw-data slots, finite chunked datasets with fixed-array indexes,
+one-unlimited-dimension datasets with extensible-array indexes, and
+multi-unlimited datasets with v2 B-tree chunk indexes. Compact payloads are
+embedded in the layout message and limited to 65,535 bytes. Extensible arrays
+use inline, direct, super-block or paged forms. The v2 B-tree is bulk-built in
+row-major chunk order, with client type 10 for unfiltered chunks and 11 for
+filtered chunks. Fixed axes must match the current shape when appending; each
+unlimited axis grows by the block extent and the block is written at the old
+shape's trailing corner. Fill-only chunks keep undefined addresses except for
+variable-length datasets, which allocate in-shape chunks so empty strings do not
+depend on undefined vlen storage.
 
 Integer scale-offset supports automatic or fixed bit widths; floating-point
 scale-offset supports f32/f64 decimal digits. Scale-offset must lead the
@@ -173,6 +175,17 @@ Variable-length strings and sequences use 16-byte descriptors and one shared
 global heap; repeated payloads and custom fills share heap objects. Sequence
 bases must be fixed-size. Sequence bases containing region references are
 rejected because HDF5 1.14.6 cannot safely consume them.
+
+In-place value patching keeps object identity and layout. Contiguous payloads
+are overwritten at their assigned address. Compact payloads are located from the
+stored object-header message offset; when the containing OHDR chunk or OCHK
+continuation has a checksum, it is recomputed after the bytes change. The
+chunked path walks the active chunk index without decoding payloads, requires
+native unfiltered chunk sizes, and rewrites only in-bounds elements so padding
+survives. Missing chunks stay unallocated only when their patched values equal
+the effective fill element; otherwise the patch is rejected instead of
+allocating storage. `patch_dataset_values` accepts all three layouts, while
+`patch_contiguous_dataset` is the contiguous-only compatibility entry point.
 
 ## Errors and verification
 

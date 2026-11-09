@@ -8,6 +8,7 @@ fn read_direct_chunks(
   filters : Array[Filter],
   output : FixedArray[Byte],
   selection : Array[UInt64]?,
+  records~ : Array[RawChunkRecord]? = None,
 ) -> Unit raise Hdf5Error {
   guard layout.element_size == datatype.size else {
     raise InvalidField("chunk element size does not match datatype")
@@ -26,6 +27,12 @@ fn read_direct_chunks(
         raise InvalidField("filtered single chunk is missing its stored size")
       }
       let offsets = Array::make(rank, 0UL)
+      push_raw_chunk_record(
+        records,
+        offsets.copy(),
+        layout.data_address,
+        stored_size.unwrap_or(chunk_size.to_uint64()),
+      )
       if !chunk_contains_selection(
           offsets,
           layout.chunk_dimensions,
@@ -62,6 +69,9 @@ fn read_direct_chunks(
       guard dataspace.maximum_dimensions.length() == rank else {
         raise InvalidField("implicit chunks require maximum dimensions")
       }
+      if output.length() == 0 && records is None {
+        return
+      }
       let current_grid : Array[Int64] = []
       let maximum_grid : Array[Int64] = []
       for dimension in 0..<rank {
@@ -75,9 +85,6 @@ fn read_direct_chunks(
         let width = layout.chunk_dimensions[dimension].to_int64()
         current_grid.push((current.reinterpret_as_int64() + width - 1) / width)
         maximum_grid.push((maximum.reinterpret_as_int64() + width - 1) / width)
-      }
-      if output.length() == 0 {
-        return
       }
       let total = product(current_grid)
       let maximum_total = product(maximum_grid)
@@ -103,6 +110,13 @@ fn read_direct_chunks(
             coordinates[dimension]
         }
         let position = start + stored_index.to_int() * chunk_size
+        push_raw_chunk_record(
+          records,
+          offsets.copy(),
+          layout.data_address +
+          (stored_index * chunk_size.to_int64()).reinterpret_as_uint64(),
+          chunk_size.to_uint64(),
+        )
         if !chunk_contains_selection(
             offsets,
             layout.chunk_dimensions,

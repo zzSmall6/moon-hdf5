@@ -49,6 +49,7 @@ priv struct ExtensibleReader {
   filters : Array[Filter]
   output : FixedArray[Byte]
   selection : Array[UInt64]?
+  records : Array[RawChunkRecord]?
   config : ExtensibleArrayConfig
   client : Int32
   entry_size : Int32
@@ -100,6 +101,7 @@ fn ExtensibleReader::entries(
     if outside {
       continue
     }
+    push_raw_chunk_record(self.records, offsets, address, stored_size)
     if !chunk_contains_selection(
         offsets,
         self.layout.chunk_dimensions,
@@ -256,6 +258,7 @@ fn read_extensible_array_chunks(
   undefined : UInt64,
   config : ExtensibleArrayConfig,
   selection : Array[UInt64]?,
+  records~ : Array[RawChunkRecord]? = None,
 ) -> Unit raise Hdf5Error {
   let sources : Array[&Hdf5Source] = [bytes]
   read_source_extensible_array_chunks(
@@ -271,6 +274,7 @@ fn read_extensible_array_chunks(
     undefined,
     config,
     selection,
+    records~,
   )
 }
 
@@ -288,6 +292,7 @@ fn read_source_extensible_array_chunks(
   undefined : UInt64,
   config : ExtensibleArrayConfig,
   selection : Array[UInt64]?,
+  records~ : Array[RawChunkRecord]? = None,
 ) -> Unit raise Hdf5Error {
   validate_extensible_config(config)
   let unlimited_value = match length_size {
@@ -374,7 +379,7 @@ fn read_source_extensible_array_chunks(
   guard config.max_bits == 64 || maximum_set <= 1UL << config.max_bits else {
     raise InvalidField("extensible array index exceeds capacity")
   }
-  if output.length() == 0 || index_address == undefined {
+  if index_address == undefined || (output.length() == 0 && records is None) {
     return
   }
   let total = product(grid)
@@ -394,6 +399,7 @@ fn read_source_extensible_array_chunks(
     filters,
     output,
     selection,
+    records,
     config,
     client,
     entry_size,

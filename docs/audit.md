@@ -7,12 +7,13 @@ v1.0 delivery profile and post-v1.0 extensions.
 
 The release gate passes on the current worktree:
 
-- wasm: 263 tests passed;
-- native: 263 tests passed;
+- wasm: 270 tests passed;
+- native: 270 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - writer demo verified by h5py 3.13.0/HDF5 1.14.6;
+- compact and sparse chunked patch output was re-read by h5py 3.13.0/HDF5 1.14.6;
 - numeric-layout, scale-offset, vlen-fill, NetCDF-4, external-storage,
-  shared-message, hard-link, MATLAB-compatible and reference fixtures verified.
+  shared-message, hard-link, MATLAB-compatible and reference fixtures verified;
 - the version-4 reference fixture and writer output are exercised by MoonBit
   round-trip tests.
 
@@ -32,6 +33,7 @@ structures raise errors; detection is not exhaustive.
 | References | 4-/8-byte object references, legacy region references and version-4 object/region/attribute references against compact, contiguous and filtered targets |
 | Shared messages | Table/indexes/heaps, wrappers v1–v3, field sharing, fills, filter pipelines, whole attributes and committed targets |
 | Writer | Superblock v3, OHDR/OCHK, dense metadata, chunk indexes, SOHM, references and external slots |
+| In-place patching | Compact, contiguous and unfiltered chunked datasets, including sparse fill-only chunks; affected checksums are recomputed and chunk edge padding is preserved |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
 
 ## Reader findings
@@ -92,6 +94,19 @@ checksummed OCHK continuations. Dense collections use one FHDB direct block,
 one BTHD/BTLF leaf per index and type 6/9 creation-order indexes. They are limited
 to 9–65,535 records with encoded heap objects up to 65,535 bytes; indirect/huge
 blocks and a free-space manager are not emitted.
+
+Compact datasets embed their payload in the data-layout message and enforce the
+65,535-byte limit before encoding. In-place patching locates compact payloads
+from parsed message offsets; OHDR and OCHK checksums are recomputed when those
+chunks cover the modified bytes. Contiguous patching continues to overwrite only
+the assigned payload address.
+
+Chunked patching walks the active index without decoding payloads, covering
+v1/v2 B-trees, single and implicit chunks, and fixed/extensible arrays. It
+requires unfiltered native-size allocated chunks and rewrites only in-bounds
+elements. Missing chunks stay sparse only when patched values equal the
+effective fill; non-fill values in missing chunks and filtered storage remain
+rejected.
 
 Finite chunked datasets use fixed-array indexes; one unlimited dimension uses
 extensible-array indexes, including inline entries, direct/super blocks and paged
@@ -187,3 +202,10 @@ heaps and heap extension across multiple blocks are not emitted.
 - 2026-11-09: IEEE half-precision writer values and contiguous patching, with
   h5py-verified demo output.
 - 2026-11-09: big-endian numeric value patching, including half-precision data.
+- 2026-11-09: compact dataset writing and checksum-safe in-place compact patching,
+  with h5py-verified demo output and patched compact values re-read by
+  h5py 3.13.0/HDF5 1.14.6.
+- 2026-11-09: in-place patching for unfiltered chunked datasets across v1/v2
+  B-tree, single, implicit, fixed-array and extensible-array indexes, preserving
+  sparse fill-only chunks when patched values stay at fill; patched sparse
+  output was re-read by h5py 3.13.0/HDF5 1.14.6.

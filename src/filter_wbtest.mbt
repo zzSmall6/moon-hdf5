@@ -78,7 +78,14 @@ test "filter pipeline framing and masks reject invalid input" {
       b"\x01", b"\x02\x21", b"\x02\x01\x01\x00", b"\x02\x01\x01\x00\x04\x00\x00\x00",
     ] {
     let error = try {
-      parse_filters({ msg_type: msg_filter_pipeline, flags: b'\x00', data, })
+      parse_filters({
+        msg_type: msg_filter_pipeline,
+        flags: b'\x00',
+        data,
+        data_offset: -1,
+        chunk_start: -1,
+        checksum_offset: -1,
+      })
       |> ignore
       None
     } catch {

@@ -156,6 +156,9 @@ test "attribute info validates address widths and index flags" {
               msg_type: msg_attribute_info,
               flags: b'\x00',
               data: buffer.to_bytes(),
+              data_offset: -1,
+              chunk_start: -1,
+              checksum_offset: -1,
             },
           ],
         }
@@ -190,7 +193,16 @@ test "malformed attribute info cannot masquerade as empty attributes" {
   for data in [b"\x00", b"\x00\x01", b"\x00\x00\xff", b"\x00\x02", b"\x00\x04"] {
     let header : ObjectHeader = {
       _version: 2,
-      messages: [{ msg_type: msg_attribute_info, flags: b'\x00', data, }],
+      messages: [
+        {
+          msg_type: msg_attribute_info,
+          flags: b'\x00',
+          data,
+          data_offset: -1,
+          chunk_start: -1,
+          checksum_offset: -1,
+        },
+      ],
     }
     let error = try {
       read_attributes(b"", header, 8, 8, 0UL) |> ignore

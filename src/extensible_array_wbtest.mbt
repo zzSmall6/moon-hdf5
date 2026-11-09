@@ -163,7 +163,14 @@ test "extensible layout configuration rejects unsafe shifts and invalid powers" 
     buffer.write_uint64_le(100UL)
     let error = try {
       parse_data_layout(
-        { msg_type: msg_data_layout, flags: b'\x00', data: buffer.to_bytes(), },
+        {
+          msg_type: msg_data_layout,
+          flags: b'\x00',
+          data: buffer.to_bytes(),
+          data_offset: -1,
+          chunk_start: -1,
+          checksum_offset: -1,
+        },
         8,
         8,
       )

@@ -109,7 +109,14 @@ test "dataset byte size is checked before reading or allocating storage" {
   buffer.write_uint64_le(1073741824UL)
   let messages = original.messages.map(message => {
     if message.msg_type == msg_dataspace {
-      { msg_type: msg_dataspace, flags: b'\x00', data: buffer.to_bytes(), }
+      {
+        msg_type: msg_dataspace,
+        flags: b'\x00',
+        data: buffer.to_bytes(),
+        data_offset: -1,
+        chunk_start: -1,
+        checksum_offset: -1,
+      }
     } else {
       message
     }

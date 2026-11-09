@@ -16,8 +16,9 @@ moon-hdf5 implements a documented subset of HDF5. The
 - `Hdf5Resolver` follows registered external links and reads resolver-backed
   external raw data.
 - `patch_contiguous_dataset` replaces the values of an allocated contiguous
-  dataset and returns a new byte image; metadata editing and other layouts
-  remain unsupported.
+  dataset, and `patch_dataset_values` also handles compact and unfiltered
+  chunked storage; both return a new byte image. General metadata editing and
+  filtered, external or unallocated storage remain unsupported.
 
 ## Installation
 
@@ -49,10 +50,10 @@ instead, use the commands in [Quick Start](#quick-start).
 - SOHM reading and optional writing: shared attributes, filter pipelines,
   datatype/dataspace fields, fills and named committed datatypes.
 - New-file output for groups, datasets, attributes, links, committed datatypes,
-  filters, fills, references, contiguous external raw-data slots and one or more
-  unlimited dataset dimensions.
-- Value replacement for fixed-size, unfiltered contiguous datasets in a
-  bytes-backed file.
+  filters, fills, references, compact datasets, contiguous external raw-data
+  slots and one or more unlimited dataset dimensions.
+- Value replacement for fixed-size compact, allocated contiguous and unfiltered
+  chunked datasets in a bytes-backed file.
 
 ## Quick Start
 
@@ -202,6 +203,9 @@ let output = writer.encode()
   multiple unlimited dimensions use a v2 B-tree. `append_dataset` appends a
   block at the trailing corner of every unlimited axis, growing each such axis
   by the block extent.
+- `add_compact_dataset` stores values inline in the object header, up to 65,535
+  encoded bytes. Compact datasets support the same fixed-size and
+  variable-length values as contiguous datasets but cannot be resized.
 - `write_dataset_slab` writes a rectangular block at arbitrary coordinates.
   Finite datasets require the slab to fit their current shape; extensible
   datasets grow unlimited axes to the slab's trailing edge and fill gaps with
@@ -251,27 +255,30 @@ The writer emits 18-byte reference slots in its 8-byte-address output. Region
 and attribute payloads are stored in a dedicated global heap. References to
 external files are rejected with `UnsupportedFeature`.
 
-### Patching contiguous values
+### Patching compact, contiguous and chunked values
 
 ```moonbit nocheck
 ///|
 let original = @fs.read_file_to_bytes("data.h5")
 let file = @lib.Hdf5File::parse(original)
-let patched = file.patch_contiguous_dataset(
+let patched = file.patch_dataset_values(
   "/group/values",
   @lib.Int64Values([10L, 20L, 30L, 40L]),
 )
 @fs.write_bytes_to_file("patched.h5", patched)
 ```
 
-`patch_contiguous_dataset` requires an allocated contiguous dataset in a
-bytes-backed `Hdf5File`. The replacement must have exactly the declared shape
-and a compatible fixed-size datatype; both little- and big-endian numeric
-datasets are accepted. Object headers, attributes, links, checksums and all
-bytes outside the dataset value region are preserved. Chunked, compact,
-external, filtered and unallocated storage is rejected, as are variable-length
-and reference datatypes. The operation returns a complete new byte image; it
-does not modify the input or resize/relayout the dataset.
+`patch_dataset_values` accepts compact, allocated contiguous or unfiltered
+chunked storage in a bytes-backed `Hdf5File`; `patch_contiguous_dataset`
+remains the strict contiguous-only form. The replacement must have exactly the
+declared shape and a compatible fixed-size datatype, including little- and
+big-endian numeric data. Compact payloads stay inline with their object-header
+checksum recomputed; contiguous payloads and allocated chunks are overwritten in
+place, with chunk edge padding preserved. Missing chunks may stay unallocated
+only when their patched values equal the dataset fill value. Attributes, links
+and other metadata are preserved; external, filtered, variable-length and
+reference storage is rejected, and the dataset is never resized or relaid out.
+The operation returns a complete new byte image.
 
 Run the larger example and verify it independently with h5py:
 
@@ -307,11 +314,10 @@ the items below summarize the main user-visible gaps.
   selections; both read in bounded pages and never allocate the complete
   result.
 - **Writer lifecycle:** `Hdf5Writer` is an in-memory builder and `encode` returns
-  the complete file. `patch_contiguous_dataset` can replace values in an
-  allocated contiguous dataset and returns another complete byte image, but
-  streaming output and general in-place metadata editing are unsupported.
-  Multi-unlimited resizing and v2 B-tree output are rebuilt for the current
-  in-memory shape.
+  the complete file. `patch_contiguous_dataset` and `patch_dataset_values`
+  return another complete byte image, but streaming output and general in-place
+  metadata editing are unsupported. Multi-unlimited resizing and v2 B-tree
+  output are rebuilt for the current in-memory shape.
 - **Read coverage:** virtual datasets, SWMR and parallel HDF5 are outside the
   profile. Built-in chunk filters are decoded directly; other dataset chunk
   filter IDs can be supplied through `Hdf5CustomFilter`. Custom filters on

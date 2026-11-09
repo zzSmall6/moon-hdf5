@@ -36,6 +36,9 @@ test "unallocated storage does not hide external data" {
     msg_type: msg_external_data_files,
     flags: b'\x00',
     data: b"\x03\x06",
+    data_offset: -1,
+    chunk_start: -1,
+    checksum_offset: -1,
   })
   let header : ObjectHeader = { _version: original._version, messages, }
   let error = try {
@@ -64,7 +67,14 @@ fn header_with_fill(
   let messages = original.messages.filter(message => {
     message.msg_type != msg_fill_value && message.msg_type != msg_fill_value_old
   })
-  messages.push({ msg_type: msg_fill_value, flags: b'\x00', data, })
+  messages.push({
+    msg_type: msg_fill_value,
+    flags: b'\x00',
+    data,
+    data_offset: -1,
+    chunk_start: -1,
+    checksum_offset: -1,
+  })
   { _version: original._version, messages, }
 }
 

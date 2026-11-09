@@ -15,6 +15,16 @@ fn run(args : Array[String]) -> Int32 {
       [2UL, 3UL],
       Int64Values([1L, 2L, 3L, 4L, 5L, 6L]),
     )
+    writer.add_compact_dataset(
+      "/experiment/compact",
+      [3UL],
+      Int32Values([7, 8, 9]),
+    )
+    writer.add_compact_dataset(
+      "/experiment/compact_names",
+      [2UL],
+      VariableStringValues(["moon", "数据"]),
+    )
     writer.add_dataset(
       "/experiment/reference_target",
       [2UL],

@@ -66,7 +66,7 @@ through its NumPy dtype bridge.
 | Framing | Superblock v3 and v2 object headers with OCHK continuations | Older output formats are not selected |
 | Groups and attributes | Compact/dense collections, creation order, continued headers, inline/dense attributes | Dense limits below |
 | Dense metadata | 9–65,535 records with encoded objects up to 65,535 bytes; FRHP/FHDB, BTHD/BTLF and type 6/9 indexes; optional one SOHM table/heap | One direct block and leaf per index; no huge/indirect blocks or free-space manager; larger compact sets use OCHK |
-| Datasets | Contiguous, external raw data, paged fixed-array, extensible-array and v2 B-tree chunks | No virtual storage; external storage is unfiltered fixed-size only |
+| Datasets | Compact, contiguous, external raw data, paged fixed-array, extensible-array and v2 B-tree chunks | No virtual storage; compact payloads are limited to 65,535 bytes; external storage is unfiltered fixed-size only |
 | Numeric values | int/uint 1–8 bytes and IEEE float16/32/64 in either byte order | Nonstandard floating-point output is absent; scale-offset is limited to 32/64-bit floats |
 | Strings and structures | Fixed/vlen UTF-8; compound, enum, array, time, bitfield, opaque, references, complex and sequences | Complex output is little-endian canonical `r`/`i`; sequence bases are fixed-size and cannot contain region references |
 | References | Legacy 8-byte objects and 12-byte regions plus opt-in version-4 object, region and attribute references in datasets, attributes, compounds and arrays | Same-file targets only; regions inside sequences are absent; legacy remains the default |
@@ -74,7 +74,7 @@ through its NumPy dtype bridge.
 | Fills | Default, fixed-size/structured, vlen-string and vlen-sequence fills; optional SOHM | Variable-length fills use the global heap |
 | Shared messages | One SOHM table/heap for whole attributes, fills and filter pipelines; equal fills, attributes and pipelines reuse one message; committed datatypes use wrapper v3 type 2 | Multiple SOHM tables/heaps are not written |
 | Extension | One or more unlimited axes with in-memory resize, append and arbitrary rectangular slab writes; chunk filter masks stay attached to chunk coordinates across shape changes | Multiple unlimited axes use a v2 B-tree; `append_dataset` writes at the trailing corner, `write_dataset_slab` writes at arbitrary coordinates and grows unlimited axes to the slab edge |
-| Value patching | `patch_contiguous_dataset` replaces fixed-size values in an allocated, unfiltered contiguous dataset, including big-endian numeric data, and returns a complete byte image | Bytes-backed `Hdf5File` only; shape and datatype must match; chunked, compact, external, filtered, unallocated, variable-length and reference storage is rejected; metadata is not edited and the dataset is not resized or relaid out |
+| Value patching | `patch_dataset_values` updates fixed-size compact, allocated contiguous and unfiltered chunked values in place, including big-endian numeric data; checksums and chunk padding are preserved and fill-only missing chunks stay sparse. `patch_contiguous_dataset` is contiguous-only. | Bytes-backed `Hdf5File`; exact shape/type; native-size allocated chunks; missing chunks accept only fill values; external, filtered, vlen and reference storage rejected; no resize or relayout |
 
 ## Reproduce
 

@@ -12,6 +12,7 @@ fn read_fixed_array_chunks(
   undefined : UInt64,
   page_bits : Int32,
   selection : Array[UInt64]?,
+  records~ : Array[RawChunkRecord]? = None,
 ) -> Unit raise Hdf5Error {
   guard page_bits > 0 && page_bits <= 31 else {
     raise InvalidField("invalid fixed array page bits")
@@ -109,7 +110,7 @@ fn read_fixed_array_chunks(
   guard storage_size <= bytes.length().to_int64() - entries_start else {
     raise InvalidField("fixed array entries extend beyond input")
   }
-  if output.length() == 0 {
+  if output.length() == 0 && records is None {
     return
   }
   let total = product(current_grid)
@@ -165,6 +166,7 @@ fn read_fixed_array_chunks(
       stored_size = entry.read_var_uint_le(size_width)
       mask = entry.read_u32_le()
     }
+    push_raw_chunk_record(records, offsets.copy(), address, stored_size)
     if !chunk_contains_selection(
         offsets,
         layout.chunk_dimensions,

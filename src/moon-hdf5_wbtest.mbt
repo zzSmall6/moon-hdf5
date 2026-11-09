@@ -886,6 +886,9 @@ test "link info uses address-width-specific undefined addresses" {
               msg_type: msg_link_info,
               flags: b'\x00',
               data: buffer.to_bytes(),
+              data_offset: -1,
+              chunk_start: -1,
+              checksum_offset: -1,
             },
           ],
         }
@@ -922,7 +925,16 @@ test "invalid link info is not treated as an empty group" {
     ] {
     let header : ObjectHeader = {
       _version: 2,
-      messages: [{ msg_type: msg_link_info, flags: b'\x00', data, }],
+      messages: [
+        {
+          msg_type: msg_link_info,
+          flags: b'\x00',
+          data,
+          data_offset: -1,
+          chunk_start: -1,
+          checksum_offset: -1,
+        },
+      ],
     }
     let error = try {
       read_group_links_v2(b"", header, 8, 8, 0UL) |> ignore

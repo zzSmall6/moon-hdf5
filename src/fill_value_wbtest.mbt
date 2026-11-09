@@ -88,6 +88,9 @@ fn fill_test_header(data : Bytes, old~ : Bool = false) -> ObjectHeader {
         },
         flags: b'\x00',
         data,
+        data_offset: -1,
+        chunk_start: -1,
+        checksum_offset: -1,
       },
     ],
   }

@@ -83,7 +83,14 @@ test "v4 dimension widths and truncated metadata are validated" {
     buffer.write_uint64_le(100UL)
     let data = buffer.to_bytes()
     let layout = parse_data_layout(
-      { msg_type: msg_data_layout, flags: b'\x00', data, },
+      {
+        msg_type: msg_data_layout,
+        flags: b'\x00',
+        data,
+        data_offset: -1,
+        chunk_start: -1,
+        checksum_offset: -1,
+      },
       8,
       8,
     )
@@ -94,7 +101,14 @@ test "v4 dimension widths and truncated metadata are validated" {
       let truncated = data.get_view(start=0, end=length).unwrap().to_owned()
       let error = try {
         parse_data_layout(
-          { msg_type: msg_data_layout, flags: b'\x00', data: truncated, },
+          {
+            msg_type: msg_data_layout,
+            flags: b'\x00',
+            data: truncated,
+            data_offset: -1,
+            chunk_start: -1,
+            checksum_offset: -1,
+          },
           8,
           8,
         )

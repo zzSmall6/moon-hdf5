@@ -75,6 +75,8 @@ def verify_file(path: Path) -> None:
             "bounded_names",
             "chunked",
             "chunked_names",
+            "compact",
+            "compact_names",
             "counts",
             "events",
             "external",
@@ -102,6 +104,18 @@ def verify_file(path: Path) -> None:
             handle["experiment/counts"][:], [[1, 2, 3], [4, 5, 6]]
         )
         assert handle["experiment/counts"].dtype == np.dtype("<i8")
+        compact = handle["experiment/compact"]
+        assert compact.id.get_create_plist().get_layout() == h5py.h5d.COMPACT
+        assert compact.dtype == np.dtype("<i4")
+        np.testing.assert_array_equal(compact[:], [7, 8, 9])
+        assert (
+            handle["experiment/compact_names"].id.get_create_plist().get_layout()
+            == h5py.h5d.COMPACT
+        )
+        assert handle["experiment/compact_names"].asstr()[:].tolist() == [
+            "moon",
+            "数据",
+        ]
         references = handle["experiment/references"][:]
         assert handle[references[0]].name == "/experiment/reference_target"
         assert handle[references[1]].name == "/experiment"

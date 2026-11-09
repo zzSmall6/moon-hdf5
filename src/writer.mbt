@@ -314,6 +314,7 @@ pub extend Hdf5WriteFilter with @debug.Debug::{to_repr}
 
 ///|
 priv enum WritableStorage {
+  WritableCompact
   WritableContiguous
   WritableChunked(Array[UInt32], Array[Hdf5WriteFilter])
   WritableExtensible(Array[UInt32], Array[Hdf5WriteFilter], Array[Int32])
@@ -1611,6 +1612,41 @@ pub fn Hdf5Writer::add_dataset(
 }
 
 ///|
+/// Adds a compact dataset whose values are stored inline in the object header.
+/// Empty `dimensions` denotes a scalar dataspace.
+pub fn Hdf5Writer::add_compact_dataset(
+  self : Hdf5Writer,
+  path : String,
+  dimensions : Array[UInt64],
+  values : Hdf5WriteValues,
+) -> Unit raise Hdf5Error {
+  let normalized = canonical_writer_path(path)
+  guard normalized != "/" else {
+    raise InvalidArgument("a dataset cannot replace the root group")
+  }
+  guard !self.has_entry(normalized) else {
+    raise InvalidArgument("writer object path already exists")
+  }
+  validate_write_values(dimensions, values)
+  let count = selection_element_count(dimensions)
+  guard count >= 0 &&
+    count <= 65535L / writer_value_element_size(values).to_int64() else {
+    raise InvalidArgument("compact dataset values exceed 65535 bytes")
+  }
+  self.ensure_groups(writer_parent_path(normalized))
+  self.record_link(normalized)
+  self.datasets.push({
+    path: normalized,
+    dimensions: dimensions.copy(),
+    maximum_dimensions: dimensions.copy(),
+    values: copy_write_values(values),
+    storage: WritableCompact,
+    fill_value: None,
+    chunk_filter_masks: [],
+  })
+}
+
+///|
 fn validate_external_slots(
   slots : Array[Hdf5ExternalSlot],
   expected_size : UInt64,
@@ -1984,7 +2020,7 @@ fn writer_dataset_chunk_grid(
       }
       (dimensions, filters, order, grid_dimensions)
     }
-    WritableContiguous | WritableExternal(_) =>
+    WritableCompact | WritableContiguous | WritableExternal(_) =>
       raise InvalidArgument("dataset does not use chunked storage")
   }
 }
@@ -2625,7 +2661,7 @@ pub fn Hdf5Writer::write_dataset_slab(
     WritableExternal(_) =>
       raise InvalidArgument("external datasets cannot be patched in a builder")
     WritableExtensible(_, _, axes) => axes
-    WritableChunked(_, _) | WritableContiguous => []
+    WritableChunked(_, _) | WritableCompact | WritableContiguous => []
   }
   let rank = dataset.dimensions.length()
   guard offsets.length() == rank && dimensions.length() == rank else {
@@ -3491,6 +3527,16 @@ fn encode_contiguous_layout(address : UInt64, size : Int32) -> Bytes {
   buffer.write_byte(b'\x01')
   buffer.write_uint64_le(address)
   buffer.write_uint64_le(size.to_uint64())
+  buffer.to_bytes()
+}
+
+///|
+fn encode_compact_layout(payload : Bytes) -> Bytes {
+  let buffer = @buffer.Buffer::Buffer(size_hint=4 + payload.length())
+  buffer.write_byte(b'\x03')
+  buffer.write_byte(b'\x00')
+  buffer.write_uint16_le(payload.length().to_uint16())
+  writer_write_bytes(buffer, payload)
   buffer.to_bytes()
 }
 
@@ -4450,7 +4496,7 @@ fn encode_fixed_array_storage(
   let (_, filters) = match dataset.storage {
     WritableChunked(dimensions, filters) => (dimensions, filters)
     WritableExtensible(dimensions, filters, _) => (dimensions, filters)
-    WritableContiguous | WritableExternal(_) =>
+    WritableCompact | WritableContiguous | WritableExternal(_) =>
       raise InvalidField("expected chunked writer dataset")
   }
   let entries = encode_dataset_chunks(dataset, heap, objects)
@@ -6144,7 +6190,7 @@ fn Hdf5Writer::shared_filter_candidates(
         let (chunk_dimensions, pipeline) = match dataset.storage {
           WritableChunked(dimensions, filters) => (dimensions, filters)
           WritableExtensible(dimensions, filters, _) => (dimensions, filters)
-          WritableContiguous | WritableExternal(_) => continue
+          WritableCompact | WritableContiguous | WritableExternal(_) => continue
         }
         if pipeline.length() == 0 {
           continue
@@ -7025,6 +7071,16 @@ fn Hdf5Writer::object_payload(
         None => Bytes::make(encoded.element_size, b'\x00')
       }
       match dataset.storage {
+        WritableCompact => {
+          guard encoded.payload.length() <= 65535 else {
+            raise InvalidField("compact writer dataset exceeds 65535 bytes")
+          }
+          write_header_message(
+            buffer,
+            msg_data_layout,
+            encode_compact_layout(encoded.payload),
+          )
+        }
         WritableContiguous => {
           let address = if encoded.payload.length() == 0 {
             0xFFFFFFFFFFFFFFFFUL
@@ -7743,6 +7799,7 @@ fn assign_writable_addresses(
       WritableDatasetObject(dataset_index) => {
         let dataset = writer.datasets[dataset_index]
         let has_storage = match dataset.storage {
+          WritableCompact => false
           WritableContiguous =>
             encode_write_values(dataset.values, objects~).payload.length() > 0
           WritableChunked(_, _) => true
@@ -7758,6 +7815,7 @@ fn assign_writable_addresses(
             dataspace: objects[index].dataspace,
           }
           offset = match dataset.storage {
+            WritableCompact => offset
             WritableContiguous =>
               writer_align(
                 offset +
@@ -7866,7 +7924,7 @@ fn assign_writable_addresses(
       let (chunk_dimensions, pipeline) = match dataset.storage {
         WritableChunked(dimensions, filters) => (dimensions, filters)
         WritableExtensible(dimensions, filters, _) => (dimensions, filters)
-        WritableContiguous | WritableExternal(_) =>
+        WritableCompact | WritableContiguous | WritableExternal(_) =>
           raise InvalidField("writer shared filter disappeared")
       }
       guard pipeline.length() > 0 else {
@@ -8071,6 +8129,7 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
       WritableDatasetObject(index) => {
         let dataset = self.datasets[index]
         let payload = match dataset.storage {
+          WritableCompact => b""
           WritableContiguous =>
             encode_write_values(dataset.values, heap=layout.heap, objects~).payload
           WritableChunked(_, _) =>

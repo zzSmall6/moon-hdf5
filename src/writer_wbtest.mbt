@@ -47,6 +47,50 @@ test "writer round-trips groups datasets and attributes" {
 }
 
 ///|
+test "writer emits compact datasets and patches them in place" {
+  let writer = Hdf5Writer::new()
+  writer.add_compact_dataset("/scalar", [], Int64Values([42L]))
+  writer.add_compact_dataset("/values", [4UL], Int32Values([1, 2, 3, 4]))
+  writer.add_compact_dataset(
+    "/half",
+    [3UL],
+    Float16Values([Float(-1.5), Float(0.25), Float(1024.0)]),
+  )
+  writer.add_compact_dataset(
+    "/names",
+    [2UL],
+    VariableStringValues(["moon", "数据"]),
+  )
+  writer.add_attribute("/values", "unit", [], FixedStringValues(["items"], 8))
+  let encoded = writer.encode()
+  let file = Hdf5File::parse(encoded)
+  for path in ["/scalar", "/values", "/half", "/names"] {
+    assert_eq(file.read_dataset_metadata(path).layout.kind(), Compact)
+  }
+  assert_eq(integer_values(file.read_dataset("/scalar")), [42L])
+  assert_eq(integer_values(file.read_dataset("/values")), [1L, 2L, 3L, 4L])
+  assert_eq(float_values(file.read_dataset("/half")), [-1.5, 0.25, 1024.0])
+  assert_eq(string_values(file.read_dataset("/names")), ["moon", "数据"])
+
+  let patched = file.patch_dataset_values("/values", Int32Values([9, 8, 7, 6]))
+  let patched_file = Hdf5File::parse(patched)
+  assert_eq(
+    patched_file.read_dataset_metadata("/values").layout.kind(),
+    Compact,
+  )
+  assert_eq(integer_values(patched_file.read_dataset("/values")), [
+    9L, 8L, 7L, 6L,
+  ])
+  assert_eq(string_values(patched_file.read_dataset("/names")), [
+    "moon", "数据",
+  ])
+  match patched_file.attributes("/values")[0].values {
+    Some(Strings(values)) => assert_eq(values, ["items"])
+    _ => abort("expected compact dataset attribute")
+  }
+}
+
+///|
 test "writer encodes complex values as canonical real and imaginary compounds" {
   let writer = Hdf5Writer::new()
   writer.add_dataset(

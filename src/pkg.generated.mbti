@@ -267,6 +267,7 @@ pub fn Hdf5File::chunk_iterator(Self, String, Array[UInt64]) -> DatasetChunkIter
 pub fn Hdf5File::parse(Bytes) -> Self raise Hdf5Error
 pub fn Hdf5File::parse_source(&Hdf5Source) -> Self raise Hdf5Error
 pub fn Hdf5File::patch_contiguous_dataset(Self, String, Hdf5WriteValues) -> Bytes raise Hdf5Error
+pub fn Hdf5File::patch_dataset_values(Self, String, Hdf5WriteValues) -> Bytes raise Hdf5Error
 pub fn Hdf5File::read_attribute_reference(Self, Bytes) -> Attribute? raise Hdf5Error
 pub fn Hdf5File::read_dataset(Self, String) -> Dataset raise Hdf5Error
 pub fn Hdf5File::read_dataset_metadata(Self, String) -> DatasetMetadata raise Hdf5Error
@@ -408,6 +409,7 @@ pub struct Hdf5Writer {
 pub fn Hdf5Writer::add_attribute(Self, String, String, Array[UInt64], Hdf5WriteValues) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_chunked_dataset(Self, String, Array[UInt64], Array[UInt32], Hdf5WriteValues, fill_value? : Hdf5WriteValues, filters? : Array[Hdf5WriteFilter]) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_committed_datatype(Self, String, Datatype) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::add_compact_dataset(Self, String, Array[UInt64], Hdf5WriteValues) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_dataset(Self, String, Array[UInt64], Hdf5WriteValues) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_extensible_dataset(Self, String, Array[UInt64], Array[UInt64?], Array[UInt32], Hdf5WriteValues, fill_value? : Hdf5WriteValues, filters? : Array[Hdf5WriteFilter]) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_external_dataset(Self, String, Array[UInt64], Hdf5WriteValues, Array[Hdf5ExternalSlot], fill_value? : Hdf5WriteValues) -> Unit raise Hdf5Error

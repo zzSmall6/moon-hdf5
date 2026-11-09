@@ -109,7 +109,17 @@ fn parse_dense_link(
   flags : Byte,
   offset_size : Int32,
 ) -> GroupLink raise Hdf5Error {
-  parse_link_message({ msg_type: msg_link, flags, data, }, offset_size)
+  parse_link_message(
+    {
+      msg_type: msg_link,
+      flags,
+      data,
+      data_offset: -1,
+      chunk_start: -1,
+      checksum_offset: -1,
+    },
+    offset_size,
+  )
 }
 
 ///|

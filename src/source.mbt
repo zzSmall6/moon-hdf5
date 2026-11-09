@@ -201,7 +201,14 @@ fn parse_source_v1_messages(
     let flags = block.read_u8()
     block.skip(3)
     let data = block.read_bytes(size)
-    messages.push({ msg_type, flags, data, })
+    messages.push({
+      msg_type,
+      flags,
+      data,
+      data_offset: -1,
+      chunk_start: -1,
+      checksum_offset: -1,
+    })
     if msg_type == msg_object_continuation {
       let continuation = Reader::new(data)
       let continuation_address = continuation.read_uint_le(offset_size)
@@ -250,7 +257,14 @@ fn parse_source_v2_messages(
       block.skip(2)
     }
     let data = block.read_bytes(size)
-    messages.push({ msg_type, flags, data, })
+    messages.push({
+      msg_type,
+      flags,
+      data,
+      data_offset: -1,
+      chunk_start: -1,
+      checksum_offset: -1,
+    })
     if msg_type == msg_object_continuation {
       let continuation = Reader::new(data)
       let continuation_address = continuation.read_uint_le(offset_size)
