@@ -83,7 +83,8 @@ let nodes = file.walk()
 `read_dataset_metadata` does not load values. Selections support compact,
 contiguous and chunked storage, and only intersecting chunks are decoded.
 `chunk_iterator` returns edge-clipped tiles with memory bounded by one tile plus
-the intersecting storage chunk.
+the intersecting storage chunk. For a large hyperslab or point selection, use
+`selection_iterator` to process the result in bounded pages.
 
 ```moonbit nocheck
 ///|
@@ -91,6 +92,17 @@ let chunks = file.chunk_iterator("/matrix", [1UL, 2UL])
 while chunks.next() is Some(chunk) {
   chunk.offset |> ignore
   chunk.values |> ignore
+}
+
+///|
+let pages = file.selection_iterator(
+  "/matrix",
+  @lib.Hyperslab([0UL, 0UL], [1024UL, 1024UL], [1UL, 1UL]),
+  4096,
+)
+while pages.next() is Some(page) {
+  page.offset |> ignore
+  page.values |> ignore
 }
 
 ///|
@@ -218,8 +230,10 @@ the items below summarize the main user-visible gaps.
 
 - **Memory and streaming:** `Hdf5File::parse` requires the complete file bytes.
   `parse_source` provides bounded random access, but `read_dataset` and a single
-  selection result are materialized in memory. Use `chunk_iterator` for large
-  datasets.
+  `read_dataset_selection` result are materialized in memory. Use
+  `chunk_iterator` for large datasets or `selection_iterator` for large
+  selections; both read in bounded pages and never allocate the complete
+  result.
 - **Writer lifecycle:** `Hdf5Writer` is an in-memory builder and `encode` returns
   the complete file. There is no streaming writer, in-place edit or file
   patching. Multi-unlimited resizing and v2 B-tree output are rebuilt for the

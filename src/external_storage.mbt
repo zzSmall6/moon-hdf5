@@ -337,13 +337,14 @@ fn Hdf5Resolver::read_external_dataset(
 }
 
 ///|
-fn Hdf5Resolver::read_external_dataset_selection(
+fn Hdf5Resolver::read_external_dataset_indices(
   self : Hdf5Resolver,
   referring_file : String,
   file : Hdf5File,
   header : ObjectHeader,
   metadata : DatasetMetadata,
-  selection : DatasetSelection,
+  dimensions : Array[UInt64],
+  indices : Array[UInt64],
 ) -> DatasetSelectionResult raise Hdf5Error {
   guard metadata.layout.layout_class == 1 else {
     raise UnsupportedFeature(
@@ -354,7 +355,6 @@ fn Hdf5Resolver::read_external_dataset_selection(
     raise UnsupportedFeature("external data storage cannot be filtered")
   }
   let slots = self.external_data_slots(referring_file, file, header)
-  let (dimensions, indices) = selection_indices(metadata.dataspace, selection)
   let full_count = metadata.dataspace.element_count()
   let payload = external_selection_payload(
     slots,
@@ -377,4 +377,19 @@ fn Hdf5Resolver::read_external_dataset_selection(
     source=Some(source),
   )
   { dimensions, datatype: metadata.datatype, values, }
+}
+
+///|
+fn Hdf5Resolver::read_external_dataset_selection(
+  self : Hdf5Resolver,
+  referring_file : String,
+  file : Hdf5File,
+  header : ObjectHeader,
+  metadata : DatasetMetadata,
+  selection : DatasetSelection,
+) -> DatasetSelectionResult raise Hdf5Error {
+  let (dimensions, indices) = selection_indices(metadata.dataspace, selection)
+  self.read_external_dataset_indices(
+    referring_file, file, header, metadata, dimensions, indices,
+  )
 }

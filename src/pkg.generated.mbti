@@ -107,6 +107,19 @@ pub(all) enum DatasetSelection {
 }
 pub fn DatasetSelection::to_repr(Self) -> @debug.Repr
 
+pub struct DatasetSelectionIterator {
+  // private fields
+}
+pub fn DatasetSelectionIterator::next(Self) -> DatasetSelectionPage? raise Hdf5Error
+
+#derive(@debug.Debug)
+pub(all) struct DatasetSelectionPage {
+  offset : UInt64
+  datatype : Datatype
+  values : DatasetValues
+}
+pub fn DatasetSelectionPage::to_repr(Self) -> @debug.Repr
+
 #derive(@debug.Debug)
 pub(all) struct DatasetSelectionResult {
   dimensions : Array[UInt64]
@@ -245,6 +258,7 @@ pub fn Hdf5File::read_region_reference(Self, Bytes) -> DatasetSelectionResult? r
 pub fn Hdf5File::resolve(Self, String) -> Hdf5Node raise Hdf5Error
 pub fn Hdf5File::resolve_object_reference(Self, Bytes) -> Hdf5ReferenceTarget? raise Hdf5Error
 pub fn Hdf5File::resolve_region_reference(Self, Bytes) -> Hdf5RegionReferenceTarget? raise Hdf5Error
+pub fn Hdf5File::selection_iterator(Self, String, DatasetSelection, Int32) -> DatasetSelectionIterator raise Hdf5Error
 pub fn Hdf5File::superblock_version(Self) -> Int32
 pub fn Hdf5File::walk(Self) -> Array[Hdf5Node] raise Hdf5Error
 
@@ -333,6 +347,7 @@ pub fn Hdf5Resolver::read_dataset(Self, String) -> Dataset raise Hdf5Error
 pub fn Hdf5Resolver::read_dataset_metadata(Self, String) -> DatasetMetadata raise Hdf5Error
 pub fn Hdf5Resolver::read_dataset_selection(Self, String, DatasetSelection) -> DatasetSelectionResult raise Hdf5Error
 pub fn Hdf5Resolver::resolve(Self, String) -> Hdf5ResolvedNode raise Hdf5Error
+pub fn Hdf5Resolver::selection_iterator(Self, String, DatasetSelection, Int32) -> DatasetSelectionIterator raise Hdf5Error
 
 #derive(Eq, @debug.Debug)
 pub(all) enum Hdf5WriteFilter {

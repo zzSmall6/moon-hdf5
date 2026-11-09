@@ -15,6 +15,14 @@ fn external_chunk_integers(chunk : DatasetChunk) -> Array[Int64] {
 }
 
 ///|
+fn external_page_integers(page : DatasetSelectionPage) -> Array[Int64] {
+  match page.values {
+    Integers(values) => values
+    _ => abort("expected external selection page integers")
+  }
+}
+
+///|
 test "external data file names normalize local URIs and reject remotes" {
   assert_eq(external_storage_file_name("data.bin"), "data.bin")
   assert_eq(external_storage_file_name("file:data.bin"), "data.bin")
@@ -101,6 +109,21 @@ test "resolver reads external raw data segments and selections" {
     ),
     [2L, 5L],
   )
+  let pages = resolver.selection_iterator(
+    "/multi",
+    Hyperslab([0UL], [8UL], [1UL]),
+    3,
+  )
+  let first = pages.next().unwrap()
+  assert_eq(first.offset, 0UL)
+  assert_eq(external_page_integers(first), [0L, 1L, 2L])
+  let second = pages.next().unwrap()
+  assert_eq(second.offset, 3UL)
+  assert_eq(external_page_integers(second), [3L, 4L, 5L])
+  let third = pages.next().unwrap()
+  assert_eq(third.offset, 6UL)
+  assert_eq(external_page_integers(third), [6L, 7L])
+  assert_true(pages.next() is None)
 }
 
 ///|
@@ -132,6 +155,23 @@ test "external raw data requires registered sources and the resolver API" {
   }
   assert_true(
     direct_error
+    is Some(
+      UnsupportedFeature("external dataset storage requires Hdf5Resolver")
+    ),
+  )
+  let direct_page_error = try {
+    let pages = direct.selection_iterator(
+      "/multi",
+      Hyperslab([0UL], [2UL], [1UL]),
+      1,
+    )
+    pages.next() |> ignore
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_true(
+    direct_page_error
     is Some(
       UnsupportedFeature("external dataset storage requires Hdf5Resolver")
     ),

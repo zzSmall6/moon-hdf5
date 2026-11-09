@@ -59,12 +59,12 @@ fn coordinate_linear_index(
 }
 
 ///|
-fn hyperslab_indices(
+fn validate_hyperslab(
   dimensions : Array[UInt64],
   start : Array[UInt64],
   count : Array[UInt64],
   stride : Array[UInt64],
-) -> (Array[UInt64], Array[UInt64]) raise Hdf5Error {
+) -> Int64 raise Hdf5Error {
   let rank = dimensions.length()
   guard start.length() == rank &&
     count.length() == rank &&
@@ -96,6 +96,18 @@ fn hyperslab_indices(
   guard total <= 0x7FFFFFFFL else {
     raise InvalidArgument("selection contains too many elements")
   }
+  total
+}
+
+///|
+fn hyperslab_indices(
+  dimensions : Array[UInt64],
+  start : Array[UInt64],
+  count : Array[UInt64],
+  stride : Array[UInt64],
+) -> (Array[UInt64], Array[UInt64]) raise Hdf5Error {
+  let total = validate_hyperslab(dimensions, start, count, stride)
+  let rank = dimensions.length()
   let indices : Array[UInt64] = []
   if total == 0L {
     return (count.copy(), indices)
@@ -118,6 +130,65 @@ fn hyperslab_indices(
     }
   }
   (count.copy(), indices)
+}
+
+///|
+/// Returns the number of values selected by a selection without materializing
+/// the selected indices.
+fn selection_element_total(
+  dataspace : Dataspace,
+  selection : DatasetSelection,
+) -> Int64 raise Hdf5Error {
+  match selection {
+    Hyperslab(start, count, stride) =>
+      validate_hyperslab(dataspace.dimensions, start, count, stride)
+    Points(points) => {
+      if dataspace.kind == Null && points.length() > 0 {
+        raise InvalidArgument("null dataspaces have no selectable points")
+      }
+      for point in points {
+        coordinate_linear_index(point, dataspace.dimensions) |> ignore
+      }
+      points.length().to_int64()
+    }
+  }
+}
+
+///|
+/// Returns one selected linear dataset index in selection order. This is used
+/// by bounded-memory selection readers and avoids allocating a complete index
+/// array for large hyperslabs.
+fn selection_index_at(
+  dataspace : Dataspace,
+  selection : DatasetSelection,
+  ordinal : Int64,
+) -> UInt64 raise Hdf5Error {
+  match selection {
+    Hyperslab(start, count, stride) => {
+      let rank = dataspace.dimensions.length()
+      let positions = Array::make(rank, 0UL)
+      let mut remaining = ordinal
+      let mut axis = rank - 1
+      while axis >= 0 {
+        let width = count[axis].reinterpret_as_int64()
+        positions[axis] = (remaining % width).reinterpret_as_uint64()
+        remaining = remaining / width
+        axis = axis - 1
+      }
+      let coordinate = Array::make(rank, 0UL)
+      for dimension in 0..<rank {
+        coordinate[dimension] = start[dimension] +
+          positions[dimension] * stride[dimension]
+      }
+      coordinate_linear_index(coordinate, dataspace.dimensions)
+    }
+    Points(points) => {
+      guard ordinal >= 0 && ordinal < points.length().to_int64() else {
+        raise InvalidArgument("selection ordinal is outside the point list")
+      }
+      coordinate_linear_index(points[ordinal.to_int()], dataspace.dimensions)
+    }
+  }
 }
 
 ///|
