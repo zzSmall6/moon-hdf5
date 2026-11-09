@@ -30,6 +30,8 @@ pub(all) enum DatasetValue {
   ObjectReference(String?)
   /// Writer input for a legacy dataset-region reference.
   RegionReference(String?, Hdf5RegionSelection)
+  /// Writer input for a version-4 attribute reference.
+  AttributeReference(String?, String)
   Reference(Bytes)
   Sequence(Array[DatasetValue])
   Time(UInt64)

@@ -7,12 +7,14 @@ v1.0 delivery profile and post-v1.0 extensions.
 
 The release gate passes on the current worktree:
 
-- wasm: 253 tests passed;
-- native: 253 tests passed;
+- wasm: 261 tests passed;
+- native: 261 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - writer demo verified by h5py 3.13.0/HDF5 1.14.6;
 - numeric-layout, scale-offset, vlen-fill, NetCDF-4, external-storage,
   shared-message, hard-link, MATLAB-compatible and reference fixtures verified.
+- the version-4 reference fixture and writer output are exercised by MoonBit
+  round-trip tests.
 
 The implementation remains a documented HDF5 subset. Known unsupported
 structures raise errors; detection is not exhaustive.
@@ -27,7 +29,7 @@ structures raise errors; detection is not exhaustive.
 | Fill policies | Default, custom, undefined and `FILL_TIME_NEVER`; malformed messages and external-storage boundaries remain rejected |
 | Filters | Shuffle, deflate, Fletcher32, integer/f32/f64 scale-offset, masks and fill markers |
 | Datatypes | Fixed-point, IEEE/normalized floats, strings, compound, enum, array, time, bitfield, opaque, sequence, references, complex |
-| References | 4-/8-byte object references and legacy region references against compact, contiguous and filtered targets |
+| References | 4-/8-byte object references, legacy region references and version-4 object/region/attribute references against compact, contiguous and filtered targets |
 | Shared messages | Table/indexes/heaps, wrappers v1–v3, field sharing, fills, filter pipelines, whole attributes and committed targets |
 | Writer | Superblock v3, OHDR/OCHK, dense metadata, chunk indexes, SOHM, references and external slots |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
@@ -59,6 +61,12 @@ Variable-length values read global-heap objects on demand. Dataset-region
 references resolve a selection against a same-file dataset and reuse the normal
 selection and filter path. Null references return `None`; dangling addresses are
 rejected. Region results remain memory resident.
+
+Version-4 reference slots are recognized from the datatype width and validated
+by type and flag bytes. Region and attribute payloads are fetched from their
+global heap with exact blob-size checks. Attribute-reference names are decoded
+as UTF-8 and resolved through the native attribute collection. External-file
+flags are rejected instead of being misread as local heap identifiers.
 
 `Hdf5Resolver` is the multi-source boundary. It follows chained external links,
 rejects cycles, reports unregistered sources and reads contiguous external
@@ -147,8 +155,8 @@ heaps and heap extension across multiple blocks are not emitted.
   incremental insertion at interior coordinates is not exposed.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
-- Version-4 encoded references and high-level netCDF-4/MATLAB semantics remain
-  outside the profile.
+- Version-4 references to external files and high-level netCDF-4/MATLAB
+  semantics remain outside the profile.
 
 ## Milestones
 
@@ -173,3 +181,6 @@ heaps and heap extension across multiple blocks are not emitted.
 - 2026-11-09: bounded-memory selection iterators, arbitrary-coordinate writer
   slabs, contiguous allocated-value patching and caller-registered dataset
   chunk filters, with native/wasm release verification.
+- 2026-11-09: version-4 object, region and attribute reference reading, plus
+  opt-in version-4 reference writing with global-heap payloads and
+  fixture-backed round-trip tests.

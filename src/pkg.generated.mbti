@@ -141,6 +141,7 @@ pub(all) enum DatasetValue {
   Elements(Array[DatasetValue])
   ObjectReference(String?)
   RegionReference(String?, Hdf5RegionSelection)
+  AttributeReference(String?, String)
   Reference(Bytes)
   Sequence(Array[DatasetValue])
   Time(UInt64)
@@ -220,6 +221,9 @@ pub fn Datatype::write_object_reference() -> Self
 pub fn Datatype::write_opaque(Int32, String) -> Self raise Hdf5Error
 pub fn Datatype::write_region_reference() -> Self
 pub fn Datatype::write_time(Int32, little_endian? : Bool) -> Self raise Hdf5Error
+pub fn Datatype::write_version4_attribute_reference() -> Self
+pub fn Datatype::write_version4_object_reference() -> Self
+pub fn Datatype::write_version4_region_reference() -> Self
 pub fn Datatype::write_vlen_sequence(Self) -> Self raise Hdf5Error
 
 #derive(@debug.Debug)
@@ -238,6 +242,17 @@ pub fn EnumValue::equal(Self, Self) -> Bool
 pub fn EnumValue::not_equal(Self, Self) -> Bool
 pub fn EnumValue::to_repr(Self) -> @debug.Repr
 
+#derive(Eq, @debug.Debug)
+pub(all) struct Hdf5AttributeReferenceTarget {
+  address : UInt64
+  kind : Hdf5ObjectKind
+  path : String?
+  attribute_name : String
+}
+pub fn Hdf5AttributeReferenceTarget::equal(Self, Self) -> Bool
+pub fn Hdf5AttributeReferenceTarget::not_equal(Self, Self) -> Bool
+pub fn Hdf5AttributeReferenceTarget::to_repr(Self) -> @debug.Repr
+
 pub(all) struct Hdf5ExternalSlot {
   file_name : String
   file_offset : UInt64
@@ -252,11 +267,13 @@ pub fn Hdf5File::chunk_iterator(Self, String, Array[UInt64]) -> DatasetChunkIter
 pub fn Hdf5File::parse(Bytes) -> Self raise Hdf5Error
 pub fn Hdf5File::parse_source(&Hdf5Source) -> Self raise Hdf5Error
 pub fn Hdf5File::patch_contiguous_dataset(Self, String, Hdf5WriteValues) -> Bytes raise Hdf5Error
+pub fn Hdf5File::read_attribute_reference(Self, Bytes) -> Attribute? raise Hdf5Error
 pub fn Hdf5File::read_dataset(Self, String) -> Dataset raise Hdf5Error
 pub fn Hdf5File::read_dataset_metadata(Self, String) -> DatasetMetadata raise Hdf5Error
 pub fn Hdf5File::read_dataset_selection(Self, String, DatasetSelection) -> DatasetSelectionResult raise Hdf5Error
 pub fn Hdf5File::read_region_reference(Self, Bytes) -> DatasetSelectionResult? raise Hdf5Error
 pub fn Hdf5File::resolve(Self, String) -> Hdf5Node raise Hdf5Error
+pub fn Hdf5File::resolve_attribute_reference(Self, Bytes) -> Hdf5AttributeReferenceTarget? raise Hdf5Error
 pub fn Hdf5File::resolve_object_reference(Self, Bytes) -> Hdf5ReferenceTarget? raise Hdf5Error
 pub fn Hdf5File::resolve_region_reference(Self, Bytes) -> Hdf5RegionReferenceTarget? raise Hdf5Error
 pub fn Hdf5File::selection_iterator(Self, String, DatasetSelection, Int32) -> DatasetSelectionIterator raise Hdf5Error

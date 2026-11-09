@@ -19,7 +19,8 @@ test "writer round-trips groups datasets and attributes" {
     FixedStringValues(["items"], 8),
   )
 
-  let file = Hdf5File::parse(writer.encode())
+  let encoded = writer.encode()
+  let file = Hdf5File::parse(encoded)
   assert_eq(file.superblock.version, 3)
   assert_eq(file.walk().map(node => node.path), [
     "/science", "/science/results", "/science/results/counts", "/weight", "/labels",
@@ -1373,6 +1374,173 @@ test "writer writes region references nested in structured values" {
       }
     None => abort("expected prototype attribute")
   }
+}
+
+///|
+test "writer round-trips version-4 references" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/target", [6UL], Int64Values([0L, 1L, 2L, 3L, 4L, 5L]))
+  writer.add_dataset(
+    "/matrix",
+    [2UL, 3UL],
+    Int64Values([0L, 1L, 2L, 3L, 4L, 5L]),
+  )
+  writer.add_group("/group")
+  writer.add_attribute("/target", "unit", [], Int64Values([7L]))
+  writer.add_attribute("/matrix", "unit", [], Int64Values([11L]))
+
+  let object_type = Datatype::write_version4_object_reference()
+  writer.add_dataset(
+    "/objects",
+    [4UL],
+    StructuredValues(object_type, [
+      ObjectReference(Some("/target")),
+      ObjectReference(Some("/group")),
+      ObjectReference(Some("/matrix")),
+      ObjectReference(None),
+    ]),
+  )
+
+  let region_type = Datatype::write_version4_region_reference()
+  writer.add_dataset(
+    "/regions",
+    [2UL],
+    StructuredValues(region_type, [
+      RegionReference(
+        Some("/target"),
+        RegionHyperslab([1UL], [2UL], [2UL], [1UL]),
+      ),
+      RegionReference(None, RegionEmpty),
+    ]),
+  )
+
+  let attribute_type = Datatype::write_version4_attribute_reference()
+  writer.add_dataset(
+    "/attributes",
+    [3UL],
+    StructuredValues(attribute_type, [
+      AttributeReference(Some("/target"), "unit"),
+      AttributeReference(Some("/matrix"), "unit"),
+      AttributeReference(None, ""),
+    ]),
+  )
+
+  let encoded = writer.encode()
+  let file = Hdf5File::parse(encoded)
+  let object_metadata = file.read_dataset_metadata("/objects").datatype
+  assert_eq(object_metadata.version, 4)
+  assert_eq(object_metadata.reference_kind, 2)
+  assert_eq(object_metadata.size, 18)
+  let objects = reference_value_bytes(file.read_dataset("/objects"))
+  let target = file.resolve("/target")
+  assert_eq(
+    file.resolve_object_reference(objects[0]),
+    Some({ address: target.address, kind: Dataset, path: Some("/target"), }),
+  )
+  let group = file.resolve("/group")
+  assert_eq(
+    file.resolve_object_reference(objects[1]),
+    Some({ address: group.address, kind: Group, path: Some("/group"), }),
+  )
+  assert_true(file.resolve_object_reference(objects[3]) is None)
+
+  let region_metadata = file.read_dataset_metadata("/regions").datatype
+  assert_eq(region_metadata.version, 4)
+  assert_eq(region_metadata.reference_kind, 3)
+  let regions = reference_value_bytes(file.read_dataset("/regions"))
+  let region = match file.resolve_region_reference(regions[0]) {
+    Some(region) => region
+    None => abort("expected a version-4 region reference")
+  }
+  assert_eq(region.path, Some("/target"))
+  assert_eq(region.selection, RegionHyperslab([1UL], [2UL], [2UL], [1UL]))
+  assert_eq(writer_region_integer_values(file, regions[0]), [1L, 3L])
+  assert_true(file.resolve_region_reference(regions[1]) is None)
+
+  let attribute_metadata = file.read_dataset_metadata("/attributes").datatype
+  assert_eq(attribute_metadata.version, 4)
+  assert_eq(attribute_metadata.reference_kind, 4)
+  let references = reference_value_bytes(file.read_dataset("/attributes"))
+  assert_eq(
+    file.resolve_attribute_reference(references[0]),
+    Some({
+      address: target.address,
+      kind: Dataset,
+      path: Some("/target"),
+      attribute_name: "unit",
+    }),
+  )
+  let attribute = match file.read_attribute_reference(references[1]) {
+    Some(attribute) => attribute
+    None => abort("expected a version-4 attribute reference")
+  }
+  assert_eq(attribute.name, "unit")
+  match attribute.values {
+    Some(Integers(values)) => assert_eq(values, [11L])
+    _ => abort("expected the referenced attribute value")
+  }
+  assert_true(file.resolve_attribute_reference(references[2]) is None)
+}
+
+///|
+test "writer validates version-4 reference inputs" {
+  let wrong_attribute_kind = try {
+    let writer = Hdf5Writer::new()
+    writer.add_dataset(
+      "/refs",
+      [1UL],
+      StructuredValues(Datatype::write_version4_attribute_reference(), [
+        ObjectReference(None),
+      ]),
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    wrong_attribute_kind,
+    Some(InvalidArgument("attribute reference value has the wrong kind")),
+  )
+
+  let missing_attribute = try {
+    let writer = Hdf5Writer::new()
+    writer.add_dataset("/target", [1UL], Int64Values([1L]))
+    writer.add_dataset(
+      "/refs",
+      [1UL],
+      StructuredValues(Datatype::write_version4_attribute_reference(), [
+        AttributeReference(Some("/target"), "missing"),
+      ]),
+    )
+    writer.encode() |> ignore
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    missing_attribute,
+    Some(
+      InvalidArgument(
+        "attribute reference attribute does not exist: /target.missing",
+      ),
+    ),
+  )
+
+  let sequence_region = try {
+    Datatype::write_vlen_sequence(Datatype::write_version4_region_reference())
+    |> ignore
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    sequence_region,
+    Some(
+      InvalidArgument(
+        "writer variable-length sequence base cannot contain region references",
+      ),
+    ),
+  )
 }
 
 ///|

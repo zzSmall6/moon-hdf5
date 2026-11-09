@@ -44,7 +44,8 @@ instead, use the commands in [Quick Start](#quick-start).
   float16/32/64, normalized binary floats with implied MSB, strings, compound,
   enum, array, time, bitfield, opaque, sequence, reference and complex values.
 - Hyperslab and ordered-point reads, metadata-only reads, bounded-memory chunk
-  iteration, object-reference resolution and dataset-region-reference reads.
+  iteration, legacy and version-4 object/region references, and version-4
+  attribute-reference reads.
 - SOHM reading and optional writing: shared attributes, filter pipelines,
   datatype/dataspace fields, fills and named committed datatypes.
 - New-file output for groups, datasets, attributes, links, committed datatypes,
@@ -117,10 +118,12 @@ let remote = resolver.read_dataset("/experiment/remote_counts")
 ```
 
 Simple values use `Integers`, `UnsignedIntegers`, `Floats`, `Strings` or
-`Enums`; other datatypes use recursive `Structured` values. References are
-returned as encoded bytes and can be resolved with
-`resolve_object_reference`, `resolve_region_reference` or
-`read_region_reference`. Region targets must be datasets in the same file.
+`Enums`; other datatypes use recursive `Structured` values. Legacy and
+version-4 references are returned as encoded bytes and can be resolved with
+`resolve_object_reference`, `resolve_region_reference`,
+`read_region_reference`, `resolve_attribute_reference` or
+`read_attribute_reference`. Region and attribute targets must be in the same
+file.
 
 `Hdf5Resolver` follows hard, soft and external links across registered
 `Hdf5Source` values, rejects cycles and reports unregistered targets. It also
@@ -216,6 +219,35 @@ let output = writer.encode()
 - Variable-length strings and sequences share a global heap. Sequence bases must
   be fixed-size and cannot contain region references.
 
+Version-4 references are opt-in per datatype; existing code keeps writing the
+legacy 8-byte object and 12-byte region forms:
+
+```moonbit nocheck
+///|
+let object_type = @lib.Datatype::write_version4_object_reference()
+let region_type = @lib.Datatype::write_version4_region_reference()
+let attribute_type = @lib.Datatype::write_version4_attribute_reference()
+writer.add_dataset(
+  "/experiment/object_refs",
+  [2UL],
+  @lib.StructuredValues(object_type, [
+    @lib.ObjectReference(Some("/experiment/counts")),
+    @lib.ObjectReference(None),
+  ]),
+)
+writer.add_dataset(
+  "/experiment/attribute_refs",
+  [1UL],
+  @lib.StructuredValues(attribute_type, [
+    @lib.AttributeReference(Some("/experiment/records"), "unit"),
+  ]),
+)
+```
+
+The writer emits 18-byte reference slots in its 8-byte-address output. Region
+and attribute payloads are stored in a dedicated global heap. References to
+external files are rejected with `UnsupportedFeature`.
+
 ### Patching contiguous values
 
 ```moonbit nocheck
@@ -305,10 +337,12 @@ the items below summarize the main user-visible gaps.
 - **Variable-length structures:** sequence bases must be fixed-size and cannot
   contain region references. Custom variable-length string and sequence fills
   are stored through the global heap.
-- **References:** support covers legacy object and dataset-region forms under
-  4- and 8-byte addresses. Object targets need a named hard link; region targets
-  must be datasets in the same file. Version-4 encoded references are
-  unsupported.
+- **References:** support covers legacy object and dataset-region forms plus
+  version-4 object, dataset-region and attribute forms. Version-4 references to
+  external files are unsupported, and region and attribute targets must be in
+  the same file. An object target with no named hard link resolves with a null
+  path. The writer keeps legacy references unless a version-4 datatype is
+  requested explicitly.
 - **Unlimited dimensions:** `append_dataset` writes only at the trailing edge of
   every unlimited axis. Use `write_dataset_slab` for interior writes and
   arbitrary rectangular placement; unlimited axes grow to the slab's trailing

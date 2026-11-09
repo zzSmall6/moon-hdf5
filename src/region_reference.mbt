@@ -311,14 +311,16 @@ fn Hdf5File::read_reference_heap_object(
 /// Resolves a legacy HDF5 dataset-region reference.
 ///
 /// The all-zero null reference returns `None`. The target must be a dataset in
-/// the same file. Region selection versions 1-3 for hyperslabs, versions 1-2
-/// for points, and all/none selections are supported. Version-4 encoded
-/// references are not supported.
+/// the same file. Legacy and version-4 encoded references are supported, but
+/// version-4 references to external files are not.
 pub fn Hdf5File::resolve_region_reference(
   self : Hdf5File,
   reference : Bytes,
 ) -> Hdf5RegionReferenceTarget? raise Hdf5Error {
   let offset_size = self.superblock.offset_size
+  if is_version4_reference(reference, offset_size) {
+    return self.version4_region_reference_target(reference)
+  }
   let reference_size = offset_size + 4
   guard reference.length() == reference_size else {
     raise InvalidField(
@@ -368,6 +370,77 @@ pub fn Hdf5File::resolve_region_reference(
   let selection = parse_region_selection(payload_reader, metadata.dataspace)
   let path = self.find_reference_path(address)
   Some({ address, kind, path, dataspace: metadata.dataspace, selection, })
+}
+
+///|
+fn Hdf5File::version4_region_reference_target(
+  self : Hdf5File,
+  reference : Bytes,
+) -> Hdf5RegionReferenceTarget? raise Hdf5Error {
+  let offset_size = self.superblock.offset_size
+  let (kind, flags, reader) = version4_reference_header(reference)
+  if kind == 0 {
+    guard flags == 0 && reference_is_null(reference) else {
+      raise InvalidField("invalid null version-4 reference")
+    }
+    return None
+  }
+  guard kind == 3 else {
+    if kind == 2 {
+      raise InvalidArgument(
+        "object references require resolve_object_reference",
+      )
+    } else if kind == 4 {
+      raise InvalidArgument(
+        "attribute references require resolve_attribute_reference",
+      )
+    }
+    raise InvalidField("invalid version-4 reference type")
+  }
+  let payload = self.version4_indirect_payload(flags, reader)
+  let blob = Reader::new(payload)
+  let token_size = blob.read_u8().to_int()
+  guard token_size == offset_size else {
+    raise UnsupportedFeature(
+      "version-4 reference token size " +
+      token_size.to_string() +
+      " does not match the file address size",
+    )
+  }
+  let address = blob.read_uint_le(token_size)
+  let selection_size = blob.read_u32_le().reinterpret_as_int()
+  let rank = blob.read_u32_le().reinterpret_as_int()
+  guard selection_size >= 0 && selection_size <= blob.remaining() else {
+    raise InvalidField("version-4 region reference selection is truncated")
+  }
+  let header = self.object_header_at(address) catch {
+    error =>
+      raise InvalidField(
+        "version-4 region reference target is not a valid object header: " +
+        error.message(),
+      )
+  }
+  guard object_kind(header) == Dataset else {
+    raise InvalidField("region-reference target is not a dataset")
+  }
+  let metadata = read_dataset_metadata(
+    header,
+    offset_size,
+    self.superblock.length_size,
+  )
+  guard rank == metadata.dataspace.dimensions.length() else {
+    raise InvalidField("version-4 region selection rank does not match")
+  }
+  let selection_reader = blob.sub(blob.position(), selection_size)
+  let selection = parse_region_selection(selection_reader, metadata.dataspace)
+  let path = self.find_reference_path(address)
+  Some({
+    address,
+    kind: Dataset,
+    path,
+    dataspace: metadata.dataspace,
+    selection,
+  })
 }
 
 ///|

@@ -69,6 +69,15 @@ path. Legacy dataset-region references resolve a global-heap selection against a
 same-file dataset; selected-value reads reuse the normal selection and filter
 path. Null references return `None`; dangling targets are rejected.
 
+Version-4 references reuse the same public encoded-byte API. Object references
+carry an address token directly; region and attribute references carry a blob
+size plus a global-heap address and index. Attribute payloads add a UTF-8
+attribute name, and resolved values go through the normal attribute decoder.
+The writer selects version-4 encodings only when the caller constructs the
+matching datatype; legacy 8-byte objects and 12-byte regions remain the default.
+References marked as pointing into external files are rejected until the
+resolver-backed reference path is extended.
+
 ## External sources
 
 `Hdf5Resolver` owns named `Hdf5Source` values. The primary source is `<root>`;
@@ -151,6 +160,9 @@ exact encoded sizes. References store paths and resolve to addresses after final
 layout, so forward targets work. Region references use a dedicated global heap
 because mixing them with string or sequence heap objects can corrupt HDF5 1.14.6
 bookkeeping.
+Version-4 region and attribute payloads share that dedicated heap. The writer
+validates attribute-reference targets before encoding and emits zero-filled
+slots for null references.
 
 Variable-length strings and sequences use 16-byte descriptors and one shared
 global heap; repeated payloads and custom fills share heap objects. Sequence

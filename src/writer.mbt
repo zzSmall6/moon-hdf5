@@ -27,6 +27,7 @@ pub extend Hdf5WriteValues with @debug.Debug::{to_repr}
 fn writer_datatype(
   class : Int32,
   size : Int32,
+  version~ : Int32 = 3,
   signed~ : Bool = false,
   little_endian~ : Bool = true,
   reference_kind~ : Int32 = 0,
@@ -40,7 +41,7 @@ fn writer_datatype(
 ) -> Datatype {
   {
     class,
-    version: 3,
+    version,
     size,
     signed,
     little_endian,
@@ -217,6 +218,24 @@ pub fn Datatype::write_object_reference() -> Datatype {
 /// Creates a legacy dataset-region reference datatype.
 pub fn Datatype::write_region_reference() -> Datatype {
   writer_datatype(7, 12, reference_kind=1)
+}
+
+///|
+/// Creates a version-4 object-reference datatype for structured writes.
+pub fn Datatype::write_version4_object_reference() -> Datatype {
+  writer_datatype(7, 18, version=4, reference_kind=2)
+}
+
+///|
+/// Creates a version-4 dataset-region reference datatype.
+pub fn Datatype::write_version4_region_reference() -> Datatype {
+  writer_datatype(7, 18, version=4, reference_kind=3)
+}
+
+///|
+/// Creates a version-4 attribute-reference datatype.
+pub fn Datatype::write_version4_attribute_reference() -> Datatype {
+  writer_datatype(7, 18, version=4, reference_kind=4)
 }
 
 ///|
@@ -739,6 +758,7 @@ fn copy_dataset_value(value : DatasetValue) -> DatasetValue {
     Sequence(items) => Sequence(items.map(copy_dataset_value))
     Opaque(bytes) => Opaque(bytes)
     Reference(bytes) => Reference(bytes)
+    AttributeReference(path, name) => AttributeReference(path, name)
     RegionReference(path, selection) =>
       RegionReference(path, copy_region_selection(selection))
     _ => value
@@ -812,7 +832,8 @@ fn validate_writer_datatype_name(
 
 ///|
 fn datatype_contains_region_reference(datatype : Datatype) -> Bool {
-  if datatype.class == 7 && datatype.reference_kind == 1 {
+  if datatype.class == 7 &&
+    (datatype.reference_kind == 1 || datatype.reference_kind == 3) {
     return true
   }
   for field in datatype.compound_members {
@@ -922,8 +943,22 @@ fn validate_writer_datatype(
       }
     }
     7 => {
-      guard (datatype.reference_kind == 0 && datatype.size == 8) ||
-        (datatype.reference_kind == 1 && datatype.size == 12) else {
+      guard (
+          datatype.version == 3 &&
+          (
+            (datatype.reference_kind == 0 && datatype.size == 8) ||
+            (datatype.reference_kind == 1 && datatype.size == 12)
+          )
+        ) ||
+        (
+          datatype.version == 4 &&
+          datatype.size == 18 &&
+          (
+            datatype.reference_kind == 2 ||
+            datatype.reference_kind == 3 ||
+            datatype.reference_kind == 4
+          )
+        ) else {
         raise InvalidArgument("writer reference datatype is unsupported")
       }
     }
@@ -1101,7 +1136,7 @@ fn validate_structured_value(
       }
     }
     7 =>
-      if datatype.reference_kind == 0 {
+      if datatype.reference_kind == 0 || datatype.reference_kind == 2 {
         guard value is ObjectReference(path) else {
           raise InvalidArgument("object reference value has the wrong kind")
         }
@@ -1109,12 +1144,28 @@ fn validate_structured_value(
           Some(target) => canonical_writer_path(target) |> ignore
           None => ()
         }
-      } else {
+      } else if datatype.reference_kind == 1 || datatype.reference_kind == 3 {
         guard value is RegionReference(path, _) else {
           raise InvalidArgument("region reference value has the wrong kind")
         }
         match path {
           Some(target) => canonical_writer_path(target) |> ignore
+          None => ()
+        }
+      } else {
+        guard value is AttributeReference(path, name) else {
+          raise InvalidArgument("attribute reference value has the wrong kind")
+        }
+        match path {
+          Some(target) => {
+            canonical_writer_path(target) |> ignore
+            let encoded_name = @utf8.encode(name)
+            guard encoded_name.length() > 0 && encoded_name.length() <= 65535 else {
+              raise InvalidArgument(
+                "writer attribute reference name is invalid",
+              )
+            }
+          }
           None => ()
         }
       }
@@ -2141,8 +2192,10 @@ fn default_structured_value(
         }),
       )
     7 =>
-      if datatype.reference_kind == 1 {
+      if datatype.reference_kind == 1 || datatype.reference_kind == 3 {
         RegionReference(None, RegionEmpty)
+      } else if datatype.reference_kind == 4 {
+        AttributeReference(None, "")
       } else {
         ObjectReference(None)
       }
@@ -2761,7 +2814,12 @@ fn encode_writer_datatype(datatype : Datatype) -> Bytes raise Hdf5Error {
       }
       buffer.to_bytes()
     }
-    7 => encode_reference_datatype(datatype.size, datatype.reference_kind)
+    7 =>
+      encode_reference_datatype(
+        datatype.size,
+        datatype.reference_kind,
+        datatype.version,
+      )
     8 => {
       let buffer = @buffer.Buffer::Buffer()
       buffer.write_byte(b'\x38')
@@ -2910,7 +2968,68 @@ fn encode_structured_value(
         _ => ()
       }
     7 =>
-      if datatype.reference_kind == 0 {
+      if datatype.version >= 4 {
+        match (datatype.reference_kind, value) {
+          (2, ObjectReference(path)) =>
+            match path {
+              None => writer_write_zeros(buffer, datatype.size)
+              Some(target) => {
+                let address = writer_reference_address(objects, target)
+                buffer.write_byte(b'\x02')
+                buffer.write_byte(b'\x00')
+                buffer.write_byte(b'\x08')
+                buffer.write_uint64_le(address)
+                writer_write_zeros(buffer, datatype.size - 11)
+              }
+            }
+          (3, RegionReference(path, selection)) =>
+            match path {
+              None => writer_write_zeros(buffer, datatype.size)
+              Some(target) => {
+                let payload = writer_region_reference_payload(
+                  objects,
+                  target,
+                  selection,
+                  version4=true,
+                )
+                guard payload.length() <= 0x7FFFFFFF else {
+                  raise InvalidArgument(
+                    "version-4 region reference payload is too large",
+                  )
+                }
+                buffer.write_byte(b'\x03')
+                buffer.write_byte(b'\x00')
+                buffer.write_uint_le(payload.length().reinterpret_as_uint())
+                buffer.write_uint64_le(heap.region_address)
+                buffer.write_uint_le(
+                  writable_region_heap_index(heap, payload).reinterpret_as_uint(),
+                )
+              }
+            }
+          (4, AttributeReference(path, name)) =>
+            match path {
+              None => writer_write_zeros(buffer, datatype.size)
+              Some(target) => {
+                let payload = writer_attribute_reference_payload(
+                  objects, target, name,
+                )
+                guard payload.length() <= 0x7FFFFFFF else {
+                  raise InvalidArgument(
+                    "version-4 attribute reference payload is too large",
+                  )
+                }
+                buffer.write_byte(b'\x04')
+                buffer.write_byte(b'\x00')
+                buffer.write_uint_le(payload.length().reinterpret_as_uint())
+                buffer.write_uint64_le(heap.region_address)
+                buffer.write_uint_le(
+                  writable_region_heap_index(heap, payload).reinterpret_as_uint(),
+                )
+              }
+            }
+          _ => ()
+        }
+      } else if datatype.reference_kind == 0 {
         match value {
           ObjectReference(path) => {
             let address = match path {
@@ -3032,14 +3151,20 @@ fn encode_variable_string_datatype() -> Bytes {
 
 ///|
 fn encode_object_reference_datatype() -> Bytes {
-  encode_reference_datatype(8, 0)
+  encode_reference_datatype(8, 0, 3)
 }
 
 ///|
-fn encode_reference_datatype(size : Int32, reference_kind : Int32) -> Bytes {
+fn encode_reference_datatype(
+  size : Int32,
+  reference_kind : Int32,
+  version : Int32,
+) -> Bytes {
   let buffer = @buffer.Buffer::Buffer(size_hint=8)
-  buffer.write_byte(b'\x17')
-  buffer.write_byte(reference_kind.to_byte())
+  let encoded_version = if version >= 4 { version } else { 1 }
+  buffer.write_byte(((encoded_version << 4) | 7).to_byte())
+  let flags = if version >= 4 { 0x10 | reference_kind } else { reference_kind }
+  buffer.write_byte(flags.to_byte())
   buffer.write_byte(b'\x00')
   buffer.write_byte(b'\x00')
   buffer.write_uint_le(size.reinterpret_as_uint())
@@ -6648,6 +6773,7 @@ fn writer_region_reference_payload(
   objects : Array[WritableObject],
   path : String,
   selection : Hdf5RegionSelection,
+  version4~ : Bool = false,
 ) -> Bytes raise Hdf5Error {
   let canonical = canonical_writer_path(path)
   let object = match objects.search_by(item => item.path == canonical) {
@@ -6670,8 +6796,44 @@ fn writer_region_reference_payload(
     raise InvalidArgument("region reference target has a null dataspace")
   }
   let buffer = @buffer.Buffer::Buffer()
+  if version4 {
+    buffer.write_byte(b'\x08')
+  }
   buffer.write_uint64_le(object.address)
-  writer_write_bytes(buffer, encode_region_selection(dataspace, selection))
+  if version4 {
+    let encoded_selection = encode_region_selection(dataspace, selection)
+    buffer.write_uint_le(encoded_selection.length().reinterpret_as_uint())
+    buffer.write_uint_le(dataspace.dimensions.length().reinterpret_as_uint())
+    writer_write_bytes(buffer, encoded_selection)
+  } else {
+    writer_write_bytes(buffer, encode_region_selection(dataspace, selection))
+  }
+  buffer.to_bytes()
+}
+
+///|
+fn writer_attribute_reference_payload(
+  objects : Array[WritableObject],
+  path : String,
+  name : String,
+) -> Bytes raise Hdf5Error {
+  let canonical = canonical_writer_path(path)
+  let object = match objects.search_by(item => item.path == canonical) {
+    Some(index) => objects[index]
+    None =>
+      raise InvalidArgument(
+        "attribute reference target does not exist: " + canonical,
+      )
+  }
+  let encoded_name = @utf8.encode(name)
+  guard encoded_name.length() > 0 && encoded_name.length() <= 65535 else {
+    raise InvalidArgument("writer attribute reference name is invalid")
+  }
+  let buffer = @buffer.Buffer::Buffer(size_hint=11 + encoded_name.length())
+  buffer.write_byte(b'\x08')
+  buffer.write_uint64_le(object.address)
+  buffer.write_uint16_le(encoded_name.length().to_uint16())
+  writer_write_bytes(buffer, encoded_name)
   buffer.to_bytes()
 }
 
@@ -7057,6 +7219,7 @@ fn collect_heap_regions(
   datatype : Datatype,
   value : DatasetValue,
   objects : Array[WritableObject],
+  attributes : Array[WritableAttribute],
 ) -> Unit raise Hdf5Error {
   match datatype.class {
     6 =>
@@ -7068,16 +7231,47 @@ fn collect_heap_regions(
               datatype.compound_members[index].datatype,
               fields[index].value,
               objects,
+              attributes,
             )
           }
         _ => ()
       }
     7 =>
-      if datatype.reference_kind == 1 {
+      if datatype.reference_kind == 1 || datatype.reference_kind == 3 {
         match value {
           RegionReference(Some(target), selection) => {
             let payload = writer_region_reference_payload(
-              objects, target, selection,
+              objects,
+              target,
+              selection,
+              version4=datatype.reference_kind == 3,
+            )
+            if !output.contains(payload) {
+              guard output.length() < 65535 else {
+                raise InvalidField("writer global heap has too many objects")
+              }
+              output.push(payload)
+            }
+          }
+          _ => ()
+        }
+      } else if datatype.reference_kind == 4 {
+        match value {
+          AttributeReference(Some(target), name) => {
+            let canonical = canonical_writer_path(target)
+            guard attributes.search_by(attribute => {
+                attribute.object_path == canonical && attribute.name == name
+              })
+              is Some(_) else {
+              raise InvalidArgument(
+                "attribute reference attribute does not exist: " +
+                canonical +
+                "." +
+                name,
+              )
+            }
+            let payload = writer_attribute_reference_payload(
+              objects, canonical, name,
             )
             if !output.contains(payload) {
               guard output.length() < 65535 else {
@@ -7093,7 +7287,13 @@ fn collect_heap_regions(
       match value {
         Sequence(items) =>
           for item in items {
-            collect_heap_regions(output, datatype.base_types[0], item, objects)
+            collect_heap_regions(
+              output,
+              datatype.base_types[0],
+              item,
+              objects,
+              attributes,
+            )
           }
         _ => ()
       }
@@ -7101,7 +7301,13 @@ fn collect_heap_regions(
       match value {
         Elements(items) =>
           for item in items {
-            collect_heap_regions(output, datatype.base_types[0], item, objects)
+            collect_heap_regions(
+              output,
+              datatype.base_types[0],
+              item,
+              objects,
+              attributes,
+            )
           }
         _ => ()
       }
@@ -7172,14 +7378,26 @@ fn Hdf5Writer::global_heap_regions(
     match dataset.values {
       StructuredValues(datatype, items) =>
         for item in items {
-          collect_heap_regions(regions, datatype, item, objects)
+          collect_heap_regions(
+            regions,
+            datatype,
+            item,
+            objects,
+            self.attributes,
+          )
         }
       _ => ()
     }
     match dataset.fill_value {
       Some(StructuredValues(datatype, items)) =>
         for item in items {
-          collect_heap_regions(regions, datatype, item, objects)
+          collect_heap_regions(
+            regions,
+            datatype,
+            item,
+            objects,
+            self.attributes,
+          )
         }
       _ => ()
     }
@@ -7188,7 +7406,13 @@ fn Hdf5Writer::global_heap_regions(
     match attribute.values {
       StructuredValues(datatype, items) =>
         for item in items {
-          collect_heap_regions(regions, datatype, item, objects)
+          collect_heap_regions(
+            regions,
+            datatype,
+            item,
+            objects,
+            self.attributes,
+          )
         }
       _ => ()
     }

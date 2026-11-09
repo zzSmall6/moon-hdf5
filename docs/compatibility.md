@@ -13,8 +13,8 @@ evidence, not part of the 1.14.6 baseline.
 
 Outside the profile: virtual datasets, SWMR, parallel HDF5, caller-registered
 filters on metadata heaps, general in-place metadata editing, netCDF-4/MATLAB
-high-level semantics, version-4 encoded references, numeric storage wider than
-8 bytes and non-implied-MSB binary floats.
+high-level semantics, version-4 references to external files, numeric storage
+wider than 8 bytes and non-implied-MSB binary floats.
 
 The release gate is `scripts/release_check.sh`: formatting, documentation and
 package checks; wasm/native tests; writer demo; and independent h5py
@@ -32,7 +32,7 @@ verification with h5py 3.13.0/HDF5 1.14.6.
 | Filters | Deflate, shuffle, Fletcher32, integer and f32/f64 decimal scale-offset, masks and fill markers; caller-registered dataset chunk decoders through `Hdf5CustomFilter` | Other scale modes are rejected; custom metadata-heap filters and overrides of built-in filter IDs are unsupported; unregistered required filters raise `UnsupportedFeature` |
 | Numeric values | 1–8-byte fixed-point with byte order, bit offset/precision and padding; IEEE float16/32/64; implied-MSB binary floats | Wider storage and other normalizations are rejected |
 | Structured values | Compound, enum, array, vlen sequence, bitfield, opaque, time, reference, complex; datatype messages v1–v5 | Reference values decode as bytes; resolution is separate |
-| References | Legacy object and dataset-region references under 4- and 8-byte addresses; compact, contiguous and filtered targets; point, hyperslab, block, all and empty selections | Targets need a named hard link and, for regions, must be datasets in the same file; version-4 references are unsupported |
+| References | Legacy object and dataset-region references under 4- and 8-byte addresses; version-4 object, dataset-region and attribute references; compact, contiguous and filtered targets; point, hyperslab, block, all and empty selections | Version-4 external-file references are rejected; region and attribute targets must be in the same file; unresolved object targets keep a null path |
 | Fill values | Default, fixed-size, structured, custom vlen-string and vlen-sequence fills; undefined and `FILL_TIME_NEVER` policies; disabled or absent fills zero unallocated storage | Malformed fill messages and unresolvable global-heap targets are rejected |
 | Selections | Hyperslabs, ordered points, bounded-memory tile iteration and bounded-memory selection pages | A single `read_dataset_selection` result is memory resident; use `selection_iterator` for large selections |
 | Shared messages | SOHM table/indexes/heaps, reserved indexes without heaps, wrappers v1–v3, committed targets, fills, filter pipelines, field sharing and dense shared records | Other shared message types are not fixture-verified |
@@ -57,7 +57,9 @@ for fixed-size values. Callers create the external files and exact slot sizes.
 ## Writer
 
 `src/cmd/write_demo` and `scripts/verify_writer_output.py` check the output with
-h5py 3.13.0/HDF5 1.14.6.
+h5py 3.13.0/HDF5 1.14.6. Version-4 reference output is checked by MoonBit
+round-trip tests because h5py 3.13.0 does not expose version-4 reference values
+through its NumPy dtype bridge.
 
 | Area | Verified | Boundary |
 | --- | --- | --- |
@@ -67,7 +69,7 @@ h5py 3.13.0/HDF5 1.14.6.
 | Datasets | Contiguous, external raw data, paged fixed-array, extensible-array and v2 B-tree chunks | No virtual storage; external storage is unfiltered fixed-size only |
 | Numeric values | int/uint 1–8 bytes and IEEE float32/64 in either byte order | Nonstandard floating-point output is absent |
 | Strings and structures | Fixed/vlen UTF-8; compound, enum, array, time, bitfield, opaque, references, complex and sequences | Complex output is little-endian canonical `r`/`i`; sequence bases are fixed-size and cannot contain region references |
-| References | Legacy 8-byte objects and 12-byte regions in datasets, attributes, compounds and arrays | Same-file targets only; version-4 references and regions inside sequences are absent |
+| References | Legacy 8-byte objects and 12-byte regions plus opt-in version-4 object, region and attribute references in datasets, attributes, compounds and arrays | Same-file targets only; regions inside sequences are absent; legacy remains the default |
 | Filters | Shuffle, deflate, Fletcher32, integer and f32/f64 decimal scale-offset, per-chunk masks | Fixed-size values support the full set; variable-length values support shuffle/deflate, not Fletcher32 or scale-offset; scale-offset must lead; floating scale-offset cannot use Fletcher32 |
 | Fills | Default, fixed-size/structured, vlen-string and vlen-sequence fills; optional SOHM | Variable-length fills use the global heap |
 | Shared messages | One SOHM table/heap for whole attributes, fills and filter pipelines; equal fills, attributes and pipelines reuse one message; committed datatypes use wrapper v3 type 2 | Multiple SOHM tables/heaps are not written |
