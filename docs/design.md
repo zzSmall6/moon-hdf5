@@ -126,6 +126,11 @@ a 16-bit size; additional messages continue through checksummed OCHK chunks.
 Object, continuation, dense-metadata, global-heap, external-slot and raw-data
 addresses are assigned before final encoding.
 
+Numeric encoding covers signed and unsigned 1–8-byte integers and IEEE
+float16/32/64 in either byte order. Half-precision values are rounded to
+nearest-even from their f32 representation, including subnormals, infinities and
+NaNs.
+
 Dense link and attribute collections are used for 9–65,535 records when every
 encoded heap object is at most 65,535 bytes. Each collection has one FRHP header,
 one FHDB direct block, one BTHD header and BTLF name index, plus a type 6 or 9

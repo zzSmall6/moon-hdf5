@@ -209,6 +209,9 @@ let output = writer.encode()
 - `add_external_dataset` stores raw bytes in caller-managed external files. Slot
   sizes must match the dataset byte count; the writer does not create those
   files.
+- Numeric output covers signed and unsigned 1–8-byte integers plus IEEE
+  float16/32/64 in either byte order. `Float16Values` and
+  `Datatype::write_float(2)` write half-precision values.
 - Dense link and attribute collections support 9–65,535 records with encoded
   heap objects up to 65,535 bytes. Larger sets remain compact and use OCHK
   continuation chunks.
@@ -263,11 +266,12 @@ let patched = file.patch_contiguous_dataset(
 
 `patch_contiguous_dataset` requires an allocated contiguous dataset in a
 bytes-backed `Hdf5File`. The replacement must have exactly the declared shape
-and a compatible fixed-size datatype. Object headers, attributes, links,
-checksums and all bytes outside the dataset value region are preserved. Chunked,
-compact, external, filtered and unallocated storage is rejected, as are
-variable-length and reference datatypes. The operation returns a complete new
-byte image; it does not modify the input or resize/relayout the dataset.
+and a compatible fixed-size datatype; both little- and big-endian numeric
+datasets are accepted. Object headers, attributes, links, checksums and all
+bytes outside the dataset value region are preserved. Chunked, compact,
+external, filtered and unallocated storage is rejected, as are variable-length
+and reference datatypes. The operation returns a complete new byte image; it
+does not modify the input or resize/relayout the dataset.
 
 Run the larger example and verify it independently with h5py:
 

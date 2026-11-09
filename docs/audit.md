@@ -7,8 +7,8 @@ v1.0 delivery profile and post-v1.0 extensions.
 
 The release gate passes on the current worktree:
 
-- wasm: 261 tests passed;
-- native: 261 tests passed;
+- wasm: 263 tests passed;
+- native: 263 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - writer demo verified by h5py 3.13.0/HDF5 1.14.6;
 - numeric-layout, scale-offset, vlen-fill, NetCDF-4, external-storage,
@@ -184,3 +184,6 @@ heaps and heap extension across multiple blocks are not emitted.
 - 2026-11-09: version-4 object, region and attribute reference reading, plus
   opt-in version-4 reference writing with global-heap payloads and
   fixture-backed round-trip tests.
+- 2026-11-09: IEEE half-precision writer values and contiguous patching, with
+  h5py-verified demo output.
+- 2026-11-09: big-endian numeric value patching, including half-precision data.

@@ -390,6 +390,7 @@ pub(all) enum Hdf5WriteValues {
   UInt16Values(Array[UInt32])
   UInt32Values(Array[UInt32])
   UInt64Values(Array[UInt64])
+  Float16Values(Array[Float])
   Float32Values(Array[Float])
   Float64Values(Array[Double])
   FixedStringValues(Array[String], Int32)

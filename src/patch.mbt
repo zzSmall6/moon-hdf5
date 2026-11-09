@@ -58,67 +58,61 @@ fn patch_values_match_datatype(
       datatype.class == 0 &&
       datatype.size == 1 &&
       datatype.signed &&
-      datatype.little_endian &&
       datatype.bit_offset == 0 &&
       datatype.bit_precision == 8
     Int16Values(_) =>
       datatype.class == 0 &&
       datatype.size == 2 &&
       datatype.signed &&
-      datatype.little_endian &&
       datatype.bit_offset == 0 &&
       datatype.bit_precision == 16
     Int32Values(_) =>
       datatype.class == 0 &&
       datatype.size == 4 &&
       datatype.signed &&
-      datatype.little_endian &&
       datatype.bit_offset == 0 &&
       datatype.bit_precision == 32
     Int64Values(_) =>
       datatype.class == 0 &&
       datatype.size == 8 &&
       datatype.signed &&
-      datatype.little_endian &&
       datatype.bit_offset == 0 &&
       datatype.bit_precision == 64
     UInt8Values(_) =>
       datatype.class == 0 &&
       datatype.size == 1 &&
       !datatype.signed &&
-      datatype.little_endian &&
       datatype.bit_offset == 0 &&
       datatype.bit_precision == 8
     UInt16Values(_) =>
       datatype.class == 0 &&
       datatype.size == 2 &&
       !datatype.signed &&
-      datatype.little_endian &&
       datatype.bit_offset == 0 &&
       datatype.bit_precision == 16
     UInt32Values(_) =>
       datatype.class == 0 &&
       datatype.size == 4 &&
       !datatype.signed &&
-      datatype.little_endian &&
       datatype.bit_offset == 0 &&
       datatype.bit_precision == 32
     UInt64Values(_) =>
       datatype.class == 0 &&
       datatype.size == 8 &&
       !datatype.signed &&
-      datatype.little_endian &&
       datatype.bit_offset == 0 &&
       datatype.bit_precision == 64
     Float32Values(_) =>
       datatype.class == 1 &&
       datatype.size == 4 &&
-      datatype.little_endian &&
+      is_ieee_float_layout(datatype)
+    Float16Values(_) =>
+      datatype.class == 1 &&
+      datatype.size == 2 &&
       is_ieee_float_layout(datatype)
     Float64Values(_) =>
       datatype.class == 1 &&
       datatype.size == 8 &&
-      datatype.little_endian &&
       is_ieee_float_layout(datatype)
     FixedStringValues(_, width) =>
       datatype.class == 3 &&
@@ -163,6 +157,26 @@ fn datatype_contains_reference(datatype : Datatype) -> Bool {
     }
   }
   false
+}
+
+///|
+fn patch_byteswap_elements(payload : Bytes, element_size : Int32) -> Bytes {
+  if element_size <= 1 {
+    return payload
+  }
+  let output = payload.to_array()
+  let count = output.length() / element_size
+  for element in 0..<count {
+    let start = element * element_size
+    for index in 0..<(element_size / 2) {
+      let left = start + index
+      let right = start + element_size - 1 - index
+      let value = output[left]
+      output[left] = output[right]
+      output[right] = value
+    }
+  }
+  Bytes::from_array(output)
 }
 
 ///|
@@ -216,7 +230,17 @@ pub fn Hdf5File::patch_contiguous_dataset(
   }
   let full_size = count.to_int() * metadata.datatype.size
   let encoded = encode_write_values(values)
-  guard encoded.payload.length() == full_size else {
+  let payload = match values {
+    StructuredValues(_) => encoded.payload
+    _ =>
+      if !metadata.datatype.little_endian &&
+        (metadata.datatype.class == 0 || metadata.datatype.class == 1) {
+        patch_byteswap_elements(encoded.payload, metadata.datatype.size)
+      } else {
+        encoded.payload
+      }
+  }
+  guard payload.length() == full_size else {
     raise InvalidArgument("patched values do not match the dataset shape")
   }
   let undefined = if self.superblock.offset_size == 8 {
@@ -244,8 +268,8 @@ pub fn Hdf5File::patch_contiguous_dataset(
     raise UnexpectedEof(offset.to_int64())
   }
   let output = self.bytes.to_array()
-  for index in 0..<encoded.payload.length() {
-    output[offset + index] = encoded.payload[index]
+  for index in 0..<payload.length() {
+    output[offset + index] = payload[index]
   }
   Bytes::from_array(output)
 }

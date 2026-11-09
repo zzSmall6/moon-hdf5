@@ -75,6 +75,27 @@ test "contiguous patches support fixed strings and structured values" {
 }
 
 ///|
+test "contiguous patches support half-precision floats" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset(
+    "/half",
+    [4UL],
+    Float16Values([Float(1.0), Float(2.0), Float(3.0), Float(4.0)]),
+  )
+  let file = Hdf5File::parse(writer.encode())
+  let patched = file.patch_contiguous_dataset(
+    "/half",
+    Float16Values([Float(-1.5), Float(0.25), Float(0.5), Float(65504.0)]),
+  )
+  let patched_file = Hdf5File::parse(patched)
+  let metadata = patched_file.read_dataset_metadata("/half")
+  assert_eq(metadata.datatype.size, 2)
+  assert_eq(float_values(patched_file.read_dataset("/half")), [
+    -1.5, 0.25, 0.5, 65504.0,
+  ])
+}
+
+///|
 test "patching rejects noncontiguous unallocated and incompatible storage" {
   let writer = Hdf5Writer::new()
   writer.add_chunked_dataset("/chunked", [2UL], [1U], Int64Values([1L, 2L]))
@@ -140,7 +161,7 @@ test "patching rejects noncontiguous unallocated and incompatible storage" {
 }
 
 ///|
-test "patching rejects external big-endian and source-backed datasets" {
+test "patching supports big-endian numeric datasets and rejects external sources" {
   let writer = Hdf5Writer::new()
   writer.add_external_dataset("/external", [2UL], Int64Values([1L, 2L]), [
     { file_name: "patch-external.bin", file_offset: 0UL, data_size: 16UL, },
@@ -160,16 +181,18 @@ test "patching rejects external big-endian and source-backed datasets" {
   let big_endian = Hdf5File::parse(
     @fs.read_file_to_bytes("testdata/numeric_layouts.h5"),
   )
-  let endian_error = try {
-    big_endian.patch_contiguous_dataset("/be_i4", Int32Values([1, 2])) |> ignore
-    None
-  } catch {
-    error => Some(error)
-  }
-  assert_eq(
-    endian_error,
-    Some(InvalidArgument("patched values must match the dataset datatype")),
+  let patched_be = big_endian.patch_contiguous_dataset(
+    "/be_i4",
+    Int32Values([1, 2]),
   )
+  let patched_be_file = Hdf5File::parse(patched_be)
+  assert_eq(integer_values(patched_be_file.read_dataset("/be_i4")), [1L, 2L])
+  let patched_half = patched_be_file.patch_contiguous_dataset(
+    "/be_f2",
+    Float16Values([Float(1.5), Float(-2.25)]),
+  )
+  let patched_half_file = Hdf5File::parse(patched_half)
+  assert_eq(float_values(patched_half_file.read_dataset("/be_f2")), [1.5, -2.25])
   let encoded = writer.encode()
   let sources : Array[&Hdf5Source] = [encoded]
   let sourced = Hdf5File::parse_source(sources[0])

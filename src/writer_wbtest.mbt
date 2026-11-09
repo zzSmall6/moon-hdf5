@@ -3423,6 +3423,73 @@ test "writer round-trips narrow integers and float32 across layouts" {
 }
 
 ///|
+test "writer round-trips half-precision floats across layouts" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset(
+    "/f16",
+    [7UL],
+    Float16Values([
+      Float(0.0),
+      Float(-0.0),
+      Float(1.5),
+      Float(-2.25),
+      Float(0.00006103515625),
+      Float(65504.0),
+      Float(-65504.0),
+    ]),
+  )
+  writer.add_chunked_dataset(
+    "/chunked_f16",
+    [5UL],
+    [2U],
+    Float16Values([Float(1.0), Float(2.0), Float(3.0), Float(4.0), Float(5.0)]),
+    fill_value=Float16Values([Float(-1.5)]),
+  )
+  writer.add_extensible_dataset(
+    "/growing_f16",
+    [0UL],
+    [None],
+    [2U],
+    Float16Values([]),
+    fill_value=Float16Values([Float(-0.5)]),
+  )
+  writer.append_dataset(
+    "/growing_f16",
+    [3UL],
+    Float16Values([Float(0.25), Float(0.5), Float(0.75)]),
+  )
+  writer.resize_dataset("/growing_f16", [4UL])
+  let structured_type = Datatype::write_float(2)
+  writer.add_dataset(
+    "/structured_f16",
+    [3UL],
+    StructuredValues(structured_type, [
+      FloatingPoint(0.125),
+      FloatingPoint(-3.5),
+      FloatingPoint(1024.0),
+    ]),
+  )
+
+  let file = Hdf5File::parse(writer.encode())
+  let metadata = file.read_dataset_metadata("/f16")
+  assert_eq(metadata.datatype.class, 1)
+  assert_eq(metadata.datatype.size, 2)
+  assert_eq(metadata.datatype.bit_precision, 16)
+  assert_eq(float_values(file.read_dataset("/f16")), [
+    0.0, -0.0, 1.5, -2.25, 0.00006103515625, 65504.0, -65504.0,
+  ])
+  assert_eq(float_values(file.read_dataset("/chunked_f16")), [
+    1.0, 2.0, 3.0, 4.0, 5.0,
+  ])
+  assert_eq(float_values(file.read_dataset("/growing_f16")), [
+    0.25, 0.5, 0.75, -0.5,
+  ])
+  assert_eq(float_values(file.read_dataset("/structured_f16")), [
+    0.125, -3.5, 1024.0,
+  ])
+}
+
+///|
 test "writer rejects narrow integer values outside their datatype" {
   let writer = Hdf5Writer::new()
   let signed = try {

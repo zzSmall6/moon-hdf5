@@ -361,6 +361,17 @@ fn run(args : Array[String]) -> Int32 {
       Float32Values([Float(-1.5), Float(0.0), Float(2.25)]),
     )
     writer.add_dataset(
+      "/types/f16",
+      [5UL],
+      Float16Values([
+        Float(-1.5),
+        Float(0.0),
+        Float(0.25),
+        Float(1024.0),
+        Float(65504.0),
+      ]),
+    )
+    writer.add_dataset(
       "/types/complex64",
       [2UL],
       Complex64Values([(1.5, -2.25), (-3.0, 4.5)]),

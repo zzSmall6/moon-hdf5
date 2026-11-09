@@ -10,6 +10,7 @@ pub(all) enum Hdf5WriteValues {
   UInt16Values(Array[UInt32])
   UInt32Values(Array[UInt32])
   UInt64Values(Array[UInt64])
+  Float16Values(Array[Float])
   Float32Values(Array[Float])
   Float64Values(Array[Double])
   FixedStringValues(Array[String], Int32)
@@ -115,7 +116,7 @@ pub fn Datatype::write_float_with_order(
   size : Int32,
   little_endian : Bool,
 ) -> Datatype raise Hdf5Error {
-  guard size == 4 || size == 8 else {
+  guard size == 2 || size == 4 || size == 8 else {
     raise InvalidArgument("writer floating-point datatype width is invalid")
   }
   writer_datatype(1, size, little_endian~)
@@ -655,6 +656,7 @@ fn writer_value_count(values : Hdf5WriteValues) -> Int32 {
     UInt16Values(items) => items.length()
     UInt32Values(items) => items.length()
     UInt64Values(items) => items.length()
+    Float16Values(items) => items.length()
     Float32Values(items) => items.length()
     Float64Values(items) => items.length()
     FixedStringValues(items, _) => items.length()
@@ -673,6 +675,7 @@ fn writer_value_element_size(values : Hdf5WriteValues) -> Int32 {
     Int16Values(_) | UInt16Values(_) => 2
     Int32Values(_) | UInt32Values(_) | Float32Values(_) => 4
     Int64Values(_) | UInt64Values(_) | Float64Values(_) => 8
+    Float16Values(_) => 2
     FixedStringValues(_, width) => width
     VariableStringValues(_) => 16
     ObjectReferenceValues(_) => 8
@@ -693,6 +696,7 @@ fn copy_write_values(values : Hdf5WriteValues) -> Hdf5WriteValues {
     UInt16Values(items) => UInt16Values(items.copy())
     UInt32Values(items) => UInt32Values(items.copy())
     UInt64Values(items) => UInt64Values(items.copy())
+    Float16Values(items) => Float16Values(items.copy())
     Float32Values(items) => Float32Values(items.copy())
     Float64Values(items) => Float64Values(items.copy())
     FixedStringValues(items, width) => FixedStringValues(items.copy(), width)
@@ -864,7 +868,7 @@ fn validate_writer_datatype(
       }
     }
     1 => {
-      guard datatype.size == 4 || datatype.size == 8 else {
+      guard datatype.size == 2 || datatype.size == 4 || datatype.size == 8 else {
         raise InvalidArgument("writer floating-point datatype is unsupported")
       }
     }
@@ -1283,6 +1287,7 @@ fn validate_write_values(
     Int64Values(items) => validate_writer_byte_size(items.length(), 8)
     UInt64Values(items) => validate_writer_byte_size(items.length(), 8)
     Float64Values(items) => validate_writer_byte_size(items.length(), 8)
+    Float16Values(items) => validate_writer_byte_size(items.length(), 2)
     Complex64Values(items) => validate_writer_byte_size(items.length(), 8)
     Complex128Values(items) => validate_writer_byte_size(items.length(), 16)
     Int32Values(items) => validate_writer_byte_size(items.length(), 4)
@@ -1700,6 +1705,7 @@ fn same_write_datatype(
     (UInt16Values(_), UInt16Values(_)) => true
     (UInt32Values(_), UInt32Values(_)) => true
     (UInt64Values(_), UInt64Values(_)) => true
+    (Float16Values(_), Float16Values(_)) => true
     (Float32Values(_), Float32Values(_)) => true
     (Float64Values(_), Float64Values(_)) => true
     (FixedStringValues(_, left_width), FixedStringValues(_, right_width)) =>
@@ -2238,6 +2244,7 @@ fn default_write_fill(
     UInt16Values(_) => UInt16Values([0U])
     UInt32Values(_) => UInt32Values([0U])
     UInt64Values(_) => UInt64Values([0UL])
+    Float16Values(_) => Float16Values([0.0])
     Float32Values(_) => Float32Values([0.0])
     Float64Values(_) => Float64Values([0.0])
     FixedStringValues(_, width) => FixedStringValues([""], width)
@@ -2307,6 +2314,8 @@ fn repeated_write_values(
       UInt32Values(Array::make(count, items[0]))
     (UInt64Values(_), UInt64Values(items)) =>
       UInt64Values(Array::make(count, items[0]))
+    (Float16Values(_), Float16Values(items)) =>
+      Float16Values(Array::make(count, items[0]))
     (Float32Values(_), Float32Values(items)) =>
       Float32Values(Array::make(count, items[0]))
     (Float64Values(_), Float64Values(items)) =>
@@ -2463,6 +2472,12 @@ fn overlay_write_values(
       )
     (UInt64Values(output), UInt64Values(items)) =>
       UInt64Values(
+        overlay_array(
+          output, items, source_dimensions, destination_dimensions, offsets, strict,
+        ),
+      )
+    (Float16Values(output), Float16Values(items)) =>
+      Float16Values(
         overlay_array(
           output, items, source_dimensions, destination_dimensions, offsets, strict,
         ),
@@ -2728,21 +2743,80 @@ fn encode_integer_datatype(
 
 ///|
 fn encode_float_datatype(size : Int32, little_endian~ : Bool = true) -> Bytes {
-  let single = size == 4
+  let (sign_position, exponent_position, exponent_size, mantissa_size, bias) = if size ==
+    2 {
+    (15, 10, 5, 10, 15U)
+  } else if size == 4 {
+    (31, 23, 8, 23, 127U)
+  } else {
+    (63, 52, 11, 52, 1023U)
+  }
   let buffer = @buffer.Buffer::Buffer(size_hint=20)
   buffer.write_byte(b'\x11')
   buffer.write_byte(if little_endian { b'\x20' } else { b'\x21' })
-  buffer.write_byte(if single { b'\x1f' } else { b'\x3f' })
+  buffer.write_byte(sign_position.to_byte())
   buffer.write_byte(b'\x00')
   buffer.write_uint_le(size.reinterpret_as_uint())
   buffer.write_uint16_le(0)
   buffer.write_uint16_le((size * 8).to_uint16())
-  buffer.write_byte(if single { b'\x17' } else { b'\x34' })
-  buffer.write_byte(if single { b'\x08' } else { b'\x0b' })
+  buffer.write_byte(exponent_position.to_byte())
+  buffer.write_byte(exponent_size.to_byte())
   buffer.write_byte(b'\x00')
-  buffer.write_byte(if single { b'\x17' } else { b'\x34' })
-  buffer.write_uint_le(if single { 127U } else { 1023U })
+  buffer.write_byte(mantissa_size.to_byte())
+  buffer.write_uint_le(bias)
   buffer.to_bytes()
+}
+
+///|
+fn writer_float16_bits(value : Float) -> UInt32 {
+  let bits = value.reinterpret_as_uint()
+  let sign = (bits >> 16) & 0x8000U
+  let exponent = ((bits >> 23) & 0xFFU).reinterpret_as_int()
+  let mantissa = bits & 0x7FFFFFU
+  if exponent == 0xFF {
+    return if mantissa == 0U {
+      sign | 0x7C00U
+    } else {
+      sign | 0x7E00U | (mantissa >> 13)
+    }
+  }
+  let half_exponent = exponent - 127 + 15
+  if half_exponent >= 0x1F {
+    return sign | 0x7C00U
+  }
+  if half_exponent <= 0 {
+    if half_exponent < -10 {
+      return sign
+    }
+    let normalized = mantissa | 0x800000U
+    let shift = 14 - half_exponent
+    let truncated = normalized >> shift
+    let remainder = normalized & ((1U << shift) - 1U)
+    let halfway = 1U << (shift - 1)
+    let rounded = if remainder > halfway ||
+      (remainder == halfway && (truncated & 1U) == 1U) {
+      truncated + 1U
+    } else {
+      truncated
+    }
+    return sign | rounded
+  }
+  let truncated = mantissa >> 13
+  let remainder = mantissa & 0x1FFFU
+  let rounded = if remainder > 0x1000U ||
+    (remainder == 0x1000U && (truncated & 1U) == 1U) {
+    truncated + 1U
+  } else {
+    truncated
+  }
+  if rounded == 0x400U {
+    let carried = half_exponent + 1
+    if carried >= 0x1F {
+      return sign | 0x7C00U
+    }
+    return sign | (carried.reinterpret_as_uint() << 10)
+  }
+  sign | (half_exponent.reinterpret_as_uint() << 10) | rounded
 }
 
 ///|
@@ -2900,7 +2974,14 @@ fn encode_structured_value(
     1 =>
       match value {
         FloatingPoint(number) =>
-          if datatype.size == 4 {
+          if datatype.size == 2 {
+            let bits = writer_float16_bits(Float::from_double(number)).to_uint16()
+            if datatype.little_endian {
+              buffer.write_uint16_le(bits)
+            } else {
+              buffer.write_uint16_be(bits)
+            }
+          } else if datatype.size == 4 {
             if datatype.little_endian {
               buffer.write_float_le(Float::from_double(number))
             } else {
@@ -3293,6 +3374,12 @@ fn encode_write_values(
         payload.write_uint64_le(item)
       }
       (encode_integer_datatype(false, 8), 8)
+    }
+    Float16Values(items) => {
+      for item in items {
+        payload.write_uint16_le(writer_float16_bits(item).to_uint16())
+      }
+      (encode_float_datatype(2), 2)
     }
     Float32Values(items) => {
       for item in items {
