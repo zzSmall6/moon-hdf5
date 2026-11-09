@@ -802,12 +802,13 @@ fn read_dataset_values(
   offset_size : Int32,
   length_size : Int32,
   base_address : UInt64,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> DatasetValues raise Hdf5Error {
   let dataspace = metadata.dataspace
   let datatype = metadata.datatype
   let layout = metadata.layout
   let filters = match header.first(msg_filter_pipeline) {
-    Some(message) => parse_filters(message)
+    Some(message) => parse_filters(message, custom_filters~)
     None => []
   }
   guard filters.length() == 0 || layout.layout_class == 2 else {
@@ -876,10 +877,17 @@ fn read_dataset(
   offset_size : Int32,
   length_size : Int32,
   base_address : UInt64,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> Dataset raise Hdf5Error {
   let metadata = read_dataset_metadata(header, offset_size, length_size)
   let values = read_dataset_values(
-    bytes, header, metadata, offset_size, length_size, base_address,
+    bytes,
+    header,
+    metadata,
+    offset_size,
+    length_size,
+    base_address,
+    custom_filters~,
   )
   {
     dataspace: metadata.dataspace,

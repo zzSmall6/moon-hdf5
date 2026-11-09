@@ -36,7 +36,7 @@ test "filter pipelines decode combinations edge chunks and skipped filters" {
 
 ///|
 test "unknown active filters are rejected but skipped filters are allowed" {
-  let filters : Array[Filter] = [{ id: 32000, parameters: [], }]
+  let filters : Array[Filter] = [{ id: 32000, parameters: [], decoder: None, }]
   assert_eq(decode_filters(b"abcd", filters, 1U, 1, 4), b"abcd")
   let error = try {
     decode_filters(b"abcd", filters, 0U, 1, 4) |> ignore
@@ -49,7 +49,7 @@ test "unknown active filters are rejected but skipped filters are allowed" {
 
 ///|
 test "deflate decoding bounds output and validates checksums" {
-  let filters : Array[Filter] = [{ id: 1, parameters: [6U], }]
+  let filters : Array[Filter] = [{ id: 1, parameters: [6U], decoder: None, }]
   let compressed = @zlib.zlib(b"abcdefgh"[:])
   assert_eq(decode_filters(compressed, filters, 0U, 1, 8), b"abcdefgh")
   let error = try {
@@ -109,7 +109,7 @@ test "filter pipeline framing and masks reject invalid input" {
 
 ///|
 test "shuffle can derive its element size from the filter pipeline" {
-  let filters : Array[Filter] = [{ id: 2, parameters: [4U], }]
+  let filters : Array[Filter] = [{ id: 2, parameters: [4U], decoder: None, }]
   let shuffled = b"aebfcgdh"
   assert_eq(decode_filters(shuffled, filters, 0U, 0, 8), b"abcdefgh")
   assert_eq(decode_filters(shuffled, filters, 0U, 4, 8), b"abcdefgh")
@@ -202,7 +202,7 @@ test "malformed scale-offset headers are rejected" {
   let parameters : Array[UInt32] = [
     2U, 0U, 1U, 0U, 4U, 1U, 0U, 1U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U,
   ]
-  let filter : Filter = { id: 6, parameters, }
+  let filter : Filter = { id: 6, parameters, decoder: None, }
   for data in [b"", b"\x00\x00\x00\x00\x08"] {
     let error = try {
       decode_scaleoffset(data, filter, 4, 4) |> ignore
@@ -218,7 +218,7 @@ test "malformed scale-offset headers are rejected" {
   let float_error = try {
     decode_scaleoffset(
       b"\x00\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
-      { id: 6, parameters: float_parameters, },
+      { id: 6, parameters: float_parameters, decoder: None, },
       4,
       4,
     )

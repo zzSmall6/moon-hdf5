@@ -39,6 +39,7 @@ instead, use the commands in [Quick Start](#quick-start).
   fixed-array, extensible-array and v2 B-tree indexes.
 - Deflate, shuffle, Fletcher32, integer scale-offset and f32/f64 decimal
   scale-offset, including per-chunk filter masks.
+- Caller-registered decoders for third-party dataset chunk filters.
 - Signed and unsigned 1–8-byte integers in either byte order, IEEE
   float16/32/64, normalized binary floats with implied MSB, strings, compound,
   enum, array, time, bitfield, opaque, sequence, reference and complex values.
@@ -125,6 +126,12 @@ returned as encoded bytes and can be resolved with
 `Hdf5Source` values, rejects cycles and reports unregistered targets. It also
 reads contiguous, unfiltered external raw-data slots. `Hdf5File` intentionally
 leaves external targets and external raw data unresolved.
+
+Third-party dataset chunk filters use `Hdf5CustomFilter` with
+`Hdf5File::with_custom_filter` or `Hdf5Resolver::add_custom_filter`. Decoders
+receive the stored bytes, filter parameters, element width and expected decoded
+size. Built-in filter IDs cannot be replaced, duplicate IDs are rejected, and a
+decoder must return exactly the expected number of bytes.
 
 ## Writing
 
@@ -269,11 +276,14 @@ the items below summarize the main user-visible gaps.
   streaming output and general in-place metadata editing are unsupported.
   Multi-unlimited resizing and v2 B-tree output are rebuilt for the current
   in-memory shape.
-- **Read coverage:** virtual datasets, SWMR, parallel HDF5 and third-party or
-  custom filters are outside the profile. Unsupported layouts, indexes,
-  datatypes and required unknown filters raise `UnsupportedFeature`; detection
-  of unsupported input is not exhaustive. Unsupported attribute datatypes fail
-  the read instead of returning empty values.
+- **Read coverage:** virtual datasets, SWMR and parallel HDF5 are outside the
+  profile. Built-in chunk filters are decoded directly; other dataset chunk
+  filter IDs can be supplied through `Hdf5CustomFilter`. Custom filters on
+  metadata heaps are not supported, and built-in filter IDs cannot be
+  overridden. Unsupported layouts, indexes, datatypes and unregistered filters
+  raise `UnsupportedFeature`; detection of unsupported input is not exhaustive.
+  Unsupported attribute datatypes fail the read instead of returning empty
+  values.
 - **Writer coverage:** output uses superblock v3 and v2 object headers; older
   output formats and virtual storage are not selected. Fixed-size values accept
   shuffle, deflate, Fletcher32 and scale-offset; scale-offset must lead the

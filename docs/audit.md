@@ -1,4 +1,4 @@
-# Code audit — 2026-11-04
+# Code audit — 2026-11-09
 
 Scope: current worktree, reader and writer, with emphasis on the HDF5 1.14.6
 v1.0 delivery profile and post-v1.0 extensions.
@@ -7,8 +7,8 @@ v1.0 delivery profile and post-v1.0 extensions.
 
 The release gate passes on the current worktree:
 
-- wasm: 239 tests passed;
-- native: 239 tests passed;
+- wasm: 253 tests passed;
+- native: 253 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - writer demo verified by h5py 3.13.0/HDF5 1.14.6;
 - numeric-layout, scale-offset, vlen-fill, NetCDF-4, external-storage,
@@ -138,6 +138,8 @@ heaps and heap extension across multiple blocks are not emitted.
 
 - Detection of unsupported input is not exhaustive.
 - Whole-dataset and single-selection results are memory resident.
+- Custom filter callbacks are limited to dataset chunk pipelines; metadata-heap
+  filters and overrides of built-in filter IDs are not accepted.
 - External raw data requires caller registration and caller-managed files.
 - Dense and SOHM output use compact single-block writer forms; larger producer
   structures are reader-side features unless explicitly listed as writer output.
@@ -168,3 +170,6 @@ heaps and heap extension across multiple blocks are not emitted.
 - 2026-11-04: audit hardening for coordinate-stable chunk filter masks across
   multi-axis resize/append and parent-segment normalization in paths and soft
   links, with native/wasm and HDF5 1.14.6 release verification.
+- 2026-11-09: bounded-memory selection iterators, arbitrary-coordinate writer
+  slabs, contiguous allocated-value patching and caller-registered dataset
+  chunk filters, with native/wasm release verification.

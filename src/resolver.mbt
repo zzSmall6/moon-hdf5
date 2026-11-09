@@ -29,6 +29,7 @@ priv struct ResolverSource {
 /// external-raw-data targets. Sources are kept in memory and parsed on demand.
 pub struct Hdf5Resolver {
   priv sources : Array[ResolverSource]
+  priv custom_filters : Array[&Hdf5CustomFilter]
 }
 
 ///|
@@ -197,7 +198,7 @@ fn Hdf5Resolver::source_index(self : Hdf5Resolver, name : String) -> Int32? {
 /// Creates a resolver for a root source. External targets must be registered
 /// with `add_source` before they can be reached.
 pub fn Hdf5Resolver::new(source : &Hdf5Source) -> Hdf5Resolver {
-  { sources: [{ name: resolver_root_name(), source, }], }
+  { sources: [{ name: resolver_root_name(), source, }], custom_filters: [], }
 }
 
 ///|
@@ -218,6 +219,17 @@ pub fn Hdf5Resolver::add_source(
 }
 
 ///|
+/// Registers a third-party dataset chunk filter for every source opened by this
+/// resolver. Registrations apply to future reads and cannot replace built-in
+/// filters or duplicate an existing ID.
+pub fn Hdf5Resolver::add_custom_filter(
+  self : Hdf5Resolver,
+  filter : &Hdf5CustomFilter,
+) -> Unit raise Hdf5Error {
+  register_custom_filter(self.custom_filters, filter)
+}
+
+///|
 /// Opens the root source or a registered external-link target.
 pub fn Hdf5Resolver::open(
   self : Hdf5Resolver,
@@ -229,7 +241,13 @@ pub fn Hdf5Resolver::open(
     resolver_file_name(name)
   }
   match self.source_index(normalized) {
-    Some(index) => Hdf5File::parse_source(self.sources[index].source)
+    Some(index) => {
+      let mut file = Hdf5File::parse_source(self.sources[index].source)
+      for filter in self.custom_filters {
+        file = file.with_custom_filter(filter)
+      }
+      file
+    }
     None => raise InvalidField("source is not registered: " + name)
   }
 }

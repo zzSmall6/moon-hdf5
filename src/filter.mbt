@@ -2,10 +2,14 @@
 priv struct Filter {
   id : Int32
   parameters : Array[UInt32]
+  decoder : &Hdf5CustomFilter?
 }
 
 ///|
-fn parse_filters(message : HeaderMessage) -> Array[Filter] raise Hdf5Error {
+fn parse_filters(
+  message : HeaderMessage,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
+) -> Array[Filter] raise Hdf5Error {
   guard (message.flags.to_int() & 2) == 0 else {
     raise UnsupportedFeature("shared filter pipeline messages")
   }
@@ -40,7 +44,11 @@ fn parse_filters(message : HeaderMessage) -> Array[Filter] raise Hdf5Error {
     if version == 1 && parameter_count % 2 != 0 {
       reader.skip(4)
     }
-    filters.push({ id, parameters, })
+    let decoder = match custom_filters.search_by(filter => filter.id() == id) {
+      Some(index) => Some(custom_filters[index])
+      None => None
+    }
+    filters.push({ id, parameters, decoder, })
   }
   filters
 }
@@ -350,9 +358,24 @@ fn decode_filters(
       }
       6 => decode_scaleoffset(output, filter, element_size, expected_size)
       _ =>
-        raise UnsupportedFeature(
-          "filter " + filter.id.to_string() + " is not supported",
-        )
+        match filter.decoder {
+          Some(decoder) => {
+            let decoded = decoder.decode(
+              output,
+              filter.parameters,
+              element_size,
+              expected_size,
+            )
+            guard decoded.length() <= limit else {
+              raise InvalidField("oversized custom filter chunk")
+            }
+            decoded
+          }
+          None =>
+            raise UnsupportedFeature(
+              "filter " + filter.id.to_string() + " is not supported",
+            )
+        }
     }
   }
   guard output.length() == expected_size else {

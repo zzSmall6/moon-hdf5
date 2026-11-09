@@ -51,6 +51,12 @@ writing policy disables its use.
 Filters are decoded through a shared pipeline model: shuffle, deflate,
 Fletcher32, integer scale-offset and f32/f64 decimal scale-offset. Per-chunk
 masks follow HDF5 filter order. Non-finite scale-offset inputs are rejected.
+Dataset chunk pipelines may also contain caller-registered IDs. Registration is
+owned by `Hdf5File` or `Hdf5Resolver`; callbacks receive the filter parameters,
+element width and expected decoded size, and the pipeline bounds intermediate
+output as well as verifying the final size. Built-in IDs cannot be overridden.
+Filters attached to metadata heaps do not use the caller registry and still
+require built-in support.
 
 Datatype decoding recursively handles fixed-point layouts, IEEE and normalized
 binary floats, fixed/vlen strings, compound, enum, array, time, bitfield, opaque,

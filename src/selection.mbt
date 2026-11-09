@@ -221,6 +221,7 @@ fn selected_payload(
   offset_size : Int32,
   length_size : Int32,
   base_address : UInt64,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> Bytes raise Hdf5Error {
   let datatype = metadata.datatype
   guard datatype.size > 0 else { raise InvalidField("invalid datatype size") }
@@ -228,7 +229,7 @@ fn selected_payload(
     raise UnsupportedFeature("external dataset storage requires Hdf5Resolver")
   }
   let filters = match header.first(msg_filter_pipeline) {
-    Some(message) => parse_filters(message)
+    Some(message) => parse_filters(message, custom_filters~)
     None => []
   }
   if filters.length() > 0 && metadata.layout.layout_class != 2 {
@@ -393,10 +394,19 @@ fn read_source_dataset_selection(
   offset_size : Int32,
   length_size : Int32,
   base_address : UInt64,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> DatasetSelectionResult raise Hdf5Error {
   let (dimensions, indices) = selection_indices(metadata.dataspace, selection)
   read_source_dataset_indices(
-    source, header, metadata, dimensions, indices, offset_size, length_size, base_address,
+    source,
+    header,
+    metadata,
+    dimensions,
+    indices,
+    offset_size,
+    length_size,
+    base_address,
+    custom_filters~,
   )
 }
 
@@ -410,11 +420,19 @@ fn read_source_dataset_indices(
   offset_size : Int32,
   length_size : Int32,
   base_address : UInt64,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> DatasetSelectionResult raise Hdf5Error {
   let payload = match metadata.layout.layout_class {
     0 =>
       selected_payload(
-        b"", header, metadata, indices, offset_size, length_size, base_address,
+        b"",
+        header,
+        metadata,
+        indices,
+        offset_size,
+        length_size,
+        base_address,
+        custom_filters~,
       )
     1 =>
       source_contiguous_payload(
@@ -422,7 +440,7 @@ fn read_source_dataset_indices(
       )
     2 => {
       let filters = match header.first(msg_filter_pipeline) {
-        Some(message) => parse_filters(message)
+        Some(message) => parse_filters(message, custom_filters~)
         None => []
       }
       read_source_chunked_with_filters(
@@ -463,10 +481,19 @@ fn read_dataset_selection(
   offset_size : Int32,
   length_size : Int32,
   base_address : UInt64,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> DatasetSelectionResult raise Hdf5Error {
   let (dimensions, indices) = selection_indices(metadata.dataspace, selection)
   read_dataset_indices(
-    bytes, header, metadata, dimensions, indices, offset_size, length_size, base_address,
+    bytes,
+    header,
+    metadata,
+    dimensions,
+    indices,
+    offset_size,
+    length_size,
+    base_address,
+    custom_filters~,
   )
 }
 
@@ -480,9 +507,17 @@ fn read_dataset_indices(
   offset_size : Int32,
   length_size : Int32,
   base_address : UInt64,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> DatasetSelectionResult raise Hdf5Error {
   let payload = selected_payload(
-    bytes, header, metadata, indices, offset_size, length_size, base_address,
+    bytes,
+    header,
+    metadata,
+    indices,
+    offset_size,
+    length_size,
+    base_address,
+    custom_filters~,
   )
   let values = decode_values(
     bytes,

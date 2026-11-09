@@ -11,10 +11,10 @@ including their boundaries. The external raw-data table is a separate
 post-v1.0 extension. HDF5 2.0 datatype fixtures are forward-compatibility
 evidence, not part of the 1.14.6 baseline.
 
-Outside the profile: virtual datasets, SWMR, parallel HDF5, third-party filters,
-general in-place metadata editing, netCDF-4/MATLAB high-level semantics,
-version-4 encoded references, numeric storage wider than 8 bytes and
-non-implied-MSB binary floats.
+Outside the profile: virtual datasets, SWMR, parallel HDF5, caller-registered
+filters on metadata heaps, general in-place metadata editing, netCDF-4/MATLAB
+high-level semantics, version-4 encoded references, numeric storage wider than
+8 bytes and non-implied-MSB binary floats.
 
 The release gate is `scripts/release_check.sh`: formatting, documentation and
 package checks; wasm/native tests; writer demo; and independent h5py
@@ -29,7 +29,7 @@ verification with h5py 3.13.0/HDF5 1.14.6.
 | Cross-file links | `Hdf5Resolver` follows chained external links and relative targets | `Hdf5File` alone does not open external targets |
 | Attributes | Inline v1–v3, dense, SOHM wrappers, shared datatype/dataspace fields | Unsupported attribute datatypes fail the read instead of returning empty values |
 | Layouts and indexes | Compact, contiguous, chunked; v1 B-tree, single-chunk, implicit, fixed-array, extensible-array and v2 B-tree indexes | Unsupported index variants are rejected |
-| Filters | Deflate, shuffle, Fletcher32, integer and f32/f64 decimal scale-offset, masks and fill markers | Other scale modes and required unknown filters are rejected |
+| Filters | Deflate, shuffle, Fletcher32, integer and f32/f64 decimal scale-offset, masks and fill markers; caller-registered dataset chunk decoders through `Hdf5CustomFilter` | Other scale modes are rejected; custom metadata-heap filters and overrides of built-in filter IDs are unsupported; unregistered required filters raise `UnsupportedFeature` |
 | Numeric values | 1–8-byte fixed-point with byte order, bit offset/precision and padding; IEEE float16/32/64; implied-MSB binary floats | Wider storage and other normalizations are rejected |
 | Structured values | Compound, enum, array, vlen sequence, bitfield, opaque, time, reference, complex; datatype messages v1–v5 | Reference values decode as bytes; resolution is separate |
 | References | Legacy object and dataset-region references under 4- and 8-byte addresses; compact, contiguous and filtered targets; point, hyperslab, block, all and empty selections | Targets need a named hard link and, for regions, must be datasets in the same file; version-4 references are unsupported |

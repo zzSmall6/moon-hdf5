@@ -262,6 +262,7 @@ pub fn Hdf5File::resolve_region_reference(Self, Bytes) -> Hdf5RegionReferenceTar
 pub fn Hdf5File::selection_iterator(Self, String, DatasetSelection, Int32) -> DatasetSelectionIterator raise Hdf5Error
 pub fn Hdf5File::superblock_version(Self) -> Int32
 pub fn Hdf5File::walk(Self) -> Array[Hdf5Node] raise Hdf5Error
+pub fn Hdf5File::with_custom_filter(Self, &Hdf5CustomFilter) -> Self raise Hdf5Error
 
 #derive(Eq, @debug.Debug)
 pub(all) struct Hdf5Node {
@@ -339,6 +340,7 @@ pub fn Hdf5ResolvedNode::to_repr(Self) -> @debug.Repr
 pub struct Hdf5Resolver {
   // private fields
 }
+pub fn Hdf5Resolver::add_custom_filter(Self, &Hdf5CustomFilter) -> Unit raise Hdf5Error
 pub fn Hdf5Resolver::add_source(Self, String, &Hdf5Source) -> Unit raise Hdf5Error
 pub fn Hdf5Resolver::attributes(Self, String) -> Array[Attribute] raise Hdf5Error
 pub fn Hdf5Resolver::chunk_iterator(Self, String, Array[UInt64]) -> DatasetChunkIterator raise Hdf5Error
@@ -407,6 +409,11 @@ pub fn Hdf5Writer::write_dataset_slab(Self, String, Array[UInt64], Array[UInt64]
 // Type aliases
 
 // Traits
+pub(open) trait Hdf5CustomFilter {
+  fn id(Self) -> Int32
+  fn decode(Self, Bytes, Array[UInt32], Int32, Int32) -> Bytes raise Hdf5Error
+}
+
 pub(open) trait Hdf5Source : @debug.Debug {
   fn length(Self) -> UInt64
   fn read_at(Self, UInt64, Int32) -> Bytes raise Hdf5Error

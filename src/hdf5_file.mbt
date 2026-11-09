@@ -36,6 +36,7 @@ pub struct Hdf5File {
   priv superblock : Superblock
   priv source : &Hdf5Source?
   priv shared_messages : SharedMessageContext
+  priv custom_filters : Array[&Hdf5CustomFilter]
 }
 
 ///|
@@ -47,6 +48,7 @@ pub fn Hdf5File::parse(bytes : Bytes) -> Hdf5File raise Hdf5Error {
     superblock,
     source: None,
     shared_messages: parse_shared_message_context(bytes, None, superblock),
+    custom_filters: [],
   }
 }
 
@@ -60,6 +62,27 @@ pub fn Hdf5File::parse_source(source : &Hdf5Source) -> Hdf5File raise Hdf5Error 
     superblock,
     source: Some(source),
     shared_messages: parse_shared_message_context(b"", Some(source), superblock),
+    custom_filters: [],
+  }
+}
+
+///|
+/// Returns a file that can decode the given third-party dataset chunk filter.
+///
+/// Registrations are checked for duplicate and built-in filter IDs. The
+/// original value is unchanged, so calls can be chained or kept separate.
+pub fn Hdf5File::with_custom_filter(
+  self : Hdf5File,
+  filter : &Hdf5CustomFilter,
+) -> Hdf5File raise Hdf5Error {
+  let custom_filters = self.custom_filters.copy()
+  register_custom_filter(custom_filters, filter)
+  {
+    bytes: self.bytes,
+    superblock: self.superblock,
+    source: self.source,
+    shared_messages: self.shared_messages,
+    custom_filters,
   }
 }
 
@@ -313,6 +336,7 @@ pub fn Hdf5File::read_dataset(
         self.superblock.offset_size,
         self.superblock.length_size,
         self.superblock.base_address,
+        custom_filters=self.custom_filters,
       )
       {
         dataspace: metadata.dataspace,
@@ -328,6 +352,7 @@ pub fn Hdf5File::read_dataset(
         self.superblock.offset_size,
         self.superblock.length_size,
         self.superblock.base_address,
+        custom_filters=self.custom_filters,
       )
   }
 }
@@ -378,6 +403,7 @@ pub fn Hdf5File::read_dataset_selection(
         self.superblock.offset_size,
         self.superblock.length_size,
         self.superblock.base_address,
+        custom_filters=self.custom_filters,
       )
     None =>
       read_dataset_selection(
@@ -388,6 +414,7 @@ pub fn Hdf5File::read_dataset_selection(
         self.superblock.offset_size,
         self.superblock.length_size,
         self.superblock.base_address,
+        custom_filters=self.custom_filters,
       )
   }
 }

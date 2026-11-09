@@ -155,6 +155,7 @@ fn DatasetChunkIterator::read_selection(
         file.superblock.offset_size,
         file.superblock.length_size,
         file.superblock.base_address,
+        custom_filters=file.custom_filters,
       )
     None =>
       read_dataset_selection(
@@ -165,6 +166,7 @@ fn DatasetChunkIterator::read_selection(
         file.superblock.offset_size,
         file.superblock.length_size,
         file.superblock.base_address,
+        custom_filters=file.custom_filters,
       )
   }
 }
@@ -381,6 +383,7 @@ fn DatasetSelectionIterator::read_page(
         file.superblock.offset_size,
         file.superblock.length_size,
         file.superblock.base_address,
+        custom_filters=file.custom_filters,
       )
     None =>
       read_dataset_indices(
@@ -392,6 +395,7 @@ fn DatasetSelectionIterator::read_page(
         file.superblock.offset_size,
         file.superblock.length_size,
         file.superblock.base_address,
+        custom_filters=file.custom_filters,
       )
   }
 }
