@@ -188,6 +188,10 @@ let output = writer.encode()
   multiple unlimited dimensions use a v2 B-tree. `append_dataset` appends a
   block at the trailing corner of every unlimited axis, growing each such axis
   by the block extent.
+- `write_dataset_slab` writes a rectangular block at arbitrary coordinates.
+  Finite datasets require the slab to fit their current shape; extensible
+  datasets grow unlimited axes to the slab's trailing edge and fill gaps with
+  the dataset fill value.
 - `add_external_dataset` stores raw bytes in caller-managed external files. Slot
   sizes must match the dataset byte count; the writer does not create those
   files.
@@ -269,8 +273,9 @@ the items below summarize the main user-visible gaps.
   must be datasets in the same file. Version-4 encoded references are
   unsupported.
 - **Unlimited dimensions:** `append_dataset` writes only at the trailing edge of
-  every unlimited axis. Interior insertion and arbitrary placement are not
-  exposed.
+  every unlimited axis. Use `write_dataset_slab` for interior writes and
+  arbitrary rectangular placement; unlimited axes grow to the slab's trailing
+  edge.
 - **High-level semantics:** netCDF-4 and MATLAB metadata are read as HDF5
   structures, not as complete netCDF-4 or MATLAB semantics.
 

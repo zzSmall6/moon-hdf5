@@ -2858,6 +2858,122 @@ test "writer appends multiple unlimited dimensions at the trailing corner" {
 }
 
 ///|
+test "writer writes finite chunked slabs at arbitrary interior coordinates" {
+  let writer = Hdf5Writer::new()
+  let values : Array[Int64] = []
+  for index in 0..<16 {
+    values.push(index.to_int64())
+  }
+  writer.add_chunked_dataset(
+    "/grid",
+    [4UL, 4UL],
+    [2U, 2U],
+    Int64Values(values),
+    fill_value=Int64Values([-1L]),
+    filters=[Shuffle, Deflate(4), Fletcher32],
+  )
+  writer.write_dataset_slab(
+    "/grid",
+    [1UL, 1UL],
+    [2UL, 3UL],
+    Int64Values([100L, 101L, 102L, 103L, 104L, 105L]),
+  )
+  let file = Hdf5File::parse(writer.encode())
+  assert_eq(integer_values(file.read_dataset("/grid")), [
+    0L, 1L, 2L, 3L, 4L, 100L, 101L, 102L, 8L, 103L, 104L, 105L, 12L, 13L, 14L, 15L,
+  ])
+}
+
+///|
+test "writer slabs grow unlimited axes beyond the trailing corner" {
+  let writer = Hdf5Writer::new()
+  writer.add_extensible_dataset(
+    "/series",
+    [1UL],
+    [None],
+    [2U],
+    Int64Values([5L]),
+    fill_value=Int64Values([-1L]),
+  )
+  writer.write_dataset_slab("/series", [3UL], [2UL], Int64Values([7L, 8L]))
+  let file = Hdf5File::parse(writer.encode())
+  let series = file.read_dataset("/series")
+  assert_eq(series.dataspace.dimensions, [5UL])
+  assert_eq(integer_values(series), [5L, -1L, -1L, 7L, 8L])
+
+  writer.add_extensible_dataset(
+    "/matrix",
+    [2UL, 2UL],
+    [None, None],
+    [1U, 2U],
+    Int64Values([1L, 2L, 3L, 4L]),
+    fill_value=Int64Values([-1L]),
+  )
+  writer.write_dataset_slab(
+    "/matrix",
+    [2UL, 3UL],
+    [2UL, 2UL],
+    Int64Values([10L, 11L, 20L, 21L]),
+  )
+  let matrix = Hdf5File::parse(writer.encode()).read_dataset("/matrix")
+  assert_eq(matrix.dataspace.dimensions, [4UL, 5UL])
+  assert_true(matrix.layout.chunk_index is BTreeV2(_))
+  assert_eq(integer_values(matrix), [
+    1L, 2L, -1L, -1L, -1L, 3L, 4L, -1L, -1L, -1L, -1L, -1L, -1L, 10L, 11L, -1L, -1L,
+    -1L, 20L, 21L,
+  ])
+}
+
+///|
+test "writer slabs reject fixed expansion external storage and type changes" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/fixed", [2UL], Int64Values([1L, 2L]))
+  let fixed_growth = try {
+    writer.write_dataset_slab("/fixed", [1UL], [2UL], Int64Values([3L, 4L]))
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    fixed_growth,
+    Some(InvalidArgument("dataset slab extends beyond a fixed dimension")),
+  )
+  let wrong_type = try {
+    writer.write_dataset_slab("/fixed", [0UL], [1UL], UInt64Values([1UL]))
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    wrong_type,
+    Some(InvalidArgument("slab values must match the dataset type")),
+  )
+  let wrong_rank = try {
+    writer.write_dataset_slab("/fixed", [], [1UL], Int64Values([1L]))
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    wrong_rank,
+    Some(InvalidArgument("dataset slab rank does not match the dataset")),
+  )
+  writer.add_external_dataset("/external", [2UL], Int64Values([1L, 2L]), [
+    { file_name: "slab-external.bin", file_offset: 0UL, data_size: 16UL, },
+  ])
+  let external = try {
+    writer.write_dataset_slab("/external", [0UL], [1UL], Int64Values([9L]))
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    external,
+    Some(InvalidArgument("external datasets cannot be patched in a builder")),
+  )
+}
+
+///|
 test "writer filters multiple unlimited dimensions through a v2 b-tree" {
   let writer = Hdf5Writer::new()
   writer.add_extensible_dataset(

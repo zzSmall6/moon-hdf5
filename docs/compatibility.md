@@ -71,7 +71,7 @@ h5py 3.13.0/HDF5 1.14.6.
 | Filters | Shuffle, deflate, Fletcher32, integer and f32/f64 decimal scale-offset, per-chunk masks | Fixed-size values support the full set; variable-length values support shuffle/deflate, not Fletcher32 or scale-offset; scale-offset must lead; floating scale-offset cannot use Fletcher32 |
 | Fills | Default, fixed-size/structured, vlen-string and vlen-sequence fills; optional SOHM | Variable-length fills use the global heap |
 | Shared messages | One SOHM table/heap for whole attributes, fills and filter pipelines; equal fills, attributes and pipelines reuse one message; committed datatypes use wrapper v3 type 2 | Multiple SOHM tables/heaps are not written |
-| Extension | One or more unlimited axes with in-memory resize and append; chunk filter masks stay attached to chunk coordinates across shape changes | Multiple unlimited axes use a v2 B-tree; `append_dataset` grows every unlimited axis and writes at their trailing corner; existing files are not edited in place |
+| Extension | One or more unlimited axes with in-memory resize, append and arbitrary rectangular slab writes; chunk filter masks stay attached to chunk coordinates across shape changes | Multiple unlimited axes use a v2 B-tree; `append_dataset` writes at the trailing corner, `write_dataset_slab` writes at arbitrary coordinates and grows unlimited axes to the slab edge; existing files are not edited in place |
 
 ## Reproduce
 

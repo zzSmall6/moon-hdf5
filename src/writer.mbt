@@ -2537,6 +2537,73 @@ pub fn Hdf5Writer::append_dataset(
 }
 
 ///|
+/// Writes a rectangular slab at arbitrary dataset coordinates.
+///
+/// Finite contiguous and chunked datasets require the slab to fit the current
+/// shape. Extensible datasets grow only their unlimited axes to the slab's
+/// trailing edge, filling newly exposed elements with the dataset fill value.
+/// External datasets and dimension-changing writes to finite datasets are
+/// rejected.
+pub fn Hdf5Writer::write_dataset_slab(
+  self : Hdf5Writer,
+  path : String,
+  offsets : Array[UInt64],
+  dimensions : Array[UInt64],
+  values : Hdf5WriteValues,
+) -> Unit raise Hdf5Error {
+  let index = self.writer_dataset_index(path)
+  let dataset = self.datasets[index]
+  let unlimited_axes = match dataset.storage {
+    WritableExternal(_) =>
+      raise InvalidArgument("external datasets cannot be patched in a builder")
+    WritableExtensible(_, _, axes) => axes
+    WritableChunked(_, _) | WritableContiguous => []
+  }
+  let rank = dataset.dimensions.length()
+  guard offsets.length() == rank && dimensions.length() == rank else {
+    raise InvalidArgument("dataset slab rank does not match the dataset")
+  }
+  validate_write_values(dimensions, values)
+  guard same_write_datatype(dataset.values, values) else {
+    raise InvalidArgument("slab values must match the dataset type")
+  }
+  let target_dimensions = dataset.dimensions.copy()
+  for axis in 0..<rank {
+    guard offsets[axis] <= 0xFFFFFFFFFFFFFFFFUL - dimensions[axis] else {
+      raise InvalidArgument("dataset slab extends past the addressable shape")
+    }
+    let end = offsets[axis] + dimensions[axis]
+    if end > target_dimensions[axis] {
+      if unlimited_axes.contains(axis) {
+        target_dimensions[axis] = end
+      } else {
+        raise InvalidArgument("dataset slab extends beyond a fixed dimension")
+      }
+    }
+  }
+  if target_dimensions != dataset.dimensions {
+    self.resize_dataset(path, target_dimensions)
+  }
+  let resized = self.datasets[index]
+  self.datasets[index] = {
+    path: resized.path,
+    dimensions: resized.dimensions,
+    maximum_dimensions: resized.maximum_dimensions,
+    values: overlay_write_values(
+      resized.values,
+      values,
+      dimensions,
+      resized.dimensions,
+      offsets,
+      true,
+    ),
+    storage: resized.storage,
+    fill_value: resized.fill_value,
+    chunk_filter_masks: resized.chunk_filter_masks,
+  }
+}
+
+///|
 /// Adds an inline attribute to an existing group or dataset.
 pub fn Hdf5Writer::add_attribute(
   self : Hdf5Writer,
