@@ -65,6 +65,9 @@ fn ExtensibleReader::entries(
   reader : Reader,
   count : Int64,
   start : Int64,
+  base_offset : Int32,
+  metadata_start : Int32,
+  metadata_checksum_offset : Int32,
 ) -> Unit raise Hdf5Error {
   guard count <=
     (reader.remaining().to_int64() - 4) / self.entry_size.to_int64() else {
@@ -72,6 +75,8 @@ fn ExtensibleReader::entries(
   }
   let end = if start + count < self.limit { count } else { self.limit - start }
   for entry_index in 0..<end.to_int() {
+    let address_offset = base_offset + reader.position()
+    let stored_size_offset = base_offset + reader.position() + self.offset_size
     let address = reader.read_uint_le(self.offset_size)
     let stored_size = if self.client == 1 {
       reader.read_var_uint_le(self.entry_size - self.offset_size - 4)
@@ -101,7 +106,35 @@ fn ExtensibleReader::entries(
     if outside {
       continue
     }
-    push_raw_chunk_record(self.records, offsets, address, stored_size)
+    push_located_raw_chunk_record(
+      self.records,
+      offsets,
+      address,
+      stored_size,
+      mask,
+      address_offset,
+      self.offset_size,
+      if self.client == 1 {
+        stored_size_offset
+      } else {
+        -1
+      },
+      if self.client == 1 {
+        self.entry_size - self.offset_size - 4
+      } else {
+        0
+      },
+      if self.client == 1 {
+        metadata_start
+      } else {
+        -1
+      },
+      if self.client == 1 {
+        metadata_checksum_offset
+      } else {
+        -1
+      },
+    )
     if !chunk_contains_selection(
         offsets,
         self.layout.chunk_dimensions,
@@ -166,10 +199,12 @@ fn ExtensibleReader::data_block(
   guard total_size <= 0x7FFFFFFFL else {
     raise InvalidField("extensible array data block is too large")
   }
-  let block = self.source.read_at(
-    source_address_to_offset(address, self.base_address),
-    total_size.to_int(),
-  )
+  let block_address = source_address_to_offset(address, self.base_address)
+  guard block_address <= 0x7FFFFFFFUL else {
+    raise InvalidField("extensible array block offset is out of range")
+  }
+  let block_start = block_address.to_int()
+  let block = self.source.read_at(block_address, total_size.to_int())
   let reader = Reader::new(block)
   guard reader.read_bytes(4) == b"EADB" &&
     reader.read_u8() == b'\x00' &&
@@ -188,7 +223,16 @@ fn ExtensibleReader::data_block(
       reader.position() + (count * self.entry_size.to_int64()).to_int(),
       "extensible array data block",
     )
-    self.entries(reader, count, start)
+    self.entries(
+      reader,
+      count,
+      start,
+      block_start,
+      block_start,
+      block_start +
+      reader.position() +
+      (count * self.entry_size.to_int64()).to_int(),
+    )
   } else {
     verify_metadata_checksum(
       block,
@@ -238,6 +282,11 @@ fn ExtensibleReader::data_block(
           Reader::at(block, page_offset.to_int()),
           page_elements,
           first,
+          block_start,
+          block_start + page_offset.to_int(),
+          block_start +
+          page_offset.to_int() +
+          (page_elements * self.entry_size.to_int64()).to_int(),
         )
       }
     }
@@ -443,10 +492,20 @@ fn read_source_extensible_array_chunks(
     raise InvalidField("extensible array index block size mismatch")
   }
   index.skip(4)
+  let index_address_offset = source_address_to_offset(
+    index_address, base_address,
+  )
+  guard index_address_offset <= 0x7FFFFFFFUL else {
+    raise InvalidField("extensible array index offset is out of range")
+  }
+  let index_offset = index_address_offset.to_int()
   context.entries(
     Reader::at(index_bytes, entry_start),
     config.index_elements.to_int64(),
     0L,
+    index_offset,
+    index_offset,
+    index_offset + index_content,
   )
   let mut start = 0L
   let mut direct_start = 0

@@ -1,4 +1,4 @@
-# Code audit — 2026-11-09
+# Code audit — 2026-11-10
 
 Scope: current worktree, reader and writer, with emphasis on the HDF5 1.14.6
 v1.0 delivery profile and post-v1.0 extensions.
@@ -7,11 +7,13 @@ v1.0 delivery profile and post-v1.0 extensions.
 
 The release gate passes on the current worktree:
 
-- wasm: 270 tests passed;
-- native: 270 tests passed;
+- wasm: 281 tests passed;
+- native: 281 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - writer demo verified by h5py 3.13.0/HDF5 1.14.6;
 - compact and sparse chunked patch output was re-read by h5py 3.13.0/HDF5 1.14.6;
+- caller-defined filter encoding, named pipelines, chunk-mask skips, patch
+  re-encoding and growth relocation are covered by MoonBit round-trip tests;
 - numeric-layout, scale-offset, vlen-fill, NetCDF-4, external-storage,
   shared-message, hard-link, MATLAB-compatible and reference fixtures verified;
 - the version-4 reference fixture and writer output are exercised by MoonBit
@@ -28,12 +30,12 @@ structures raise errors; detection is not exhaustive.
 | Dense metadata | FRHP direct/indirect blocks, huge objects, v2 B-tree leaf/internal nodes and SOHM heap IDs |
 | Datasets | Compact, contiguous, external raw data and every supported chunk index |
 | Fill policies | Default, custom, undefined and `FILL_TIME_NEVER`; malformed messages and external-storage boundaries remain rejected |
-| Filters | Shuffle, deflate, Fletcher32, integer/f32/f64 scale-offset, masks and fill markers |
+| Filters | Shuffle, deflate, Fletcher32, integer/f32/f64 scale-offset, masks and fill markers; registered caller-defined encoders/decoders with named v2 pipeline entries and per-chunk mask skips |
 | Datatypes | Fixed-point, IEEE/normalized floats, strings, compound, enum, array, time, bitfield, opaque, sequence, references, complex |
 | References | 4-/8-byte object references, legacy region references and version-4 object/region/attribute references against compact, contiguous and filtered targets |
 | Shared messages | Table/indexes/heaps, wrappers v1–v3, field sharing, fills, filter pipelines, whole attributes and committed targets |
 | Writer | Superblock v3, OHDR/OCHK, dense metadata, chunk indexes, SOHM, references and external slots |
-| In-place patching | Compact, contiguous and unfiltered chunked datasets, including sparse fill-only chunks; affected checksums are recomputed and chunk edge padding is preserved |
+| In-place patching | Compact, contiguous and filtered or unfiltered chunked datasets, including sparse fill-only chunks and registered custom filters with encoders; filtered chunks are re-encoded in place when they fit or appended at an aligned EOF when they grow, with address, stored size, affected checksums and superblock EOF updated; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
 
 ## Reader findings
@@ -101,12 +103,19 @@ from parsed message offsets; OHDR and OCHK checksums are recomputed when those
 chunks cover the modified bytes. Contiguous patching continues to overwrite only
 the assigned payload address.
 
-Chunked patching walks the active index without decoding payloads, covering
-v1/v2 B-trees, single and implicit chunks, and fixed/extensible arrays. It
-requires unfiltered native-size allocated chunks and rewrites only in-bounds
-elements. Missing chunks stay sparse only when patched values equal the
-effective fill; non-fill values in missing chunks and filtered storage remain
-rejected.
+Chunked patching walks the active index while recording each allocated chunk's
+address, stored size, filter mask and writable index location. It covers v1/v2
+B-trees, single and implicit chunks, and fixed/extensible arrays. Unfiltered
+chunks are overwritten at native size. Filtered chunks are decoded, rewritten
+only at in-bounds elements so edge padding survives, and re-encoded with their
+existing mask and built-in pipeline. Encodings that fit overwrite the original
+payload; larger encodings are collected in one tail buffer, appended at aligned
+file offsets, and written after all index updates. Each relocation updates the
+index address and size fields, the covering page, node, index or object-header
+checksum, and the superblock EOF and checksum. Missing chunks stay sparse only
+when patched values equal the effective fill; non-fill values in missing chunks
+and caller-defined filter re-encoding remain rejected. Relocation is append-only
+and does not write a free-space manager or reclaim the old payload.
 
 Finite chunked datasets use fixed-array indexes; one unlimited dimension uses
 extensible-array indexes, including inline entries, direct/super blocks and paged
@@ -161,8 +170,9 @@ heaps and heap extension across multiple blocks are not emitted.
 
 - Detection of unsupported input is not exhaustive.
 - Whole-dataset and single-selection results are memory resident.
-- Custom filter callbacks are limited to dataset chunk pipelines; metadata-heap
-  filters and overrides of built-in filter IDs are not accepted.
+- Custom filter callbacks are limited to dataset chunk pipelines. Writing and
+  patching require a registered encoder; metadata-heap filters and overrides of
+  built-in filter IDs are not accepted.
 - External raw data requires caller registration and caller-managed files.
 - Dense and SOHM output use compact single-block writer forms; larger producer
   structures are reader-side features unless explicitly listed as writer output.
@@ -209,3 +219,15 @@ heaps and heap extension across multiple blocks are not emitted.
   B-tree, single, implicit, fixed-array and extensible-array indexes, preserving
   sparse fill-only chunks when patched values stay at fill; patched sparse
   output was re-read by h5py 3.13.0/HDF5 1.14.6.
+- 2026-11-10: in-place patching for built-in filtered chunks across v1/v2
+  B-tree, single, fixed-array, extensible-array and paged indexes, with
+  in-place or aligned-EOF re-encoding, address and stored-size updates, EOF and
+  checksum repair;
+  sparse fill-only chunks remain supported. Scale-offset re-encoding validates
+  fill markers and byte-order metadata and covers big-endian integer/f32
+  fixtures plus a scale-offset plus deflate pipeline.
+- 2026-11-10: caller-defined chunk-filter encoding for new files and filtered
+  patching, including optional encoder/name trait methods, named version-2
+  entries for IDs above 255, built-in pipeline combinations, chunk-mask skips,
+  shared filter pipelines and growth relocation. Decoder-only implementations
+  remain source compatible and report a clear unsupported-output error.

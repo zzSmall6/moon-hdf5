@@ -50,11 +50,14 @@ priv struct ChunkBTreeV2 {
 fn ChunkBTreeV2::record(
   self : ChunkBTreeV2,
   reader : Reader,
+  node_start : Int32,
+  metadata_checksum_offset : Int32,
 ) -> Unit raise Hdf5Error {
   guard self.remaining_records > 0UL else {
     raise InvalidField("v2 B-tree exceeds declared record count")
   }
   self.remaining_records = self.remaining_records - 1UL
+  let address_offset = node_start + reader.position()
   let address = reader.read_uint_le(self.offset_size)
   guard address != self.undefined else {
     raise InvalidField("undefined v2 B-tree chunk address")
@@ -64,6 +67,7 @@ fn ChunkBTreeV2::record(
   } else {
     self.chunk_size.to_uint64()
   }
+  let stored_size_offset = node_start + reader.position() - self.size_width
   let mask = if self.client == 11 { reader.read_u32_le() } else { 0U }
   let coordinates : Array[UInt64] = []
   let offsets : Array[UInt64] = []
@@ -90,7 +94,35 @@ fn ChunkBTreeV2::record(
     }
   }
   self.previous = Some(coordinates)
-  push_raw_chunk_record(self.records, offsets, address, stored_size)
+  push_located_raw_chunk_record(
+    self.records,
+    offsets,
+    address,
+    stored_size,
+    mask,
+    address_offset,
+    self.offset_size,
+    if self.client == 11 {
+      stored_size_offset
+    } else {
+      -1
+    },
+    if self.client == 11 {
+      self.size_width
+    } else {
+      0
+    },
+    if self.client == 11 {
+      node_start
+    } else {
+      -1
+    },
+    if self.client == 11 {
+      metadata_checksum_offset
+    } else {
+      -1
+    },
+  )
   if !chunk_contains_selection(
       offsets,
       self.layout.chunk_dimensions,
@@ -137,6 +169,10 @@ fn ChunkBTreeV2::node(
     raise InvalidField("invalid v2 B-tree node record count")
   }
   let start = source_address_to_offset(address, self.base_address)
+  guard start <= 0x7FFFFFFFUL else {
+    raise InvalidField("v2 B-tree node offset is out of range")
+  }
+  let node_start = start.to_int()
   let node = self.source.read_at(start, self.config.node_size)
   let reader = Reader::new(node)
   guard reader.read_bytes(4) == (if depth == 0 { b"BTLF" } else { b"BTIN" }) &&
@@ -167,6 +203,7 @@ fn ChunkBTreeV2::node(
       children.push((child_address, child_count.to_int(), child_total))
     }
   }
+  let checksum_offset = node_start + reader.position()
   verify_metadata_checksum(node, 0, reader.position(), "v2 B-tree node")
   reader.skip(4)
   guard computed_total == total else {
@@ -179,6 +216,8 @@ fn ChunkBTreeV2::node(
     }
     self.record(
       Reader::at(node, records_start + record_index * self.record_size),
+      node_start,
+      checksum_offset,
     )
   }
   if depth > 0 {

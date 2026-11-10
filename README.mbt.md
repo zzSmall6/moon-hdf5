@@ -16,9 +16,9 @@ moon-hdf5 implements a documented subset of HDF5. The
 - `Hdf5Resolver` follows registered external links and reads resolver-backed
   external raw data.
 - `patch_contiguous_dataset` replaces the values of an allocated contiguous
-  dataset, and `patch_dataset_values` also handles compact and unfiltered
-  chunked storage; both return a new byte image. General metadata editing and
-  filtered, external or unallocated storage remain unsupported.
+  dataset, and `patch_dataset_values` also handles compact and filtered or
+  unfiltered chunked storage; both return a new byte image. General metadata
+  editing, external storage and new chunk allocation remain unsupported.
 
 ## Installation
 
@@ -40,7 +40,8 @@ instead, use the commands in [Quick Start](#quick-start).
   fixed-array, extensible-array and v2 B-tree indexes.
 - Deflate, shuffle, Fletcher32, integer scale-offset and f32/f64 decimal
   scale-offset, including per-chunk filter masks.
-- Caller-registered decoders for third-party dataset chunk filters.
+- Caller-registered encoders and decoders for third-party dataset chunk
+  filters.
 - Signed and unsigned 1–8-byte integers in either byte order, IEEE
   float16/32/64, normalized binary floats with implied MSB, strings, compound,
   enum, array, time, bitfield, opaque, sequence, reference and complex values.
@@ -52,8 +53,8 @@ instead, use the commands in [Quick Start](#quick-start).
 - New-file output for groups, datasets, attributes, links, committed datatypes,
   filters, fills, references, compact datasets, contiguous external raw-data
   slots and one or more unlimited dataset dimensions.
-- Value replacement for fixed-size compact, allocated contiguous and unfiltered
-  chunked datasets in a bytes-backed file.
+- Value replacement for fixed-size compact, allocated contiguous and filtered or
+  unfiltered chunked datasets in a bytes-backed file.
 
 ## Quick Start
 
@@ -137,6 +138,14 @@ receive the stored bytes, filter parameters, element width and expected decoded
 size. Built-in filter IDs cannot be replaced, duplicate IDs are rejected, and a
 decoder must return exactly the expected number of bytes.
 
+For writing, register the filter with `Hdf5Writer::add_custom_filter`, implement
+`encode`, and add `Custom(id, parameters)` to a dataset pipeline. `encode` is an
+optional trait method: decoder-only implementations remain source compatible and
+raise `UnsupportedFeature` if used for output. IDs at or above 256 are written
+with the filter name; override `name` to select a stable registered name instead
+of the generated `custom-filter-<id>` value. Registered custom filters can also
+be re-encoded by `patch_dataset_values`.
+
 ## Writing
 
 ```moonbit nocheck
@@ -213,6 +222,10 @@ let output = writer.encode()
 - `add_external_dataset` stores raw bytes in caller-managed external files. Slot
   sizes must match the dataset byte count; the writer does not create those
   files.
+- `add_custom_filter` registers a third-party chunk filter before datasets that
+  reference it. Use `Custom(id, parameters)` in the pipeline; the trait's
+  optional `encode` supplies transformed bytes and `name` supplies the v2
+  pipeline name for IDs at or above 256.
 - Numeric output covers signed and unsigned 1–8-byte integers plus IEEE
   float16/32/64 in either byte order. `Float16Values` and
   `Datatype::write_float(2)` write half-precision values.
@@ -268,17 +281,24 @@ let patched = file.patch_dataset_values(
 @fs.write_bytes_to_file("patched.h5", patched)
 ```
 
-`patch_dataset_values` accepts compact, allocated contiguous or unfiltered
-chunked storage in a bytes-backed `Hdf5File`; `patch_contiguous_dataset`
-remains the strict contiguous-only form. The replacement must have exactly the
-declared shape and a compatible fixed-size datatype, including little- and
-big-endian numeric data. Compact payloads stay inline with their object-header
-checksum recomputed; contiguous payloads and allocated chunks are overwritten in
-place, with chunk edge padding preserved. Missing chunks may stay unallocated
-only when their patched values equal the dataset fill value. Attributes, links
-and other metadata are preserved; external, filtered, variable-length and
-reference storage is rejected, and the dataset is never resized or relaid out.
-The operation returns a complete new byte image.
+`patch_dataset_values` accepts compact, allocated contiguous or filtered or
+unfiltered chunked storage in a bytes-backed `Hdf5File`;
+`patch_contiguous_dataset` remains the strict contiguous-only form. The
+replacement must have exactly the declared shape and a compatible fixed-size
+datatype, including little- and big-endian numeric data. Compact payloads stay
+inline with their object-header checksum recomputed; contiguous payloads and
+allocated chunks are overwritten in place, with chunk edge padding preserved.
+Filtered chunks are decoded with their existing filter mask and re-encoded with
+the built-in pipeline, including big-endian scale-offset values. Encodings that
+fit the original stored size are overwritten in place. Larger encodings are
+appended at the next aligned file offset, and the chunk address, stored size,
+file end-of-file address and affected checksums are updated. Relocation is
+append-only and does not reclaim the old chunk bytes.
+Missing chunks may stay unallocated only when their patched values equal the
+dataset fill value. Attributes, links and other metadata are preserved;
+external, variable-length and reference storage is rejected, and the dataset
+shape and chunk grid are never changed. The operation returns a complete new
+byte image.
 
 Run the larger example and verify it independently with h5py:
 
@@ -318,20 +338,31 @@ the items below summarize the main user-visible gaps.
   return another complete byte image, but streaming output and general in-place
   metadata editing are unsupported. Multi-unlimited resizing and v2 B-tree
   output are rebuilt for the current in-memory shape.
+- **Value patching:** filtered chunk growth is handled by appending a relocated
+  chunk at the aligned file end and updating the index, stored size, checksum
+  and superblock end-of-file address. Relocation is append-only; unreferenced
+  old chunk bytes are not reclaimed because no free-space manager is written.
+  Built-in Shuffle, deflate, Fletcher32 and scale-offset pipelines can be
+  re-encoded, including supported big-endian numeric data; scale-offset requires
+  a stored fill marker. Registered caller-defined filters can be re-encoded when
+  their implementation provides `encode`. Missing chunks accept fill values
+  only.
 - **Read coverage:** virtual datasets, SWMR and parallel HDF5 are outside the
   profile. Built-in chunk filters are decoded directly; other dataset chunk
   filter IDs can be supplied through `Hdf5CustomFilter`. Custom filters on
   metadata heaps are not supported, and built-in filter IDs cannot be
-  overridden. Unsupported layouts, indexes, datatypes and unregistered filters
-  raise `UnsupportedFeature`; detection of unsupported input is not exhaustive.
-  Unsupported attribute datatypes fail the read instead of returning empty
-  values.
+  overridden. Writing requires a registered encoder and a preceding
+  `Hdf5Writer::add_custom_filter` call. Unsupported layouts, indexes, datatypes
+  and unregistered filters raise `UnsupportedFeature`; detection of unsupported
+  input is not exhaustive. Unsupported attribute datatypes fail the read instead
+  of returning empty values.
 - **Writer coverage:** output uses superblock v3 and v2 object headers; older
   output formats and virtual storage are not selected. Fixed-size values accept
   shuffle, deflate, Fletcher32 and scale-offset; scale-offset must lead the
   pipeline, and floating-point scale-offset cannot be combined with Fletcher32.
   Variable-length values accept shuffle and deflate; Fletcher32 and
-  scale-offset are rejected for them.
+  scale-offset are rejected for them. Registered custom filters can be combined
+  with built-in filters and participate in per-chunk masks and shared pipelines.
 - **Dense and shared metadata:** dense output is limited to 9–65,535 records
   with encoded heap objects up to 65,535 bytes, one direct FHDB block and one
   leaf per index. Indirect/huge heap blocks and a free-space manager are not

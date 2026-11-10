@@ -28,6 +28,87 @@ impl Hdf5CustomFilter for TestDeflateFilter with fn decode(
 }
 
 ///|
+impl Hdf5CustomFilter for TestDeflateFilter with fn encode(
+  self : TestDeflateFilter,
+  data : Bytes,
+  parameters : Array[UInt32],
+  element_size : Int32,
+  expected_size : Int32,
+) -> Bytes raise Hdf5Error {
+  self.marker |> ignore
+  element_size |> ignore
+  expected_size |> ignore
+  guard parameters.length() == 1 && parameters[0] <= 9U else {
+    raise InvalidField("invalid deflate parameters")
+  }
+  @zlib.zlib(data[:], level=parameters[0].reinterpret_as_int())
+}
+
+///|
+priv struct NamedEncodingFilter {}
+
+///|
+impl Hdf5CustomFilter for NamedEncodingFilter with fn id(
+  self : NamedEncodingFilter,
+) -> Int32 {
+  self |> ignore
+  256
+}
+
+///|
+impl Hdf5CustomFilter for NamedEncodingFilter with fn name(
+  self : NamedEncodingFilter,
+) -> String {
+  self |> ignore
+  "moon-hdf5-test"
+}
+
+///|
+fn custom_filter_xor(data : Bytes, key : UInt32) -> Bytes {
+  let output = data.to_array()
+  for index in 0..<output.length() {
+    output[index] = (output[index].to_uint() ^ (key & 0xFFU)).to_byte()
+  }
+  Bytes::from_array(output)
+}
+
+///|
+impl Hdf5CustomFilter for NamedEncodingFilter with fn decode(
+  self : NamedEncodingFilter,
+  data : Bytes,
+  parameters : Array[UInt32],
+  element_size : Int32,
+  expected_size : Int32,
+) -> Bytes raise Hdf5Error {
+  self |> ignore
+  element_size |> ignore
+  guard parameters.length() == 1 &&
+    parameters[0] <= 255U &&
+    data.length() == expected_size else {
+    raise InvalidField("invalid named custom filter parameters")
+  }
+  custom_filter_xor(data, parameters[0])
+}
+
+///|
+impl Hdf5CustomFilter for NamedEncodingFilter with fn encode(
+  self : NamedEncodingFilter,
+  data : Bytes,
+  parameters : Array[UInt32],
+  element_size : Int32,
+  expected_size : Int32,
+) -> Bytes raise Hdf5Error {
+  self |> ignore
+  element_size |> ignore
+  guard parameters.length() == 1 &&
+    parameters[0] <= 255U &&
+    data.length() == expected_size else {
+    raise InvalidField("invalid named custom filter parameters")
+  }
+  custom_filter_xor(data, parameters[0])
+}
+
+///|
 priv struct BuiltinTestFilter {}
 
 ///|
@@ -214,4 +295,185 @@ test "custom filters cannot return oversized intermediate output" {
     error => Some(error)
   }
   assert_eq(error, Some(InvalidField("oversized custom filter chunk")))
+}
+
+///|
+test "writer applies registered custom filters with built-in pipelines" {
+  let writer = Hdf5Writer::new()
+  let custom : &Hdf5CustomFilter = { marker: 1, }
+  writer.add_custom_filter(custom)
+  writer.add_chunked_dataset(
+    "/values",
+    [8UL],
+    [4U],
+    Int64Values([1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L]),
+    filters=[Shuffle, Custom(42, [6U])],
+  )
+  writer.set_chunk_filter_mask("/values", 1, 2U)
+  let bytes = writer.encode()
+  let unregistered = Hdf5File::parse(bytes)
+  let error = try {
+    unregistered.read_dataset("/values") |> ignore
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(error, Some(UnsupportedFeature("filter 42 is not supported")))
+  let file = unregistered.with_custom_filter(custom)
+  assert_eq(integer_values(file.read_dataset("/values")), [
+    1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L,
+  ])
+  let chunks = file.chunk_iterator("/values", [2UL])
+  let first = chunks.next().unwrap()
+  match first.values {
+    Integers(values) => assert_eq(values, [1L, 2L])
+    _ => fail("expected custom-filtered chunk values")
+  }
+  let duplicate = try {
+    writer.add_custom_filter(custom)
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    duplicate,
+    Some(InvalidArgument("custom filter is already registered: 42")),
+  )
+}
+
+///|
+test "writer encodes names for custom filter IDs above 255" {
+  let writer = Hdf5Writer::new()
+  let custom : &Hdf5CustomFilter = NamedEncodingFilter::{ }
+  writer.add_custom_filter(custom)
+  writer.set_filter_sharing(true)
+  writer.add_chunked_dataset(
+    "/values",
+    [4UL],
+    [4U],
+    UInt32Values([1U, 2U, 3U, 4U]),
+    filters=[Custom(256, [165U])],
+  )
+  let bytes = writer.encode()
+  let pattern = b"\x00\x01\x0e\x00\x00\x00\x01\x00moon-hdf5-test\xa5\x00\x00\x00"
+  assert_true(custom_filter_find(bytes, pattern) >= 0)
+  let file = Hdf5File::parse(bytes).with_custom_filter(custom)
+  match file.read_dataset("/values").values {
+    UnsignedIntegers(values) => assert_eq(values, [1UL, 2UL, 3UL, 4UL])
+    _ => fail("expected unsigned integer values")
+  }
+}
+
+///|
+test "custom filter validation rejects missing and built-in IDs" {
+  let missing_writer = Hdf5Writer::new()
+  let missing = try {
+    missing_writer.add_chunked_dataset(
+      "/missing",
+      [2UL],
+      [2U],
+      Int32Values([1, 2]),
+      filters=[Custom(99, [])],
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    missing,
+    Some(InvalidArgument("custom filter is not registered: 99")),
+  )
+  let builtin_writer = Hdf5Writer::new()
+  let builtin = try {
+    builtin_writer.add_chunked_dataset(
+      "/builtin",
+      [2UL],
+      [2U],
+      Int32Values([1, 2]),
+      filters=[Custom(1, [])],
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    builtin,
+    Some(InvalidArgument("custom filters cannot replace built-in filter IDs")),
+  )
+  let oversized_writer = Hdf5Writer::new()
+  let oversized = try {
+    oversized_writer.add_chunked_dataset(
+      "/oversized",
+      [2UL],
+      [2U],
+      Int32Values([1, 2]),
+      filters=[Custom(65536, [])],
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    oversized,
+    Some(InvalidArgument("custom filter ID must fit in an HDF5 uint16")),
+  )
+}
+
+///|
+test "custom filters without encoders reject writing" {
+  let writer = Hdf5Writer::new()
+  let decoder_only : &Hdf5CustomFilter = OversizedTestFilter::{ }
+  writer.add_custom_filter(decoder_only)
+  writer.add_chunked_dataset("/values", [2UL], [2U], Int32Values([1, 2]), filters=[
+    Custom(43, []),
+  ])
+  let error = try {
+    writer.encode() |> ignore
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    error,
+    Some(UnsupportedFeature("custom filter 43 does not provide an encoder")),
+  )
+}
+
+///|
+test "custom filters re-encode patches and support growth relocation" {
+  let writer = Hdf5Writer::new()
+  let custom : &Hdf5CustomFilter = { marker: 1, }
+  writer.add_custom_filter(custom)
+  writer.add_chunked_dataset(
+    "/values",
+    [64UL],
+    [64U],
+    Int32Values(Array::make(64, 1)),
+    filters=[Shuffle, Custom(42, [9U])],
+  )
+  let original = writer.encode()
+  let file = Hdf5File::parse(original).with_custom_filter(custom)
+  let expected : Array[Int32] = []
+  let mut state = 7L
+  for _ in 0..<64 {
+    state = (state * 1103515245L + 12345L) & 0x7FFFFFFFL
+    expected.push((state >> 8).to_int())
+  }
+  let patched = file.patch_dataset_values("/values", Int32Values(expected))
+  assert_true(patched.length() > original.length())
+  let patched_file = Hdf5File::parse(patched).with_custom_filter(custom)
+  assert_eq(
+    integer_values(patched_file.read_dataset("/values")),
+    expected.map(value => value.to_int64()),
+  )
+  let second = expected.copy()
+  for index in 0..<second.length() {
+    second[index] = second[index] ^ (index + 1)
+  }
+  let twice = patched_file.patch_dataset_values("/values", Int32Values(second))
+  let twice_file = Hdf5File::parse(twice).with_custom_filter(custom)
+  assert_eq(
+    integer_values(twice_file.read_dataset("/values")),
+    second.map(value => value.to_int64()),
+  )
 }

@@ -340,6 +340,17 @@ fn patch_int32_sequence(
 }
 
 ///|
+fn patch_pseudorandom_int32(count : Int32, seed : Int64) -> Array[Int32] {
+  let values = Array::make(count, 0)
+  let mut state = seed
+  for index in 0..<count {
+    state = (state * 1103515245L + 12345L) & 0x7FFFFFFFL
+    values[index] = (state >> 8).to_int()
+  }
+  values
+}
+
+///|
 test "chunked patches cover v1 and v2 B-tree indexes" {
   let edge = Hdf5File::parse(@fs.read_file_to_bytes("testdata/chunked_edge.h5"))
   let expected = patch_int32_sequence(35, 100, 1)
@@ -377,6 +388,93 @@ test "chunked patches cover v1 and v2 B-tree indexes" {
         "chunked patching cannot allocate missing chunks for non-fill values",
       ),
     ),
+  )
+}
+
+///|
+test "filtered growth relocation covers v1 v2 single and extensible indexes" {
+  let v1_bytes = @fs.read_file_to_bytes("testdata/filters_v1.h5")
+  let v1 = Hdf5File::parse(v1_bytes)
+  let v1_expected = patch_pseudorandom_int32(35, 17L)
+  let v1_patched_bytes = v1.patch_dataset_values(
+    "/gzip",
+    Int32Values(v1_expected),
+  )
+  assert_true(v1_patched_bytes.length() > v1_bytes.length())
+  let v1_patched = Hdf5File::parse(v1_patched_bytes)
+  assert_true(
+    v1_patched.read_dataset_metadata("/gzip").layout.chunk_index is BTreeV1,
+  )
+  assert_eq(
+    integer_values(v1_patched.read_dataset("/gzip")),
+    v1_expected.map(value => value.to_int64()),
+  )
+
+  let writer = Hdf5Writer::new()
+  writer.add_extensible_dataset(
+    "/extensible",
+    [64UL],
+    [None],
+    [16U],
+    Int32Values(Array::make(64, 1)),
+    filters=[Deflate(9)],
+  )
+  writer.add_extensible_dataset(
+    "/btree",
+    [4UL, 4UL],
+    [None, None],
+    [2U, 2U],
+    Int32Values(Array::make(16, 1)),
+    filters=[Deflate(9)],
+  )
+  let indexed_bytes = writer.encode()
+  let indexed = Hdf5File::parse(indexed_bytes)
+  let extensible_expected = patch_pseudorandom_int32(64, 29L)
+  let extensible_bytes = indexed.patch_dataset_values(
+    "/extensible",
+    Int32Values(extensible_expected),
+  )
+  assert_true(extensible_bytes.length() > indexed_bytes.length())
+  let extensible = Hdf5File::parse(extensible_bytes)
+  assert_true(
+    extensible.read_dataset_metadata("/extensible").layout.chunk_index
+    is ExtensibleArray(_),
+  )
+  assert_eq(
+    integer_values(extensible.read_dataset("/extensible")),
+    extensible_expected.map(value => value.to_int64()),
+  )
+  let btree_expected = patch_pseudorandom_int32(16, 41L)
+  let btree_bytes = extensible.patch_dataset_values(
+    "/btree",
+    Int32Values(btree_expected),
+  )
+  assert_true(btree_bytes.length() > extensible_bytes.length())
+  let btree = Hdf5File::parse(btree_bytes)
+  assert_true(
+    btree.read_dataset_metadata("/btree").layout.chunk_index is BTreeV2(_),
+  )
+  assert_eq(
+    integer_values(btree.read_dataset("/btree")),
+    btree_expected.map(value => value.to_int64()),
+  )
+
+  let single_bytes = @fs.read_file_to_bytes("testdata/layout_v4.h5")
+  let single = Hdf5File::parse(single_bytes)
+  let single_expected = patch_pseudorandom_int32(12, 53L)
+  let single_patched_bytes = single.patch_dataset_values(
+    "/single/filtered",
+    Int32Values(single_expected),
+  )
+  assert_true(single_patched_bytes.length() > single_bytes.length())
+  let single_patched = Hdf5File::parse(single_patched_bytes)
+  assert_true(
+    single_patched.read_dataset_metadata("/single/filtered").layout.chunk_index
+    is Single(_, _),
+  )
+  assert_eq(
+    integer_values(single_patched.read_dataset("/single/filtered")),
+    single_expected.map(value => value.to_int64()),
   )
 }
 
@@ -469,19 +567,16 @@ test "chunked patches cover v4 single and implicit indexes" {
     integer_values(resizable_file.read_dataset("/implicit/resizable")),
     resizable_expected.map(value => value.to_int64()),
   )
-  let filtered_error = try {
+  let filtered_expected = patch_int32_sequence(12, 90, 2)
+  let filtered_file = Hdf5File::parse(
     file.patch_dataset_values(
       "/single/filtered",
-      Int32Values(Array::make(12, 0)),
-    )
-    |> ignore
-    None
-  } catch {
-    error => Some(error)
-  }
+      Int32Values(filtered_expected),
+    ),
+  )
   assert_eq(
-    filtered_error,
-    Some(UnsupportedFeature("filtered storage cannot be patched")),
+    integer_values(filtered_file.read_dataset("/single/filtered")),
+    filtered_expected.map(value => value.to_int64()),
   )
 }
 
@@ -546,4 +641,319 @@ test "chunked patches preserve missing fill-only chunks" {
   assert_eq(sparse_values[0], -7L)
   assert_eq(sparse_values[11], 111L)
   assert_eq(sparse_values[62], 222L)
+}
+
+///|
+test "filtered patches cover v1 and v2 B-tree indexes" {
+  let compressed = Hdf5File::parse(
+    @fs.read_file_to_bytes("testdata/compressed.h5"),
+  )
+  let gzip_expected = Array::make(256, 7)
+  let gzip_file = Hdf5File::parse(
+    compressed.patch_dataset_values("/gzip", Int32Values(gzip_expected)),
+  )
+  assert_eq(
+    integer_values(gzip_file.read_dataset("/gzip")),
+    Array::make(256, 7L),
+  )
+
+  let btree = Hdf5File::parse(@fs.read_file_to_bytes("testdata/btree_v2.h5"))
+  let edge_expected = patch_int32_sequence(35, 101, -2)
+  let edge_file = Hdf5File::parse(
+    btree.patch_dataset_values("/filtered/edge", Int32Values(edge_expected)),
+  )
+  assert_eq(
+    integer_values(edge_file.read_dataset("/filtered/edge")),
+    edge_expected.map(value => value.to_int64()),
+  )
+  let deep_expected = patch_int32_sequence(10000, -1000, 1)
+  let deep_file = Hdf5File::parse(
+    btree.patch_dataset_values("/filtered/deep", Int32Values(deep_expected)),
+  )
+  assert_eq(
+    integer_values(deep_file.read_dataset("/filtered/deep")),
+    deep_expected.map(value => value.to_int64()),
+  )
+  let sparse_expected = Array::make(63, -7)
+  sparse_expected[11] = 41
+  sparse_expected[62] = 43
+  let sparse_file = Hdf5File::parse(
+    btree.patch_dataset_values("/filtered/sparse", Int32Values(sparse_expected)),
+  )
+  let sparse_values = integer_values(
+    sparse_file.read_dataset("/filtered/sparse"),
+  )
+  assert_eq(sparse_values.length(), 63)
+  assert_eq(sparse_values[0], -7L)
+  assert_eq(sparse_values[11], 41L)
+  assert_eq(sparse_values[62], 43L)
+}
+
+///|
+test "filtered patches cover fixed and extensible arrays including pages" {
+  let fixed = Hdf5File::parse(@fs.read_file_to_bytes("testdata/fixed_array.h5"))
+  let fixed_expected = patch_int32_sequence(35, 100, 1)
+  let fixed_file = Hdf5File::parse(
+    fixed.patch_dataset_values("/filtered", Int32Values(fixed_expected)),
+  )
+  assert_eq(
+    integer_values(fixed_file.read_dataset("/filtered")),
+    fixed_expected.map(value => value.to_int64()),
+  )
+  let paged_expected = Array::make(4099, -7)
+  for index in [0, 1023, 2048, 4098] {
+    paged_expected[index] = 2000 + index
+  }
+  let paged_file = Hdf5File::parse(
+    fixed.patch_dataset_values("/paged_filtered", Int32Values(paged_expected)),
+  )
+  let paged_values = integer_values(paged_file.read_dataset("/paged_filtered"))
+  assert_eq(paged_values.length(), 4099)
+  for index in [0, 1023, 2048, 4098] {
+    assert_eq(paged_values[index], (2000 + index).to_int64())
+  }
+  assert_eq(paged_values[1], -7L)
+
+  let extensible = Hdf5File::parse(
+    @fs.read_file_to_bytes("testdata/extensible_array.h5"),
+  )
+  let grown_expected = Array::make(420, 11)
+  let grown_file = Hdf5File::parse(
+    extensible.patch_dataset_values(
+      "/filtered/grown",
+      Int32Values(grown_expected),
+    ),
+  )
+  assert_eq(
+    integer_values(grown_file.read_dataset("/filtered/grown")),
+    Array::make(420, 11L),
+  )
+  let swizzled_expected = Array::make(210, 13)
+  let swizzled_file = Hdf5File::parse(
+    extensible.patch_dataset_values(
+      "/filtered/swizzled",
+      Int32Values(swizzled_expected),
+    ),
+  )
+  assert_eq(
+    integer_values(swizzled_file.read_dataset("/filtered/swizzled")),
+    Array::make(210, 13L),
+  )
+  let positions = [
+    0, 3, 4, 19, 20, 51, 52, 115, 116, 243, 244, 499, 500, 1011, 1012, 65523, 65524,
+    131060, 133108, 199999,
+  ]
+  let extensible_paged_expected = Array::make(200000, -7)
+  for index in positions {
+    extensible_paged_expected[index] = 300000 + index
+  }
+  let extensible_paged_file = Hdf5File::parse(
+    extensible.patch_dataset_values(
+      "/filtered/paged",
+      Int32Values(extensible_paged_expected),
+    ),
+  )
+  let extensible_paged_values = integer_values(
+    extensible_paged_file.read_dataset("/filtered/paged"),
+  )
+  assert_eq(extensible_paged_values.length(), 200000)
+  for index in positions {
+    assert_eq(extensible_paged_values[index], (300000 + index).to_int64())
+  }
+  assert_eq(extensible_paged_values[1], -7L)
+}
+
+///|
+test "filtered patches refresh fixed extensible and v2 B-tree metadata" {
+  let writer = Hdf5Writer::new()
+  writer.add_chunked_dataset(
+    "/fixed",
+    [8UL],
+    [2U],
+    Int32Values([0, 1, 2, 3, 4, 5, 6, 7]),
+    filters=[ScaleOffset(0)],
+  )
+  writer.add_extensible_dataset(
+    "/extensible",
+    [8UL],
+    [None],
+    [2U],
+    Int32Values([0, 1, 2, 3, 4, 5, 6, 7]),
+    filters=[ScaleOffset(0)],
+  )
+  writer.add_extensible_dataset(
+    "/btree",
+    [4UL, 4UL],
+    [None, None],
+    [2U, 2U],
+    Int32Values([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
+    filters=[ScaleOffset(0)],
+  )
+  let file = Hdf5File::parse(writer.encode())
+  assert_true(file.read_dataset("/fixed").layout.chunk_index is FixedArray(_))
+  assert_true(
+    file.read_dataset("/extensible").layout.chunk_index is ExtensibleArray(_),
+  )
+  assert_true(file.read_dataset("/btree").layout.chunk_index is BTreeV2(_))
+  let patched = Hdf5File::parse(
+    file.patch_dataset_values("/fixed", Int32Values(Array::make(8, 500))),
+  )
+  assert_eq(
+    integer_values(patched.read_dataset("/fixed")),
+    Array::make(8, 500L),
+  )
+  let patched = Hdf5File::parse(
+    patched.patch_dataset_values(
+      "/extensible",
+      Int32Values(Array::make(8, 600)),
+    ),
+  )
+  assert_eq(
+    integer_values(patched.read_dataset("/extensible")),
+    Array::make(8, 600L),
+  )
+  let patched = Hdf5File::parse(
+    patched.patch_dataset_values("/btree", Int32Values(Array::make(16, 700))),
+  )
+  assert_eq(
+    integer_values(patched.read_dataset("/btree")),
+    Array::make(16, 700L),
+  )
+}
+
+///|
+test "filtered patches support multi-filter pipelines and relocate growth" {
+  let writer = Hdf5Writer::new()
+  writer.add_chunked_dataset(
+    "/multi",
+    [64UL],
+    [16U],
+    Int32Values(patch_int32_sequence(64, 0, 1)),
+    filters=[Shuffle, Deflate(6), Fletcher32],
+  )
+  let file = Hdf5File::parse(writer.encode())
+  let expected = Array::make(64, 17)
+  let patched = Hdf5File::parse(
+    file.patch_dataset_values("/multi", Int32Values(expected)),
+  )
+  assert_eq(
+    integer_values(patched.read_dataset("/multi")),
+    Array::make(64, 17L),
+  )
+
+  let growth_writer = Hdf5Writer::new()
+  growth_writer.add_chunked_dataset(
+    "/zeros",
+    [64UL],
+    [64U],
+    Int32Values(Array::make(64, 1)),
+    filters=[Deflate(9)],
+  )
+  let growth_bytes = growth_writer.encode()
+  let growth_file = Hdf5File::parse(growth_bytes)
+  let random = Array::make(64, 0)
+  let mut state = 1L
+  for index in 0..<64 {
+    state = (state * 1103515245L + 12345L) & 0x7FFFFFFFL
+    random[index] = (state >> 8).to_int()
+  }
+  let patched_bytes = growth_file.patch_dataset_values(
+    "/zeros",
+    Int32Values(random),
+  )
+  assert_true(patched_bytes.length() > growth_bytes.length())
+  let patched_file = Hdf5File::parse(patched_bytes)
+  assert_eq(
+    integer_values(patched_file.read_dataset("/zeros")),
+    random.map(value => value.to_int64()),
+  )
+  assert_eq(
+    patched_file.superblock.end_of_file_address,
+    patched_bytes.length().to_uint64() - patched_file.superblock.base_address,
+  )
+  let second = Array::make(64, 0)
+  for index in 0..<64 {
+    second[index] = random[index] ^ (index + 1)
+  }
+  let second_file = Hdf5File::parse(
+    patched_file.patch_dataset_values("/zeros", Int32Values(second)),
+  )
+  assert_eq(
+    integer_values(second_file.read_dataset("/zeros")),
+    second.map(value => value.to_int64()),
+  )
+}
+
+///|
+test "filtered patches cover external scale-offset byte orders and pipelines" {
+  let file = Hdf5File::parse(@fs.read_file_to_bytes("testdata/scaleoffset.h5"))
+
+  let auto_expected = patch_int32_sequence(20, 100, 1)
+  for index in 10..<20 {
+    auto_expected[index] = -7
+  }
+  let auto = Hdf5File::parse(
+    file.patch_dataset_values("/int32_auto", Int32Values(auto_expected)),
+  )
+  assert_eq(
+    integer_values(auto.read_dataset("/int32_auto")),
+    auto_expected.map(value => value.to_int64()),
+  )
+  let fixed_expected = patch_int32_sequence(16, 200, 1)
+  let fixed = Hdf5File::parse(
+    file.patch_dataset_values("/int32_fixed", Int32Values(fixed_expected)),
+  )
+  assert_eq(
+    integer_values(fixed.read_dataset("/int32_fixed")),
+    fixed_expected.map(value => value.to_int64()),
+  )
+  let int16_expected = [-301, -250, -199, -150, -99, -49]
+  let int16 = Hdf5File::parse(
+    file.patch_dataset_values("/int16_be", Int16Values(int16_expected)),
+  )
+  assert_eq(
+    integer_values(int16.read_dataset("/int16_be")),
+    int16_expected.map(value => value.to_int64()),
+  )
+  let float32_expected = [2.25, 3.5, -2.75, 8.5, -9.5, 0.25]
+  let float32 = Hdf5File::parse(
+    file.patch_dataset_values(
+      "/float32_be",
+      Float32Values([
+        Float(2.25),
+        Float(3.5),
+        Float(-2.75),
+        Float(8.5),
+        Float(-9.5),
+        Float(0.25),
+      ]),
+    ),
+  )
+  assert_eq(float_values(float32.read_dataset("/float32_be")), float32_expected)
+
+  let pipeline_expected = [10.25, 10.25, 10.25, -9.5, -9.5]
+  let pipeline = Hdf5File::parse(
+    file.patch_dataset_values(
+      "/float32_pipeline",
+      Float32Values([
+        Float(10.25),
+        Float(10.25),
+        Float(10.25),
+        Float(-9.5),
+        Float(-9.5),
+      ]),
+    ),
+  )
+  assert_eq(
+    float_values(pipeline.read_dataset("/float32_pipeline")),
+    pipeline_expected,
+  )
+  let full_expected = [-1, -2, -3, -4]
+  let full = Hdf5File::parse(
+    file.patch_dataset_values("/int32_full", Int32Values(full_expected)),
+  )
+  assert_eq(
+    integer_values(full.read_dataset("/int32_full")),
+    full_expected.map(value => value.to_int64()),
+  )
 }

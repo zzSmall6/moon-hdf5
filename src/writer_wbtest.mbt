@@ -2622,6 +2622,7 @@ test "writer preserves chunk filter masks across multi-axis growth" {
     writer.datasets[index],
     empty_writable_heap(),
     [],
+    writer.custom_filters,
   )
   assert_eq(initial[3].filter_mask, 1U)
 
@@ -2630,6 +2631,7 @@ test "writer preserves chunk filter masks across multi-axis growth" {
     writer.datasets[index],
     empty_writable_heap(),
     [],
+    writer.custom_filters,
   )
   assert_eq(resized[3].filter_mask, 0U)
   assert_eq(resized[4].filter_mask, 1U)
@@ -2639,6 +2641,7 @@ test "writer preserves chunk filter masks across multi-axis growth" {
     writer.datasets[index],
     empty_writable_heap(),
     [],
+    writer.custom_filters,
   )
   assert_eq(appended[5].filter_mask, 1U)
   assert_eq(

@@ -86,6 +86,7 @@ fn parse_source_superblock(source : &Hdf5Source) -> Superblock raise Hdf5Error {
     base_address: parsed.base_address,
     free_space_address: parsed.free_space_address,
     end_of_file_address: parsed.end_of_file_address,
+    end_of_file_offset: offset.to_int() + parsed.end_of_file_offset,
     driver_info_address: parsed.driver_info_address,
     superblock_extension_address: parsed.superblock_extension_address,
     root_group_address: parsed.root_group_address,
@@ -93,6 +94,11 @@ fn parse_source_superblock(source : &Hdf5Source) -> Superblock raise Hdf5Error {
     group_leaf_node_k: parsed.group_leaf_node_k,
     group_internal_node_k: parsed.group_internal_node_k,
     superblock_checksum: parsed.superblock_checksum,
+    superblock_checksum_offset: if parsed.superblock_checksum_offset < 0 {
+      -1
+    } else {
+      offset.to_int() + parsed.superblock_checksum_offset
+    },
   }
 }
 

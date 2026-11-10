@@ -27,11 +27,18 @@ fn read_direct_chunks(
         raise InvalidField("filtered single chunk is missing its stored size")
       }
       let offsets = Array::make(rank, 0UL)
-      push_raw_chunk_record(
+      push_located_raw_chunk_record(
         records,
         offsets.copy(),
         layout.data_address,
         stored_size.unwrap_or(chunk_size.to_uint64()),
+        mask,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        -1,
       )
       if !chunk_contains_selection(
           offsets,

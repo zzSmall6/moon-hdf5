@@ -166,7 +166,59 @@ fn read_fixed_array_chunks(
       stored_size = entry.read_var_uint_le(size_width)
       mask = entry.read_u32_le()
     }
-    push_raw_chunk_record(records, offsets.copy(), address, stored_size)
+    let stored_size_offset = position + offset_size.to_int64()
+    let metadata_start = if paged {
+      entries_start + page * page_entries * entry_size.to_int64() + page * 4L
+    } else {
+      block_offset.to_int64()
+    }
+    let metadata_checksum_offset = if paged {
+      let page_elements = if page + 1 == page_count {
+        maximum_total - page * page_entries
+      } else {
+        page_entries
+      }
+      metadata_start + page_elements * entry_size.to_int64()
+    } else {
+      entries_start + maximum_total * entry_size.to_int64()
+    }
+    guard stored_size_offset >= 0L &&
+      stored_size_offset <= 0x7FFFFFFFL &&
+      metadata_start >= 0L &&
+      metadata_start <= 0x7FFFFFFFL &&
+      metadata_checksum_offset >= 0L &&
+      metadata_checksum_offset <= 0x7FFFFFFFL else {
+      raise InvalidField("fixed array metadata offset is out of range")
+    }
+    push_located_raw_chunk_record(
+      records,
+      offsets.copy(),
+      address,
+      stored_size,
+      mask,
+      position.to_int(),
+      offset_size,
+      if client == 1 {
+        stored_size_offset.to_int()
+      } else {
+        -1
+      },
+      if client == 1 {
+        size_width
+      } else {
+        0
+      },
+      if client == 1 {
+        metadata_start.to_int()
+      } else {
+        -1
+      },
+      if client == 1 {
+        metadata_checksum_offset.to_int()
+      } else {
+        -1
+      },
+    )
     if !chunk_contains_selection(
         offsets,
         layout.chunk_dimensions,

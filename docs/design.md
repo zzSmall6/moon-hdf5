@@ -54,9 +54,11 @@ masks follow HDF5 filter order. Non-finite scale-offset inputs are rejected.
 Dataset chunk pipelines may also contain caller-registered IDs. Registration is
 owned by `Hdf5File` or `Hdf5Resolver`; callbacks receive the filter parameters,
 element width and expected decoded size, and the pipeline bounds intermediate
-output as well as verifying the final size. Built-in IDs cannot be overridden.
-Filters attached to metadata heaps do not use the caller registry and still
-require built-in support.
+output as well as verifying the final size. The same trait has an optional
+encoder used by the writer and value patching; decoder-only implementations keep
+working for reads and raise `UnsupportedFeature` when output is requested.
+Built-in IDs cannot be overridden. Filters attached to metadata heaps do not use
+the caller registry and still require built-in support.
 
 Datatype decoding recursively handles fixed-point layouts, IEEE and normalized
 binary floats, fixed/vlen strings, compound, enum, array, time, bitfield, opaque,
@@ -157,6 +159,15 @@ pipeline, and floating-point scale-offset cannot be combined with Fletcher32.
 Variable-length values are filtered as fixed-width heap descriptors: shuffle
 and deflate are supported, while Fletcher32 and scale-offset are rejected, as
 in HDF5 1.14.6.
+
+Caller-defined filters are registered on `Hdf5Writer` before the affected
+dataset is added. A pipeline entry carries only the registered ID and its
+little-endian client parameters; the encoder receives the current chunk bytes,
+parameters, element width and original decoded chunk size. Version-2 pipeline
+encoding writes the optional UTF-8 filter name for IDs at or above 256, and the
+same entry works through normal or shared filter-pipeline messages. Encoders can
+change the chunk size; the resulting stored size is recorded by each chunk
+index.
 `set_chunk_filter_mask` records per-chunk skips in the fixed-array,
 extensible-array or v2 B-tree index. Masks are keyed by chunk-grid coordinates,
 not linear chunk positions, so resize and append preserve their logical target.
@@ -180,11 +191,22 @@ In-place value patching keeps object identity and layout. Contiguous payloads
 are overwritten at their assigned address. Compact payloads are located from the
 stored object-header message offset; when the containing OHDR chunk or OCHK
 continuation has a checksum, it is recomputed after the bytes change. The
-chunked path walks the active chunk index without decoding payloads, requires
-native unfiltered chunk sizes, and rewrites only in-bounds elements so padding
-survives. Missing chunks stay unallocated only when their patched values equal
-the effective fill element; otherwise the patch is rejected instead of
-allocating storage. `patch_dataset_values` accepts all three layouts, while
+chunked path walks the active chunk index while recording the stored size,
+filter mask and writable index location for every allocated chunk, then rewrites
+only in-bounds elements so padding survives. Unfiltered chunks use their native
+size. Filtered chunks are decoded and re-encoded with the existing mask and
+registered pipeline. Caller-defined filters are resolved through the
+`Hdf5File` registrations and require an encoder. Scale-offset input is normalized
+to little endian when the dataset is big-endian, while the stored filter
+metadata keeps the original byte order and fill marker. Results that fit
+overwrite the original payload and update its size field when needed. Larger
+results are collected in a tail buffer, appended at aligned file offsets, then
+linked by updating the chunk address and size fields, covering checksums and the
+superblock EOF address and checksum.
+Missing chunks stay unallocated only when their patched values equal the
+effective fill element; otherwise the patch is rejected. Relocation is
+append-only and leaves the old chunk bytes unreferenced.
+`patch_dataset_values` accepts all three layouts, while
 `patch_contiguous_dataset` is the contiguous-only compatibility entry point.
 
 ## Errors and verification

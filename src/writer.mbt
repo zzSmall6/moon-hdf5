@@ -304,6 +304,8 @@ pub(all) enum Hdf5WriteFilter {
   Fletcher32
   /// Integer bits or decimal digits for floats; zero selects automatic bits for integers.
   ScaleOffset(Int32)
+  /// Registered caller-defined filter ID and its little-endian client data.
+  Custom(Int32, Array[UInt32])
 }
 
 ///|
@@ -403,6 +405,7 @@ pub struct Hdf5Writer {
   priv mut share_attributes : Bool
   priv mut share_fills : Bool
   priv mut share_filters : Bool
+  priv custom_filters : Array[&Hdf5CustomFilter]
 }
 
 ///|
@@ -535,6 +538,7 @@ pub fn Hdf5Writer::new() -> Hdf5Writer {
     share_attributes: false,
     share_fills: false,
     share_filters: false,
+    custom_filters: [],
   }
 }
 
@@ -565,6 +569,17 @@ pub fn Hdf5Writer::set_filter_sharing(
   enabled : Bool,
 ) -> Unit {
   self.share_filters = enabled
+}
+
+///|
+/// Registers a caller-defined filter for subsequent chunked datasets. The
+/// filter's `encode` method is used by `Custom` pipeline entries, and its
+/// `decode` method can read the resulting file through `Hdf5File`.
+pub fn Hdf5Writer::add_custom_filter(
+  self : Hdf5Writer,
+  filter : &Hdf5CustomFilter,
+) -> Unit raise Hdf5Error {
+  register_custom_filter(self.custom_filters, filter)
 }
 
 ///|
@@ -1757,8 +1772,23 @@ fn same_write_datatype(
 }
 
 ///|
+fn copy_write_filters(
+  filters : Array[Hdf5WriteFilter],
+) -> Array[Hdf5WriteFilter] {
+  let result : Array[Hdf5WriteFilter] = []
+  for filter in filters {
+    match filter {
+      Custom(id, parameters) => result.push(Custom(id, parameters.copy()))
+      _ => result.push(filter)
+    }
+  }
+  result
+}
+
+///|
 fn validate_write_filters(
   filters : Array[Hdf5WriteFilter],
+  custom_filters : Array[&Hdf5CustomFilter],
 ) -> Unit raise Hdf5Error {
   guard filters.length() <= 32 else {
     raise InvalidArgument("too many filters")
@@ -1767,34 +1797,52 @@ fn validate_write_filters(
   let mut saw_deflate = false
   let mut saw_fletcher = false
   let mut saw_scaleoffset = false
+  let mut saw_any = false
   for filter in filters {
     match filter {
       Shuffle => {
-        guard !saw_shuffle && !saw_deflate && !saw_fletcher && !saw_scaleoffset else {
+        guard !saw_shuffle && !saw_any else {
           raise InvalidArgument("shuffle must be the first writer filter")
         }
         saw_shuffle = true
+        saw_any = true
       }
       Deflate(level) => {
         guard !saw_deflate && !saw_fletcher && level >= 0 && level <= 9 else {
           raise InvalidArgument("invalid deflate writer filter")
         }
         saw_deflate = true
+        saw_any = true
       }
       Fletcher32 => {
         guard !saw_fletcher else {
           raise InvalidArgument("duplicate Fletcher32 writer filter")
         }
         saw_fletcher = true
+        saw_any = true
       }
       ScaleOffset(minbits) => {
-        guard !saw_scaleoffset && !saw_shuffle && !saw_deflate && !saw_fletcher else {
+        guard !saw_scaleoffset && !saw_any else {
           raise InvalidArgument("scale-offset must be the first writer filter")
         }
         guard minbits >= 0 else {
           raise InvalidArgument("invalid scale-offset writer filter")
         }
         saw_scaleoffset = true
+        saw_any = true
+      }
+      Custom(id, parameters) => {
+        validate_custom_filter_id(id)
+        let custom = find_custom_filter(custom_filters, id)
+        guard parameters.length() <= 65535 else {
+          raise InvalidArgument("custom filter has too many parameters")
+        }
+        if id >= 256 {
+          guard @utf8.encode(custom.name()).length() <= 65535 else {
+            raise InvalidArgument("custom filter name is too long")
+          }
+        }
+        saw_any = true
       }
     }
   }
@@ -1960,7 +2008,7 @@ pub fn Hdf5Writer::add_chunked_dataset(
     chunk_dimensions,
     writer_value_element_size(values),
   )
-  validate_write_filters(filters)
+  validate_write_filters(filters, self.custom_filters)
   validate_writer_filters_for_values(values, filters)
   let copied_fill = validated_write_fill(values, fill_value)
   self.ensure_groups(writer_parent_path(normalized))
@@ -1970,7 +2018,10 @@ pub fn Hdf5Writer::add_chunked_dataset(
     dimensions: dimensions.copy(),
     maximum_dimensions: dimensions.copy(),
     values: copy_write_values(values),
-    storage: WritableChunked(chunk_dimensions.copy(), filters.copy()),
+    storage: WritableChunked(
+      chunk_dimensions.copy(),
+      copy_write_filters(filters),
+    ),
     fill_value: copied_fill,
     chunk_filter_masks: [],
   })
@@ -2188,7 +2239,7 @@ pub fn Hdf5Writer::add_extensible_dataset(
     chunk_dimensions,
     writer_value_element_size(values),
   )
-  validate_write_filters(filters)
+  validate_write_filters(filters, self.custom_filters)
   validate_writer_filters_for_values(values, filters)
   let copied_fill = validated_write_fill(values, fill_value)
   let grid_dimensions = dimensions.copy()
@@ -2207,7 +2258,7 @@ pub fn Hdf5Writer::add_extensible_dataset(
     values: copy_write_values(values),
     storage: WritableExtensible(
       chunk_dimensions.copy(),
-      filters.copy(),
+      copy_write_filters(filters),
       unlimited_axes,
     ),
     fill_value: copied_fill,
@@ -4211,6 +4262,7 @@ fn encode_filter_pipeline(
   chunk_elements : Int32,
   values : Hdf5WriteValues,
   fill : Bytes,
+  custom_filters : Array[&Hdf5CustomFilter],
 ) -> Bytes raise Hdf5Error {
   let buffer = @buffer.Buffer::Buffer()
   buffer.write_byte(b'\x02')
@@ -4245,6 +4297,28 @@ fn encode_filter_pipeline(
         buffer.write_uint16_le(6)
         buffer.write_uint16_le(1)
         buffer.write_uint16_le(20)
+        for parameter in parameters {
+          buffer.write_uint_le(parameter)
+        }
+      }
+      Custom(id, parameters) => {
+        let custom = find_custom_filter(custom_filters, id)
+        buffer.write_uint16_le(id.to_uint16())
+        let name = if id >= 256 { @utf8.encode(custom.name()) } else { b"" }
+        if id >= 256 {
+          guard name.length() <= 65535 else {
+            raise InvalidField("custom filter name is too long")
+          }
+          buffer.write_uint16_le(name.length().to_uint16())
+        }
+        buffer.write_uint16_le(0)
+        guard parameters.length() <= 65535 else {
+          raise InvalidField("custom filter has too many parameters")
+        }
+        buffer.write_uint16_le(parameters.length().to_uint16())
+        if name.length() > 0 {
+          writer_write_bytes(buffer, name)
+        }
         for parameter in parameters {
           buffer.write_uint_le(parameter)
         }
@@ -4303,7 +4377,9 @@ fn encode_chunk_filters(
   element_size : Int32,
   values : Hdf5WriteValues,
   fill : Bytes,
+  custom_filters : Array[&Hdf5CustomFilter],
 ) -> Bytes raise Hdf5Error {
+  let expected_size = data.length()
   let mut output = data
   for index in 0..<filters.length() {
     if (filter_mask & (1U << index)) != 0U {
@@ -4321,6 +4397,15 @@ fn encode_chunk_filters(
         encode_scaleoffset_chunk(
           output, minbits, size, datatype_class, signed, fill,
         )
+      }
+      Custom(id, parameters) => {
+        let encoded = find_custom_filter(custom_filters, id).encode(
+          output, parameters, element_size, expected_size,
+        )
+        guard encoded.length() > 0 else {
+          raise InvalidField("custom filter produced an empty chunk")
+        }
+        encoded
       }
     }
   }
@@ -4382,6 +4467,7 @@ fn encode_dataset_chunks(
   dataset : WritableDataset,
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
+  custom_filters : Array[&Hdf5CustomFilter],
 ) -> Array[EncodedChunkEntry] raise Hdf5Error {
   let (chunk_dimensions, filters, order, grid_dimensions) = writer_dataset_chunk_grid(
     dataset,
@@ -4472,6 +4558,7 @@ fn encode_dataset_chunks(
         encoded.element_size,
         dataset.values,
         fill,
+        custom_filters,
       )
     } else {
       b""
@@ -4492,6 +4579,7 @@ fn encode_fixed_array_storage(
   dataset : WritableDataset,
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
+  custom_filters : Array[&Hdf5CustomFilter],
 ) -> Bytes raise Hdf5Error {
   let (_, filters) = match dataset.storage {
     WritableChunked(dimensions, filters) => (dimensions, filters)
@@ -4499,7 +4587,7 @@ fn encode_fixed_array_storage(
     WritableCompact | WritableContiguous | WritableExternal(_) =>
       raise InvalidField("expected chunked writer dataset")
   }
-  let entries = encode_dataset_chunks(dataset, heap, objects)
+  let entries = encode_dataset_chunks(dataset, heap, objects, custom_filters)
   let filtered = filters.length() > 0
   let entry_size = if filtered { 14 } else { 8 }
   let page_bits = 10
@@ -4741,6 +4829,7 @@ fn encode_extensible_array_storage(
   dataset : WritableDataset,
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
+  custom_filters : Array[&Hdf5CustomFilter],
 ) -> Bytes raise Hdf5Error {
   let (_, filters, unlimited_axes) = match dataset.storage {
     WritableExtensible(dimensions, filters, axes) => (dimensions, filters, axes)
@@ -4751,7 +4840,7 @@ fn encode_extensible_array_storage(
       "extensible-array storage requires one unlimited dimension",
     )
   }
-  let entries = encode_dataset_chunks(dataset, heap, objects)
+  let entries = encode_dataset_chunks(dataset, heap, objects, custom_filters)
   let filtered = filters.length() > 0
   let entry_size = if filtered { 14 } else { 8 }
   let max_bits = 32
@@ -5352,6 +5441,7 @@ fn encode_btree_v2_chunk_storage(
   dataset : WritableDataset,
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
+  custom_filters : Array[&Hdf5CustomFilter],
 ) -> Bytes raise Hdf5Error {
   let (chunk_dimensions, filters, unlimited_axes) = match dataset.storage {
     WritableExtensible(chunks, pipeline, axes) => (chunks, pipeline, axes)
@@ -5362,7 +5452,7 @@ fn encode_btree_v2_chunk_storage(
       "v2 B-tree storage requires multiple unlimited dimensions",
     )
   }
-  let entries = encode_dataset_chunks(dataset, heap, objects)
+  let entries = encode_dataset_chunks(dataset, heap, objects, custom_filters)
   let grid_dimensions = dataset.dimensions.copy()
   for axis in 0..<grid_dimensions.length() {
     if !unlimited_axes.contains(axis) {
@@ -6206,6 +6296,7 @@ fn Hdf5Writer::shared_filter_candidates(
           writer_chunk_element_count(chunk_dimensions),
           dataset.values,
           fill,
+          self.custom_filters,
         )
         if data.length() <= writer_shared_max_managed_size {
           filters.push({ path: object.path, data, id: empty_id, })
@@ -7134,6 +7225,7 @@ fn Hdf5Writer::object_payload(
                     writer_chunk_element_count(chunk_dimensions),
                     dataset.values,
                     filter_fill,
+                    self.custom_filters,
                   ),
                 )
             }
@@ -7168,6 +7260,7 @@ fn Hdf5Writer::object_payload(
                     writer_chunk_element_count(chunk_dimensions),
                     dataset.values,
                     filter_fill,
+                    self.custom_filters,
                   ),
                 )
             }
@@ -7829,6 +7922,7 @@ fn assign_writable_addresses(
                   dataset,
                   heap,
                   objects,
+                  writer.custom_filters,
                 ).length(),
               )
             WritableExtensible(_, _, unlimited_axes) => {
@@ -7838,6 +7932,7 @@ fn assign_writable_addresses(
                   dataset,
                   heap,
                   objects,
+                  writer.custom_filters,
                 ).length()
               } else {
                 encode_btree_v2_chunk_storage(
@@ -7845,6 +7940,7 @@ fn assign_writable_addresses(
                   dataset,
                   heap,
                   objects,
+                  writer.custom_filters,
                 ).length()
               }
               writer_align(offset + payload_length)
@@ -7941,6 +8037,7 @@ fn assign_writable_addresses(
         writer_chunk_element_count(chunk_dimensions),
         dataset.values,
         fill,
+        writer.custom_filters,
       )
       guard data.length() <= writer_shared_max_managed_size else {
         raise InvalidField("writer shared filter changed size")
@@ -8138,6 +8235,7 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
               dataset,
               layout.heap,
               objects,
+              self.custom_filters,
             )
           WritableExtensible(_, _, unlimited_axes) =>
             if unlimited_axes.length() == 1 {
@@ -8146,6 +8244,7 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
                 dataset,
                 layout.heap,
                 objects,
+                self.custom_filters,
               )
             } else {
               encode_btree_v2_chunk_storage(
@@ -8153,6 +8252,7 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
                 dataset,
                 layout.heap,
                 objects,
+                self.custom_filters,
               )
             }
           WritableExternal(_) => b""

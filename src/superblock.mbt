@@ -43,6 +43,7 @@ priv struct Superblock {
   base_address : UInt64
   free_space_address : UInt64
   end_of_file_address : UInt64
+  end_of_file_offset : Int32
   driver_info_address : UInt64
   superblock_extension_address : UInt64
   root_group_address : UInt64
@@ -50,6 +51,7 @@ priv struct Superblock {
   group_leaf_node_k : UInt16
   group_internal_node_k : UInt16
   superblock_checksum : UInt32
+  superblock_checksum_offset : Int32
 }
 
 ///|
@@ -84,6 +86,7 @@ fn parse_superblock_v0(
   let file_consistency_flags = reader.read_u32_le()
   let base_address = reader.read_uint_le(offset_size)
   let free_space_address = reader.read_uint_le(offset_size)
+  let end_of_file_offset = reader.position()
   let end_of_file_address = reader.read_uint_le(offset_size)
   let driver_info_address = reader.read_uint_le(offset_size)
   let _root_link_name_offset = reader.read_uint_le(offset_size)
@@ -101,6 +104,7 @@ fn parse_superblock_v0(
     base_address,
     free_space_address,
     end_of_file_address,
+    end_of_file_offset,
     driver_info_address,
     superblock_extension_address: 0UL,
     root_group_address: root_group_object_header,
@@ -108,6 +112,7 @@ fn parse_superblock_v0(
     group_leaf_node_k,
     group_internal_node_k,
     superblock_checksum: 0U,
+    superblock_checksum_offset: -1,
   }
 }
 
@@ -123,8 +128,10 @@ fn parse_superblock_v2(
   validate_address_sizes(offset_size, length_size)
   let base_address = reader.read_uint_le(offset_size)
   let superblock_extension_address = reader.read_uint_le(offset_size)
+  let end_of_file_offset = reader.position()
   let end_of_file_address = reader.read_uint_le(offset_size)
   let root_group_address = reader.read_uint_le(offset_size)
+  let superblock_checksum_offset = reader.position()
   let superblock_checksum = reader.read_u32_le()
   verify_metadata_checksum(
     reader.bytes,
@@ -142,6 +149,7 @@ fn parse_superblock_v2(
     base_address,
     free_space_address: 0UL,
     end_of_file_address,
+    end_of_file_offset,
     driver_info_address: 0UL,
     superblock_extension_address,
     root_group_address,
@@ -149,6 +157,7 @@ fn parse_superblock_v2(
     group_leaf_node_k: 0,
     group_internal_node_k: 0,
     superblock_checksum,
+    superblock_checksum_offset,
   }
 }
 

@@ -50,6 +50,8 @@ pub struct DataLayout {
   priv version : Int32
   priv layout_class : Int32
   priv data_address : UInt64
+  priv data_address_offset : Int32
+  priv data_address_width : Int32
   priv data_size : UInt64
   priv chunk_dimensions : Array[UInt32]
   priv element_size : Int32
@@ -101,6 +103,8 @@ fn parse_data_layout(
   }
   let chunk_dimensions : Array[UInt32] = []
   let mut data_address = 0UL
+  let mut data_address_offset = -1
+  let mut data_address_width = 0
   let mut data_size = 0UL
   let mut element_size = 0
   let mut compact_data : Bytes = b""
@@ -112,6 +116,12 @@ fn parse_data_layout(
         compact_data = reader.read_bytes(size)
       }
       1 | 2 => {
+        data_address_offset = if message.data_offset >= 0 {
+          message.data_offset + reader.position()
+        } else {
+          -1
+        }
+        data_address_width = offset_size
         data_address = reader.read_uint_le(offset_size)
         let dimensionality = message.data.unsafe_get(1).to_int()
         for _ in 1..<dimensionality {
@@ -128,6 +138,12 @@ fn parse_data_layout(
         compact_data = reader.read_bytes(size)
       }
       1 => {
+        data_address_offset = if message.data_offset >= 0 {
+          message.data_offset + reader.position()
+        } else {
+          -1
+        }
+        data_address_width = offset_size
         data_address = reader.read_uint_le(offset_size)
         data_size = reader.read_uint_le(length_size)
       }
@@ -219,9 +235,21 @@ fn parse_data_layout(
                 " is not supported yet",
               )
           }
+          data_address_offset = if message.data_offset >= 0 {
+            message.data_offset + reader.position()
+          } else {
+            -1
+          }
+          data_address_width = offset_size
           data_address = reader.read_uint_le(offset_size)
         } else {
           let dimensionality = reader.read_u8().to_int()
+          data_address_offset = if message.data_offset >= 0 {
+            message.data_offset + reader.position()
+          } else {
+            -1
+          }
+          data_address_width = offset_size
           data_address = reader.read_uint_le(offset_size)
           for _ in 1..<dimensionality {
             chunk_dimensions.push(reader.read_u32_le())
@@ -235,6 +263,8 @@ fn parse_data_layout(
     version,
     layout_class,
     data_address,
+    data_address_offset,
+    data_address_width,
     data_size,
     chunk_dimensions,
     element_size,

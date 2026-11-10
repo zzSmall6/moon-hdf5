@@ -20,6 +20,13 @@ priv struct RawChunkRecord {
   offsets : Array[UInt64]
   address : UInt64
   size : UInt64
+  mask : UInt32
+  address_offset : Int32
+  address_width : Int32
+  stored_size_offset : Int32
+  stored_size_width : Int32
+  metadata_start : Int32
+  metadata_checksum_offset : Int32
 }
 
 ///|
@@ -30,7 +37,51 @@ fn push_raw_chunk_record(
   size : UInt64,
 ) -> Unit {
   match records {
-    Some(records) => records.push({ offsets, address, size, })
+    Some(records) =>
+      records.push({
+        offsets,
+        address,
+        size,
+        mask: 0U,
+        address_offset: -1,
+        address_width: 0,
+        stored_size_offset: -1,
+        stored_size_width: 0,
+        metadata_start: -1,
+        metadata_checksum_offset: -1,
+      })
+    None => ()
+  }
+}
+
+///|
+fn push_located_raw_chunk_record(
+  records : Array[RawChunkRecord]?,
+  offsets : Array[UInt64],
+  address : UInt64,
+  size : UInt64,
+  mask : UInt32,
+  address_offset : Int32,
+  address_width : Int32,
+  stored_size_offset : Int32,
+  stored_size_width : Int32,
+  metadata_start : Int32,
+  metadata_checksum_offset : Int32,
+) -> Unit {
+  match records {
+    Some(records) =>
+      records.push({
+        offsets,
+        address,
+        size,
+        mask,
+        address_offset,
+        address_width,
+        stored_size_offset,
+        stored_size_width,
+        metadata_start,
+        metadata_checksum_offset,
+      })
     None => ()
   }
 }
@@ -260,6 +311,7 @@ fn read_chunk_btree(
   let ndims = chunk_dimensions.length()
   let key_dimensions = ndims + 1
   for _ in 0..<entries_used {
+    let stored_size_offset = reader.position()
     let chunk_size = reader.read_u32_le().reinterpret_as_int()
     let filter_mask = reader.read_u32_le()
     let offsets : Array[UInt64] = []
@@ -269,6 +321,7 @@ fn read_chunk_btree(
         offsets.push(offset)
       }
     }
+    let address_offset = reader.position()
     let child = reader.read_uint_le(offset_size)
     if node_level > 0 {
       read_chunk_btree(
@@ -287,11 +340,18 @@ fn read_chunk_btree(
       )
     } else {
       guard chunk_size >= 0 else { raise InvalidField("negative chunk size") }
-      push_raw_chunk_record(
+      push_located_raw_chunk_record(
         records,
         offsets.copy(),
         child,
         chunk_size.to_uint64(),
+        filter_mask,
+        address_offset,
+        offset_size,
+        stored_size_offset,
+        4,
+        -1,
+        -1,
       )
       if !chunk_contains_selection(
           offsets, chunk_dimensions, dataspace_dimensions, selection,

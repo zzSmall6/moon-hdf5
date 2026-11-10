@@ -376,6 +376,7 @@ pub(all) enum Hdf5WriteFilter {
   Deflate(Int32)
   Fletcher32
   ScaleOffset(Int32)
+  Custom(Int32, Array[UInt32])
 }
 pub fn Hdf5WriteFilter::equal(Self, Self) -> Bool
 pub fn Hdf5WriteFilter::not_equal(Self, Self) -> Bool
@@ -410,6 +411,7 @@ pub fn Hdf5Writer::add_attribute(Self, String, String, Array[UInt64], Hdf5WriteV
 pub fn Hdf5Writer::add_chunked_dataset(Self, String, Array[UInt64], Array[UInt32], Hdf5WriteValues, fill_value? : Hdf5WriteValues, filters? : Array[Hdf5WriteFilter]) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_committed_datatype(Self, String, Datatype) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_compact_dataset(Self, String, Array[UInt64], Hdf5WriteValues) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::add_custom_filter(Self, &Hdf5CustomFilter) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_dataset(Self, String, Array[UInt64], Hdf5WriteValues) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_extensible_dataset(Self, String, Array[UInt64], Array[UInt64?], Array[UInt32], Hdf5WriteValues, fill_value? : Hdf5WriteValues, filters? : Array[Hdf5WriteFilter]) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_external_dataset(Self, String, Array[UInt64], Hdf5WriteValues, Array[Hdf5ExternalSlot], fill_value? : Hdf5WriteValues) -> Unit raise Hdf5Error
@@ -431,7 +433,9 @@ pub fn Hdf5Writer::write_dataset_slab(Self, String, Array[UInt64], Array[UInt64]
 // Traits
 pub(open) trait Hdf5CustomFilter {
   fn id(Self) -> Int32
+  fn name(Self) -> String = _
   fn decode(Self, Bytes, Array[UInt32], Int32, Int32) -> Bytes raise Hdf5Error
+  fn encode(Self, Bytes, Array[UInt32], Int32, Int32) -> Bytes raise Hdf5Error = _
 }
 
 pub(open) trait Hdf5Source : @debug.Debug {
