@@ -212,10 +212,21 @@ applies the pipeline and appends the encoded payload. It then updates the slot
 address, stored size and filter mask and recomputes the containing index
 checksum. This covers the single-chunk layout and fixed- and extensible-array
 entries in existing blocks or pages.
+When a fixed-array header exists but its data-block address is undefined,
+patching appends an FADB containing undefined entries for every maximum slot.
+It initializes the page bitmap and page or whole-block checksums, writes the new
+block address into the FAHD, and refreshes the FAHD checksum before linking
+chunks through the normal slot path.
+For a page whose bitmap bit is clear, patching first initializes all reserved
+entries to the undefined address and writes the page checksum. A fixed-array
+page then sets its bit and refreshes the FADB checksum; an extensible-array page
+sets its bit in the EASB bitmap and refreshes the EASB checksum. The requested
+chunk is then linked into that page; other entries continue to read as fill
+values.
 Missing chunks stay unallocated only when their patched values equal the
-effective fill element. Non-fill chunks whose fixed-array block or page,
-extensible-array block or page, or B-tree record does not exist are rejected;
-the patcher does not construct chunk-index metadata. Relocation and allocation
+effective fill element. Non-fill chunks whose extensible-array data block,
+extensible-array super/index block or B-tree record does not exist are rejected;
+the patcher does not construct those index structures. Relocation and allocation
 are append-only and leave old chunk bytes unreferenced.
 `patch_dataset_values` accepts all three layouts, while
 `patch_contiguous_dataset` is the contiguous-only compatibility entry point.

@@ -285,15 +285,17 @@ fn patch_stored_size_field(
   output : FixedArray[Byte],
   record : RawChunkRecord,
   value : UInt64,
+  target_start~ : Int32 = 0,
 ) -> Unit raise Hdf5Error {
-  guard record.stored_size_offset >= 0 && record.stored_size_width >= 1 else {
+  let offset = record.stored_size_offset - target_start
+  guard offset >= 0 && record.stored_size_width >= 1 else {
     raise UnsupportedFeature(
       "filtered chunk index does not expose a writable stored-size field",
     )
   }
   patch_little_endian_uint(
     output,
-    record.stored_size_offset,
+    offset,
     record.stored_size_width,
     value,
     "filtered chunk encoded size",
@@ -305,18 +307,86 @@ fn patch_chunk_mask_field(
   output : FixedArray[Byte],
   record : RawChunkRecord,
   value : UInt32,
+  target_start~ : Int32 = 0,
 ) -> Unit raise Hdf5Error {
-  guard record.mask_offset >= 0 else {
+  let offset = record.mask_offset - target_start
+  guard offset >= 0 else {
     raise UnsupportedFeature(
       "filtered chunk index does not expose a writable filter-mask field",
     )
   }
   patch_little_endian_uint(
     output,
-    record.mask_offset,
+    offset,
     4,
     value.to_uint64(),
     "allocated filtered chunk filter mask",
+  )
+}
+
+///|
+fn initialize_chunk_page(
+  output : FixedArray[Byte],
+  page : RawChunkPage,
+  target_start~ : Int32 = 0,
+) -> Unit raise Hdf5Error {
+  let page_start = page.start - target_start
+  let checksum_offset = page.checksum_offset - target_start
+  let bitmap_offset = page.bitmap_offset - target_start
+  let bitmap_metadata_start = page.bitmap_metadata_start - target_start
+  let bitmap_checksum_offset = page.bitmap_checksum_offset - target_start
+  let page_length = page.entries.to_int64() * page.entry_size.to_int64()
+  guard page.entries >= 0 &&
+    page.entry_size >= page.address_width &&
+    (
+      page.stored_size_width == 0 ||
+      page.address_width + page.stored_size_width + 4 == page.entry_size
+    ) &&
+    page_start >= 0 &&
+    checksum_offset.to_int64() == page_start.to_int64() + page_length &&
+    checksum_offset.to_int64() + 4L <= output.length().to_int64() &&
+    bitmap_offset >= 0 &&
+    bitmap_offset < output.length() &&
+    bitmap_metadata_start >= 0 &&
+    bitmap_checksum_offset >= bitmap_metadata_start else {
+    raise InvalidField("invalid unallocated chunk-index page")
+  }
+  let undefined = if page.address_width == 8 {
+    0xFFFFFFFFFFFFFFFFUL
+  } else {
+    (1UL << (page.address_width * 8)) - 1UL
+  }
+  for entry in 0..<page.entries {
+    let offset = page_start + entry * page.entry_size
+    patch_little_endian_uint(
+      output,
+      offset,
+      page.address_width,
+      undefined,
+      "chunk-index page chunk address",
+    )
+    if page.stored_size_width > 0 {
+      patch_little_endian_uint(
+        output,
+        offset + page.address_width,
+        page.stored_size_width,
+        0UL,
+        "chunk-index page stored size",
+      )
+      patch_little_endian_uint(
+        output,
+        offset + page.address_width + page.stored_size_width,
+        4,
+        0UL,
+        "chunk-index page filter mask",
+      )
+    }
+  }
+  patch_metadata_checksum_in_place(output, page_start, checksum_offset)
+  output[bitmap_offset] = (output[bitmap_offset].to_int() |
+  page.bitmap_mask.to_int()).to_byte()
+  patch_metadata_checksum_in_place(
+    output, bitmap_metadata_start, bitmap_checksum_offset,
   )
 }
 
@@ -325,15 +395,17 @@ fn patch_chunk_address_field(
   output : FixedArray[Byte],
   record : RawChunkRecord,
   value : UInt64,
+  target_start~ : Int32 = 0,
 ) -> Unit raise Hdf5Error {
-  guard record.address_offset >= 0 && record.address_width >= 1 else {
+  let offset = record.address_offset - target_start
+  guard offset >= 0 && record.address_width >= 1 else {
     raise UnsupportedFeature(
       "filtered chunk index does not expose a writable address field",
     )
   }
   patch_little_endian_uint(
     output,
-    record.address_offset,
+    offset,
     record.address_width,
     value,
     "relocated filtered chunk address",
@@ -849,6 +921,7 @@ fn single_chunk_slot_record(
     mask_offset,
     metadata_start: message.chunk_start,
     metadata_checksum_offset: message.checksum_offset,
+    page: None,
   }
 }
 
@@ -906,6 +979,7 @@ fn Hdf5File::patch_chunked_dataset_data(
   } else {
     (1UL << (self.superblock.offset_size * 8)) - 1UL
   }
+  let mut missing_fixed_array : MissingFixedArrayStorage? = None
   let records = match layout.chunk_index {
     Single(_, _) =>
       [
@@ -916,6 +990,38 @@ fn Hdf5File::patch_chunked_dataset_data(
           self.superblock.length_size,
         ),
       ]
+    FixedArray(page_bits) => {
+      let records = collect_raw_chunk_records(
+        self.bytes,
+        layout,
+        metadata.dataspace,
+        metadata.datatype,
+        filters,
+        self.superblock.offset_size,
+        self.superblock.length_size,
+        self.superblock.base_address,
+      )
+      if records.length() == 0 && layout.data_address != undefined {
+        let block_start = (self.bytes.length() + 7) / 8 * 8
+        let storage = prepare_missing_fixed_array_storage(
+          self.bytes,
+          layout,
+          metadata.dataspace,
+          metadata.datatype,
+          self.superblock.offset_size,
+          self.superblock.length_size,
+          self.superblock.base_address,
+          filters,
+          undefined,
+          page_bits,
+          block_start,
+        )
+        missing_fixed_array = Some(storage)
+        storage.records
+      } else {
+        records
+      }
+    }
     _ =>
       collect_raw_chunk_records(
         self.bytes,
@@ -982,8 +1088,21 @@ fn Hdf5File::patch_chunked_dataset_data(
       metadata.dataspace.dimensions[dimension].reinterpret_as_int64()
   }
   let output = self.bytes.to_fixedarray()
+  let index_output = match missing_fixed_array {
+    Some(storage) => storage.image
+    None => output
+  }
+  let index_start = match missing_fixed_array {
+    Some(storage) => storage.block_start
+    None => 0
+  }
+  let chunk_tail_base = match missing_fixed_array {
+    Some(storage) => storage.block_start + storage.image.length()
+    None => self.bytes.length()
+  }
   let tail = @buffer.Buffer::Buffer()
   let mut relocated = false
+  let allocated_pages : Array[Int32] = []
   let checksum_starts : Array[Int32] = []
   let checksum_offsets : Array[Int32] = []
   for chunk_linear in 0..<total_chunks.to_int() {
@@ -1049,6 +1168,18 @@ fn Hdf5File::patch_chunked_dataset_data(
             }
           }
           if has_non_fill {
+            match record.page {
+              Some(page) =>
+                if !allocated_pages.contains(page.start) {
+                  initialize_chunk_page(
+                    index_output,
+                    page,
+                    target_start=index_start,
+                  )
+                  allocated_pages.push(page.start)
+                }
+              None => ()
+            }
             let encoded = if filtered {
               let scaleoffset_little_endian = patch_scaleoffset_needs_little_endian_input(
                 filters,
@@ -1082,24 +1213,28 @@ fn Hdf5File::patch_chunked_dataset_data(
               raise InvalidField("allocated chunk encoded to an empty payload")
             }
             let new_offset = append_aligned_chunk_to_tail(
-              tail,
-              self.bytes.length(),
-              encoded,
+              tail, chunk_tail_base, encoded,
             )
             let new_address = file_offset_to_stored_address(
               new_offset,
               self.superblock.base_address,
             )
-            patch_chunk_address_field(output, record, new_address)
+            patch_chunk_address_field(
+              index_output,
+              record,
+              new_address,
+              target_start=index_start,
+            )
             if record.stored_size_offset >= 0 {
               patch_stored_size_field(
-                output,
+                index_output,
                 record,
                 if filtered {
                   encoded.length().to_uint64()
                 } else {
                   chunk_size.to_uint64()
                 },
+                target_start=index_start,
               )
             } else if filtered {
               raise InvalidField(
@@ -1107,7 +1242,12 @@ fn Hdf5File::patch_chunked_dataset_data(
               )
             }
             if filtered {
-              patch_chunk_mask_field(output, record, 0U)
+              patch_chunk_mask_field(
+                index_output,
+                record,
+                0U,
+                target_start=index_start,
+              )
             }
             relocated = true
             if record.metadata_start >= 0 &&
@@ -1223,22 +1363,26 @@ fn Hdf5File::patch_chunked_dataset_data(
               }
             } else {
               let new_offset = append_aligned_chunk_to_tail(
-                tail,
-                self.bytes.length(),
-                encoded,
+                tail, chunk_tail_base, encoded,
               )
               let new_address = file_offset_to_stored_address(
                 new_offset,
                 self.superblock.base_address,
               )
-              patch_chunk_address_field(output, record, new_address)
+              patch_chunk_address_field(
+                index_output,
+                record,
+                new_address,
+                target_start=index_start,
+              )
               relocated = true
             }
             if encoded.length().to_uint64() != record.size {
               patch_stored_size_field(
-                output,
+                index_output,
                 record,
                 encoded.length().to_uint64(),
+                target_start=index_start,
               )
               if record.metadata_start >= 0 &&
                 record.metadata_checksum_offset >= 0 {
@@ -1296,13 +1440,43 @@ fn Hdf5File::patch_chunked_dataset_data(
   }
   for region in 0..<checksum_starts.length() {
     patch_metadata_checksum_in_place(
-      output,
-      checksum_starts[region],
-      checksum_offsets[region],
+      index_output,
+      checksum_starts[region] - index_start,
+      checksum_offsets[region] - index_start,
     )
   }
   if relocated {
-    return self.finish_appended_image(output, tail)
+    match missing_fixed_array {
+      Some(storage) => {
+        let new_address = file_offset_to_stored_address(
+          storage.block_start.to_uint64(),
+          self.superblock.base_address,
+        )
+        patch_little_endian_uint(
+          output,
+          storage.block_address_offset,
+          storage.block_address_width,
+          new_address,
+          "fixed array data block address",
+        )
+        patch_metadata_checksum_in_place(
+          output,
+          address_to_offset(layout.data_address, self.superblock.base_address),
+          storage.header_checksum_offset,
+        )
+        let combined = @buffer.Buffer::Buffer()
+        for _ in 0..<(storage.block_start - self.bytes.length()) {
+          combined.write_byte(b'\x00')
+        }
+        combined.write_bytes(
+          storage.image.unsafe_reinterpret_as_bytes().get_view().unwrap(),
+        )
+        let chunk_bytes = tail.to_bytes()
+        combined.write_bytes(chunk_bytes.get_view().unwrap())
+        return self.finish_appended_image(output, combined)
+      }
+      None => return self.finish_appended_image(output, tail)
+    }
   }
   Bytes::from_array(output)
 }
@@ -1415,10 +1589,11 @@ pub fn Hdf5File::patch_contiguous_dataset(
 /// affected checksums.
 ///
 /// Missing chunks stay unallocated for fill values. A non-fill chunk can be
-/// allocated only into a writable slot already present in the chunk index;
-/// missing fixed-/extensible-array blocks or pages and B-tree records are not
-/// created. External, variable-length and reference storage is rejected, and
-/// the dataset shape and chunk grid are never changed.
+/// allocated only into writable storage already present in the chunk index.
+/// Missing fixed- or extensible-array pages inside an existing data block are
+/// initialized and marked allocated; missing data blocks, super/index blocks and
+/// B-tree records are not created. External, variable-length and reference
+/// storage is rejected, and the dataset shape and chunk grid are never changed.
 pub fn Hdf5File::patch_dataset_values(
   self : Hdf5File,
   path : String,

@@ -351,6 +351,37 @@ fn patch_pseudorandom_int32(count : Int32, seed : Int64) -> Array[Int32] {
 }
 
 ///|
+fn patch_fixed_array_without_data_block(
+  bytes : Bytes,
+  path : String,
+) -> Bytes raise Hdf5Error {
+  let file = Hdf5File::parse(bytes)
+  let metadata = file.read_dataset_metadata(path)
+  guard metadata.layout.chunk_index is FixedArray(_) else {
+    raise InvalidField("expected a fixed array dataset")
+  }
+  let base_address = file.superblock.base_address
+  let offset_size = file.superblock.offset_size
+  let header = address_to_offset(metadata.layout.data_address, base_address)
+  let block_address_offset = header + 8 + file.superblock.length_size
+  let undefined = if offset_size == 8 {
+    0xFFFFFFFFFFFFFFFFUL
+  } else {
+    (1UL << (offset_size * 8)) - 1UL
+  }
+  let output = bytes.to_fixedarray()
+  patch_little_endian_uint(
+    output, block_address_offset, offset_size, undefined, "test fixed array data block address",
+  )
+  patch_metadata_checksum_in_place(
+    output,
+    header,
+    block_address_offset + offset_size,
+  )
+  Bytes::from_array(output)
+}
+
+///|
 test "chunked patches cover v1 and v2 B-tree indexes" {
   let edge = Hdf5File::parse(@fs.read_file_to_bytes("testdata/chunked_edge.h5"))
   let expected = patch_int32_sequence(35, 100, 1)
@@ -497,22 +528,6 @@ test "chunked patches cover fixed and extensible array indexes" {
     integer_values(resizable_file.read_dataset("/resizable")),
     resizable_expected.map(value => value.to_int64()),
   )
-  let paged_error = try {
-    fixed.patch_dataset_values("/paged", Int32Values(Array::make(4099, 1)))
-    |> ignore
-    None
-  } catch {
-    error => Some(error)
-  }
-  assert_eq(
-    paged_error,
-    Some(
-      UnsupportedFeature(
-        "chunk index has no writable slot for a non-fill chunk",
-      ),
-    ),
-  )
-
   let extensible = Hdf5File::parse(
     @fs.read_file_to_bytes("testdata/extensible_array.h5"),
   )
@@ -1139,4 +1154,108 @@ test "unfiltered missing fixed and extensible slots refresh index checksums" {
     integer_values(extensible_patched.read_dataset("/extensible")),
     extensible_expected.map(value => value.to_int64()),
   )
+}
+
+///|
+test "missing fixed-array pages allocate inside an existing data block" {
+  let bytes = @fs.read_file_to_bytes("testdata/fixed_array.h5")
+  let file = Hdf5File::parse(bytes)
+  for path in ["/paged", "/paged_filtered"] {
+    let expected = Array::make(4099, -7)
+    expected[1200] = 1200
+    expected[1500] = 1500
+    let patched_bytes = file.patch_dataset_values(path, Int32Values(expected))
+    assert_true(patched_bytes.length() > bytes.length())
+    let patched = Hdf5File::parse(patched_bytes)
+    assert_true(
+      patched.read_dataset_metadata(path).layout.chunk_index is FixedArray(_),
+    )
+    assert_eq(
+      integer_values(patched.read_dataset(path)),
+      expected.map(value => value.to_int64()),
+    )
+  }
+}
+
+///|
+test "missing fixed-array data blocks allocate new index storage" {
+  let bytes = @fs.read_file_to_bytes("testdata/fixed_array.h5")
+  let raw_expected = patch_int32_sequence(35, 500, 2)
+  let filtered_expected = patch_int32_sequence(35, -900, 3)
+  let paged_expected = Array::make(4099, -7)
+  for index in [0, 1023, 2048, 4098] {
+    paged_expected[index] = 7000 + index
+  }
+  let cases : Array[(String, Array[Int32])] = [
+    ("/raw", raw_expected),
+    ("/filtered", filtered_expected),
+    ("/paged", paged_expected),
+    ("/paged_filtered", paged_expected),
+  ]
+  for (path, expected) in cases {
+    let missing_bytes = patch_fixed_array_without_data_block(bytes, path)
+    let missing = Hdf5File::parse(missing_bytes)
+    assert_eq(
+      integer_values(missing.read_dataset(path)).length(),
+      expected.length(),
+    )
+    let patched_bytes = missing.patch_dataset_values(
+      path,
+      Int32Values(expected),
+    )
+    assert_true(patched_bytes.length() > missing_bytes.length())
+    let patched = Hdf5File::parse(patched_bytes)
+    assert_true(
+      patched.read_dataset_metadata(path).layout.chunk_index is FixedArray(_),
+    )
+    assert_eq(
+      integer_values(patched.read_dataset(path)),
+      expected.map(value => value.to_int64()),
+    )
+    assert_eq(
+      patched.superblock.end_of_file_address,
+      patched_bytes.length().to_uint64() - patched.superblock.base_address,
+    )
+    let revised = expected.copy()
+    let revised_index = if expected.length() > 1000 { 1500 } else { 1 }
+    revised[revised_index] = 123456
+    let revised_bytes = patched.patch_dataset_values(path, Int32Values(revised))
+    let revised_file = Hdf5File::parse(revised_bytes)
+    let revised_values = integer_values(revised_file.read_dataset(path))
+    assert_eq(revised_values[revised_index], 123456L)
+    assert_eq(revised_values.length(), expected.length())
+  }
+}
+
+///|
+test "missing extensible-array pages allocate inside existing data blocks" {
+  let bytes = @fs.read_file_to_bytes("testdata/extensible_array.h5")
+  let file = Hdf5File::parse(bytes)
+  let existing = [
+    0, 3, 4, 19, 20, 51, 52, 115, 116, 243, 244, 499, 500, 1011, 1012, 65523, 65524,
+    131060, 133108, 199999,
+  ]
+  for path in ["/raw/paged", "/filtered/paged"] {
+    let expected = Array::make(200000, -7)
+    for index in existing {
+      expected[index] = index
+    }
+    for index in [132500, 132700, 134500, 199500] {
+      expected[index] = 400000 + index
+    }
+    let patched_bytes = file.patch_dataset_values(path, Int32Values(expected))
+    assert_true(patched_bytes.length() > bytes.length())
+    let patched = Hdf5File::parse(patched_bytes)
+    assert_true(
+      patched.read_dataset_metadata(path).layout.chunk_index
+      is ExtensibleArray(_),
+    )
+    let values = integer_values(patched.read_dataset(path))
+    assert_eq(values.length(), expected.length())
+    for index in [0, 132500, 132700, 134500, 199500, 199999] {
+      assert_eq(values[index], expected[index].to_int64())
+    }
+    assert_eq(values[132499], -7L)
+    assert_eq(values[134501], -7L)
+  }
 }

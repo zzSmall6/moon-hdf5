@@ -19,8 +19,10 @@ moon-hdf5 implements a documented subset of HDF5. The
   dataset, and `patch_dataset_values` also handles compact, unallocated
   contiguous and filtered or unfiltered chunked storage. Both return a new byte
   image. Allocation is limited to raw payloads that fit existing layout or
-  chunk-index slots; general metadata editing, external storage and construction
-  of missing chunk-index blocks, pages or records remain unsupported.
+  chunk-index storage, including a missing fixed-array data block or missing
+  fixed- or extensible-array pages in an existing data block. General metadata
+  editing, external storage and construction of missing extensible-array
+  index/super blocks or B-tree records remain unsupported.
 
 ## Installation
 
@@ -57,7 +59,8 @@ instead, use the commands in [Quick Start](#quick-start).
   slots and one or more unlimited dataset dimensions.
 - Value replacement for fixed-size compact, allocated or unallocated contiguous
   and filtered or unfiltered chunked datasets in a bytes-backed file, including
-  undefined slots in existing chunk indexes.
+  undefined slots in existing chunk indexes and creation of a missing
+  fixed-array data block under an existing FAHD.
 
 ## Quick Start
 
@@ -305,14 +308,21 @@ append-only and does not reclaim the old chunk bytes.
 Missing chunks may stay unallocated only when their patched values equal the
 dataset fill value. A non-fill missing chunk is allocated only when the active
 index already exposes a writable slot, such as the single-chunk layout or a
-fixed- or extensible-array entry in an existing block or page. The new chunk
-starts from the fill element, receives the patched values and filters, and
-updates the slot address, stored size and filter mask.
-Patching does not create missing fixed-array data blocks or pages,
-extensible-array blocks or pages, or v1/v2 B-tree records. Attributes, links and
-other metadata are preserved; external, variable-length and reference storage
-is rejected, and the dataset shape and chunk grid are never changed. The
-operation returns a complete new byte image.
+fixed- or extensible-array entry in an existing block or page. If a fixed-array
+header exists but its data block is missing, patching appends an FADB with
+undefined entries, installs its address in the FAHD, and refreshes both
+checksums before allocating chunks. The new chunk starts from the fill element,
+receives the patched values and filters, and updates the slot address, stored
+size and filter mask.
+An unallocated fixed-array page is first initialized to undefined entries, then
+its page checksum, bitmap bit and FADB checksum are written. An unallocated
+extensible-array page follows the same entry and page-checksum steps, but sets
+its EASB bitmap bit and refreshes the EASB checksum instead. Patching does not
+create a missing extensible-array data block, extensible-array super/index block
+or v1/v2 B-tree record. Attributes, links and other metadata are preserved;
+external, variable-length and reference storage is rejected, and the dataset
+shape and chunk grid are never changed. The operation returns a complete new
+byte image.
 
 Run the larger example and verify it independently with h5py:
 
@@ -352,11 +362,12 @@ the items below summarize the main user-visible gaps.
   return another complete byte image, but streaming output and general in-place
   metadata editing are unsupported. Multi-unlimited resizing and v2 B-tree
   output are rebuilt for the current in-memory shape.
-- **Value patching:** allocation is limited to an unallocated contiguous payload
-  or an undefined slot already represented by the single-chunk layout or a
-  fixed-/extensible-array entry. Patching does not create missing fixed-array
-  data blocks or pages, extensible-array blocks or pages, or v1/v2 B-tree
-  records. Filtered chunk growth is handled by appending a
+- **Value patching:** allocation is limited to an unallocated contiguous payload,
+  an undefined slot already represented by the single-chunk layout or a
+  fixed-/extensible-array entry, a missing fixed-array data block, or a missing
+  fixed- or extensible-array page inside an existing data block. Patching does
+  not create a missing extensible-array data block, extensible-array
+  super/index block or v1/v2 B-tree record. Filtered chunk growth is handled by appending a
   relocated chunk at the aligned file end and updating the index, stored size,
   checksum and superblock end-of-file address. Relocation and allocation are
   append-only; unreferenced old chunk bytes are not reclaimed because no

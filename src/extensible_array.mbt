@@ -68,6 +68,7 @@ fn ExtensibleReader::entries(
   base_offset : Int32,
   metadata_start : Int32,
   metadata_checksum_offset : Int32,
+  unallocated_page : RawChunkPage?,
 ) -> Unit raise Hdf5Error {
   guard count <=
     (reader.remaining().to_int64() - 4) / self.entry_size.to_int64() else {
@@ -77,13 +78,25 @@ fn ExtensibleReader::entries(
   for entry_index in 0..<end.to_int() {
     let address_offset = base_offset + reader.position()
     let stored_size_offset = base_offset + reader.position() + self.offset_size
-    let address = reader.read_uint_le(self.offset_size)
-    let stored_size = if self.client == 1 {
+    let unallocated = unallocated_page is Some(_)
+    let address = if unallocated {
+      reader.skip(self.entry_size)
+      self.undefined
+    } else {
+      reader.read_uint_le(self.offset_size)
+    }
+    let stored_size = if unallocated {
+      self.chunk_size.to_uint64()
+    } else if self.client == 1 {
       reader.read_var_uint_le(self.entry_size - self.offset_size - 4)
     } else {
       self.chunk_size.to_uint64()
     }
-    let mask = if self.client == 1 { reader.read_u32_le() } else { 0U }
+    let mask = if unallocated || self.client != 1 {
+      0U
+    } else {
+      reader.read_u32_le()
+    }
     let rank = self.order.length()
     let offsets = Array::make(rank, 0UL)
     let mut remaining = start + entry_index.to_int64()
@@ -103,7 +116,7 @@ fn ExtensibleReader::entries(
     if outside {
       continue
     }
-    push_chunk_slot_record(
+    push_chunk_page_slot_record(
       self.records,
       offsets,
       address,
@@ -128,6 +141,7 @@ fn ExtensibleReader::entries(
       },
       metadata_start,
       metadata_checksum_offset,
+      unallocated_page,
     )
     if address == self.undefined {
       continue
@@ -172,6 +186,9 @@ fn ExtensibleReader::data_block(
   block_offset : Int64,
   bitmap : Bytes,
   bitmap_start : Int64,
+  bitmap_offset : Int32,
+  bitmap_metadata_start : Int32,
+  bitmap_checksum_offset : Int32,
 ) -> Unit raise Hdf5Error {
   if address == self.undefined || start >= self.limit {
     return
@@ -229,6 +246,7 @@ fn ExtensibleReader::data_block(
       block_start +
       reader.position() +
       (count * self.entry_size.to_int64()).to_int(),
+      None,
     )
   } else {
     verify_metadata_checksum(
@@ -260,15 +278,18 @@ fn ExtensibleReader::data_block(
       guard bit / 8 < bitmap.length().to_int64() else {
         raise InvalidField("invalid extensible array page bitmap")
       }
+      let page_elements = if page + 1 == pages.to_int() &&
+        last_page_elements > 0 {
+        last_page_elements
+      } else {
+        page_size
+      }
+      let page_offset = page_start + page.to_int64() * page_bytes
+      let page_metadata_start = block_start + page_offset.to_int()
+      let page_checksum_offset = page_metadata_start +
+        (page_elements * self.entry_size.to_int64()).to_int()
       if (bitmap[(bit / 8).to_int()].to_int() & (0x80 >> (bit % 8).to_int())) !=
         0 {
-        let page_elements = if page + 1 == pages.to_int() &&
-          last_page_elements > 0 {
-          last_page_elements
-        } else {
-          page_size
-        }
-        let page_offset = page_start + page.to_int64() * page_bytes
         verify_metadata_checksum(
           block,
           page_offset.to_int(),
@@ -284,6 +305,40 @@ fn ExtensibleReader::data_block(
           block_start +
           page_offset.to_int() +
           (page_elements * self.entry_size.to_int64()).to_int(),
+          None,
+        )
+      } else {
+        guard bitmap_offset >= 0 &&
+          bitmap_metadata_start >= 0 &&
+          bitmap_checksum_offset >= bitmap_metadata_start &&
+          page_metadata_start >= block_start &&
+          page_checksum_offset >= page_metadata_start else {
+          raise InvalidField("invalid extensible array page metadata")
+        }
+        let page_record : RawChunkPage = {
+          start: page_metadata_start,
+          entries: page_elements.to_int(),
+          entry_size: self.entry_size,
+          checksum_offset: page_checksum_offset,
+          bitmap_offset: bitmap_offset + (bit / 8).to_int(),
+          bitmap_mask: (0x80 >> (bit % 8).to_int()).to_byte(),
+          bitmap_metadata_start,
+          bitmap_checksum_offset,
+          address_width: self.offset_size,
+          stored_size_width: if self.client == 1 {
+            self.entry_size - self.offset_size - 4
+          } else {
+            0
+          },
+        }
+        self.entries(
+          Reader::at(block, page_offset.to_int()),
+          page_elements,
+          first,
+          block_start,
+          page_metadata_start,
+          page_checksum_offset,
+          Some(page_record),
         )
       }
     }
@@ -503,6 +558,7 @@ fn read_source_extensible_array_chunks(
     index_offset,
     index_offset,
     index_offset + index_content,
+    None,
   )
   let mut start = 0L
   let mut direct_start = 0
@@ -523,6 +579,9 @@ fn read_source_extensible_array_chunks(
           start + (direct_start + block_index).to_int64() * count,
           b"",
           0L,
+          -1,
+          -1,
+          -1,
         )
       }
       direct_start = direct_start + blocks.to_int()
@@ -538,9 +597,20 @@ fn read_source_extensible_array_chunks(
       guard super_content <= 0x7FFFFFFFL else {
         raise InvalidField("extensible array super block is too large")
       }
+      let super_address = source_address_to_offset(
+        supers[level - first_super],
+        base_address,
+      )
+      guard super_address <= 0x7FFFFFFFUL &&
+        super_content + super_address.reinterpret_as_int64() <= 0x7FFFFFFFL else {
+        raise InvalidField(
+          "extensible array super block offset is out of range",
+        )
+      }
+      let super_offset = super_address.to_int()
       let super_bytes = source_read_checksummed(
         source,
-        source_address_to_offset(supers[level - first_super], base_address),
+        super_address,
         super_content.to_int(),
         "extensible array super block",
       )
@@ -559,6 +629,7 @@ fn read_source_extensible_array_chunks(
         super_block.remaining().to_int64() else {
         raise InvalidField("extensible array super block extends beyond input")
       }
+      let bitmap_position = super_block.position()
       let bitmap = super_block.read_bytes(bitmap_size.to_int())
       for block_index in 0..<blocks.to_int() {
         let address = super_block.read_uint_le(offset_size)
@@ -571,6 +642,9 @@ fn read_source_extensible_array_chunks(
           start + block_index.to_int64() * count,
           bitmap,
           block_index.to_int64() * pages,
+          super_offset + bitmap_position,
+          super_offset,
+          super_offset + super_content.to_int(),
         )
       }
       guard super_block.position() == super_content.to_int() else {

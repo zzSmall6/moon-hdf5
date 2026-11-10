@@ -7,8 +7,8 @@ v1.0 delivery profile and post-v1.0 extensions.
 
 The MoonBit release checks pass on the current worktree:
 
-- wasm: 286 tests passed;
-- native: 286 tests passed;
+- wasm: 289 tests passed;
+- native: 289 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output were
   previously verified by h5py 3.13.0/HDF5 1.14.6; h5py was not rerun for the
@@ -18,6 +18,15 @@ The MoonBit release checks pass on the current worktree:
 - unallocated contiguous payloads and undefined slots in existing single,
   fixed-array and extensible-array indexes are covered by MoonBit round-trip
   tests, including filtered and registered custom-filter chunks;
+- unallocated fixed-array pages in an existing data block are covered for both
+  unfiltered and filtered indexes, including bitmap, page-checksum and FADB
+  checksum refresh;
+- missing fixed-array data blocks are covered for unfiltered, filtered, paged
+  and non-paged indexes, including FAHD/FADB linkage, page initialization and
+  subsequent patches against the new index;
+- unallocated extensible-array pages in an existing data block are covered for
+  both unfiltered and filtered indexes, including page checksums and the EASB
+  bitmap checksum;
 - numeric-layout, scale-offset, vlen-fill, NetCDF-4, external-storage,
   shared-message, hard-link, MATLAB-compatible and reference fixtures verified;
 - the version-4 reference fixture and writer output are exercised by MoonBit
@@ -39,7 +48,7 @@ structures raise errors; detection is not exhaustive.
 | References | 4-/8-byte object references, legacy region references and version-4 object/region/attribute references against compact, contiguous and filtered targets |
 | Shared messages | Table/indexes/heaps, wrappers v1–v3, field sharing, fills, filter pipelines, whole attributes and committed targets |
 | Writer | Superblock v3, OHDR/OCHK, dense metadata, chunk indexes, SOHM, references and external slots |
-| In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including sparse fill-only chunks, undefined slots in existing indexes and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout or slot fields, affected checksums and superblock EOF updated; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved |
+| In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including sparse fill-only chunks, undefined slots in existing indexes, unallocated fixed- and extensible-array pages and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout, slot, page-bitmap and page/EASB fields, affected checksums and superblock EOF updated; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
 
 ## Reader findings
@@ -117,9 +126,10 @@ payload; larger encodings are collected in one tail buffer, appended at aligned
 file offsets, and written after all index updates. Each relocation updates the
 index address and size fields, the covering page, node, index or object-header
 checksum, and the superblock EOF and checksum. Missing chunks stay sparse only
-when patched values equal the effective fill; non-fill values in missing chunks
-and caller-defined filter re-encoding remain rejected. Relocation is append-only
-and does not write a free-space manager or reclaim the old payload.
+when patched values equal the effective fill; non-fill values require a writable
+slot or page and are rejected otherwise. Caller-defined filters can be
+re-encoded when registered with an encoder. Relocation is append-only and does
+not write a free-space manager or reclaim the old payload.
 
 Finite chunked datasets use fixed-array indexes; one unlimited dimension uses
 extensible-array indexes, including inline entries, direct/super blocks and paged
@@ -183,8 +193,9 @@ heaps and heap extension across multiple blocks are not emitted.
 - V2 B-tree output is bulk-built for a completed in-memory shape; arbitrary
   incremental insertion at interior coordinates is not exposed.
 - Value patching can allocate raw data only into existing writable layout or
-  chunk-index slots. It cannot create missing fixed-array data blocks or pages,
-  extensible-array blocks or pages, or v1/v2 B-tree records.
+  chunk-index storage, including an unallocated fixed- or extensible-array page
+  inside an existing data block. It cannot create missing fixed- or
+  extensible-array data blocks, super/index blocks or v1/v2 B-tree records.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB
@@ -241,5 +252,18 @@ heaps and heap extension across multiple blocks are not emitted.
 - 2026-11-10: raw-data allocation for unallocated contiguous datasets and
   undefined slots in existing single, fixed-array, extensible-array and v1/v2
   B-tree indexes, including filtered and registered custom-filter chunks, with
-  layout or slot updates and checksum/EOF repair. Missing index blocks, pages
-  and records remain outside the patching boundary.
+  layout or slot updates and checksum/EOF repair. Missing fixed-array blocks,
+  extensible-array pages and B-tree records remained outside that first
+  allocation boundary.
+- 2026-11-10: allocation into unallocated fixed-array pages inside existing data
+  blocks, including whole-page initialization, bitmap and FADB checksum updates,
+  filtered entries and page checksums.
+- 2026-11-10: allocation into unallocated extensible-array pages inside existing
+  data blocks, including whole-page initialization, EASB bitmap updates, page and
+  EASB checksums and filtered entries. Missing fixed- or extensible-array data
+  blocks, super/index blocks and B-tree records remain outside the boundary.
+- 2026-11-10: creation of a missing fixed-array data block when the FAHD already
+  exists, including undefined entry initialization, bitmap and page/block
+  checksums, FAHD address and checksum updates, and later patching through the
+  new index. Missing extensible-array data blocks, extensible-array super/index
+  blocks and B-tree records remain outside the boundary.

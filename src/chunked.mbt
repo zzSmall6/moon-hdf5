@@ -28,6 +28,26 @@ priv struct RawChunkRecord {
   mask_offset : Int32
   metadata_start : Int32
   metadata_checksum_offset : Int32
+  page : RawChunkPage?
+}
+
+///|
+/// An unallocated chunk-index page whose reserved entry storage is writable.
+/// Allocating the page also updates its bitmap bit and the checksum of the
+/// metadata block that owns the bitmap. Fixed-array pages keep both the page
+/// payload and bitmap in the same data block; extensible-array pages keep the
+/// bitmap in a separate super block.
+priv struct RawChunkPage {
+  start : Int32
+  entries : Int32
+  entry_size : Int32
+  checksum_offset : Int32
+  bitmap_offset : Int32
+  bitmap_mask : Byte
+  bitmap_metadata_start : Int32
+  bitmap_checksum_offset : Int32
+  address_width : Int32
+  stored_size_width : Int32
 }
 
 ///|
@@ -51,6 +71,7 @@ fn push_raw_chunk_record(
         mask_offset: -1,
         metadata_start: -1,
         metadata_checksum_offset: -1,
+        page: None,
       })
     None => ()
   }
@@ -91,6 +112,39 @@ fn push_chunk_slot_record(
   metadata_start : Int32,
   metadata_checksum_offset : Int32,
 ) -> Unit {
+  push_chunk_page_slot_record(
+    records,
+    offsets,
+    address,
+    size,
+    mask,
+    address_offset,
+    address_width,
+    stored_size_offset,
+    stored_size_width,
+    mask_offset,
+    metadata_start,
+    metadata_checksum_offset,
+    None,
+  )
+}
+
+///|
+fn push_chunk_page_slot_record(
+  records : Array[RawChunkRecord]?,
+  offsets : Array[UInt64],
+  address : UInt64,
+  size : UInt64,
+  mask : UInt32,
+  address_offset : Int32,
+  address_width : Int32,
+  stored_size_offset : Int32,
+  stored_size_width : Int32,
+  mask_offset : Int32,
+  metadata_start : Int32,
+  metadata_checksum_offset : Int32,
+  page : RawChunkPage?,
+) -> Unit {
   match records {
     Some(records) =>
       records.push({
@@ -105,6 +159,7 @@ fn push_chunk_slot_record(
         mask_offset,
         metadata_start,
         metadata_checksum_offset,
+        page,
       })
     None => ()
   }
