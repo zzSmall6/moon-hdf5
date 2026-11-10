@@ -301,6 +301,26 @@ fn patch_stored_size_field(
 }
 
 ///|
+fn patch_chunk_mask_field(
+  output : FixedArray[Byte],
+  record : RawChunkRecord,
+  value : UInt32,
+) -> Unit raise Hdf5Error {
+  guard record.mask_offset >= 0 else {
+    raise UnsupportedFeature(
+      "filtered chunk index does not expose a writable filter-mask field",
+    )
+  }
+  patch_little_endian_uint(
+    output,
+    record.mask_offset,
+    4,
+    value.to_uint64(),
+    "allocated filtered chunk filter mask",
+  )
+}
+
+///|
 fn patch_chunk_address_field(
   output : FixedArray[Byte],
   record : RawChunkRecord,
@@ -341,30 +361,81 @@ fn patch_end_of_file_address(
 }
 
 ///|
-fn append_aligned_chunk_to_tail(
+fn append_aligned_bytes_to_tail(
   tail : @buffer.Buffer,
   file_length : Int32,
   encoded : Bytes,
+  purpose : String,
 ) -> UInt64 raise Hdf5Error {
   guard file_length >= 0 && file_length.to_int64() <= 0x7FFFFFFFL - 7L else {
-    raise UnsupportedFeature("file is too large to relocate a filtered chunk")
+    raise UnsupportedFeature("file is too large to " + purpose)
   }
   guard tail.length().to_int64() <= 0x7FFFFFFFL - file_length.to_int64() else {
-    raise UnsupportedFeature("file is too large to relocate a filtered chunk")
+    raise UnsupportedFeature("file is too large to " + purpose)
   }
   let unpadded = file_length + tail.length()
   guard unpadded.to_int64() <= 0x7FFFFFFFL - 7L else {
-    raise UnsupportedFeature("file is too large to relocate a filtered chunk")
+    raise UnsupportedFeature("file is too large to " + purpose)
   }
   let start = (unpadded + 7) / 8 * 8
   guard encoded.length().to_int64() <= 0x7FFFFFFFL - start.to_int64() else {
-    raise UnsupportedFeature("file is too large to relocate a filtered chunk")
+    raise UnsupportedFeature("file is too large to " + purpose)
   }
   for _ in 0..<(start - unpadded) {
     tail.write_byte(b'\x00')
   }
   tail.write_bytes(encoded.get_view().unwrap())
   start.to_uint64()
+}
+
+///|
+fn append_aligned_chunk_to_tail(
+  tail : @buffer.Buffer,
+  file_length : Int32,
+  encoded : Bytes,
+) -> UInt64 raise Hdf5Error {
+  append_aligned_bytes_to_tail(
+    tail, file_length, encoded, "relocate a filtered chunk",
+  )
+}
+
+///|
+fn Hdf5File::finish_appended_image(
+  self : Hdf5File,
+  output : FixedArray[Byte],
+  tail : @buffer.Buffer,
+) -> Bytes raise Hdf5Error {
+  guard tail.length().to_int64() <= 0x7FFFFFFFL - self.bytes.length().to_int64() else {
+    raise UnsupportedFeature("file is too large to append dataset storage")
+  }
+  let final_length = self.bytes.length() + tail.length()
+  let eof_address = file_offset_to_stored_address(
+    final_length.to_uint64(),
+    self.superblock.base_address,
+  )
+  patch_end_of_file_address(output, self.superblock, eof_address)
+  if self.superblock.superblock_checksum_offset >= 0 {
+    patch_metadata_checksum_in_place(
+      output,
+      self.superblock._superblock_offset,
+      self.superblock.superblock_checksum_offset,
+    )
+  }
+  let tail_bytes = tail.to_bytes()
+  let result = FixedArray::make(final_length, b'\x00')
+  result.blit_from_bytes(
+    0,
+    output.unsafe_reinterpret_as_bytes(),
+    0,
+    self.bytes.length(),
+  )
+  result.blit_from_bytes(
+    self.bytes.length(),
+    tail_bytes,
+    0,
+    tail_bytes.length(),
+  )
+  Bytes::from_array(result)
 }
 
 ///|
@@ -526,17 +597,17 @@ fn patch_scaleoffset_needs_little_endian_input(
 }
 
 ///|
-fn single_chunk_stored_size_field(
+fn single_chunk_layout_fields(
   message : HeaderMessage,
   length_size : Int32,
-) -> (Int32, Int32) raise Hdf5Error {
+) -> (Int32, Int32, Int32) raise Hdf5Error {
   let reader = Reader::new(message.data)
   guard reader.read_u8().to_int() == 4 && reader.read_u8().to_int() == 2 else {
     raise InvalidField("expected a version 4 chunked data layout message")
   }
   let flags = reader.read_u8().to_int()
-  guard (flags & 0xFC) == 0 && (flags & 2) != 0 else {
-    raise InvalidField("single chunk layout is missing its stored size")
+  guard (flags & 0xFC) == 0 else {
+    raise InvalidField("invalid v4 chunk flags")
   }
   let dimensionality = reader.read_u8().to_int()
   guard dimensionality >= 2 else {
@@ -552,7 +623,11 @@ fn single_chunk_stored_size_field(
   guard reader.read_u8().to_int() == 1 else {
     raise InvalidField("expected a single chunk index")
   }
-  (message.data_offset + reader.position(), length_size)
+  if (flags & 2) == 0 {
+    return (-1, 0, -1)
+  }
+  let size_offset = message.data_offset + reader.position()
+  (size_offset, length_size, size_offset + length_size)
 }
 
 ///|
@@ -599,8 +674,10 @@ fn Hdf5File::patch_compact_dataset_data(
 ///|
 fn Hdf5File::patch_contiguous_dataset_data(
   self : Hdf5File,
+  header : ObjectHeader,
   metadata : DatasetMetadata,
   payload : Bytes,
+  allow_allocate : Bool,
 ) -> Bytes raise Hdf5Error {
   let full_size = payload.length()
   let undefined = if self.superblock.offset_size == 8 {
@@ -608,8 +685,63 @@ fn Hdf5File::patch_contiguous_dataset_data(
   } else {
     (1UL << (self.superblock.offset_size * 8)) - 1UL
   }
-  guard metadata.layout.data_address != undefined else {
-    raise UnsupportedFeature("unallocated contiguous storage cannot be patched")
+  if metadata.layout.data_address == undefined {
+    guard allow_allocate else {
+      raise UnsupportedFeature(
+        "unallocated contiguous storage cannot be patched",
+      )
+    }
+    let message = match header.first(msg_data_layout) {
+      Some(message) => message
+      None =>
+        raise InvalidField(
+          "dataset is missing a required object header message",
+        )
+    }
+    guard message.data_offset >= 0 &&
+      metadata.layout.data_address_offset >= 0 &&
+      metadata.layout.data_address_width >= 1 else {
+      raise UnsupportedFeature(
+        "contiguous layout does not expose a writable address field",
+      )
+    }
+    let tail = @buffer.Buffer::Buffer()
+    let new_offset = append_aligned_bytes_to_tail(
+      tail,
+      self.bytes.length(),
+      payload,
+      "allocate contiguous storage",
+    )
+    let new_address = file_offset_to_stored_address(
+      new_offset,
+      self.superblock.base_address,
+    )
+    let output = self.bytes.to_fixedarray()
+    patch_little_endian_uint(
+      output,
+      metadata.layout.data_address_offset,
+      metadata.layout.data_address_width,
+      new_address,
+      "allocated contiguous dataset address",
+    )
+    if metadata.layout.data_size_offset >= 0 &&
+      metadata.layout.data_size_width >= 1 {
+      patch_little_endian_uint(
+        output,
+        metadata.layout.data_size_offset,
+        metadata.layout.data_size_width,
+        full_size.to_uint64(),
+        "allocated contiguous dataset size",
+      )
+    }
+    if message.checksum_offset >= 0 {
+      patch_metadata_checksum_in_place(
+        output,
+        message.chunk_start,
+        message.checksum_offset,
+      )
+    }
+    return self.finish_appended_image(output, tail)
   }
   let stored_size = if metadata.layout.data_size > 0UL {
     metadata.layout.data_size
@@ -679,6 +811,48 @@ fn effective_fill_element(
 }
 
 ///|
+fn single_chunk_slot_record(
+  header : ObjectHeader,
+  metadata : DatasetMetadata,
+  chunk_size : Int32,
+  length_size : Int32,
+) -> RawChunkRecord raise Hdf5Error {
+  let layout = metadata.layout
+  guard layout.chunk_index is Single(stored_size, mask) else {
+    raise InvalidField("expected a single chunk index")
+  }
+  guard metadata.dataspace.maximum_dimensions == metadata.dataspace.dimensions &&
+    metadata.dataspace.dimensions ==
+    layout.chunk_dimensions.map(size => size.to_uint64()) else {
+    raise InvalidField("single chunk dimensions must match dataspace")
+  }
+  let message = match header.first(msg_data_layout) {
+    Some(message) => message
+    None =>
+      raise InvalidField("dataset is missing a required object header message")
+  }
+  let (stored_size_offset, stored_size_width, mask_offset) = single_chunk_layout_fields(
+    message, length_size,
+  )
+  if stored_size is Some(_) && stored_size_offset < 0 {
+    raise InvalidField("single chunk layout is missing its stored size")
+  }
+  {
+    offsets: Array::make(metadata.dataspace.dimensions.length(), 0UL),
+    address: layout.data_address,
+    size: stored_size.unwrap_or(chunk_size.to_uint64()),
+    mask,
+    address_offset: layout.data_address_offset,
+    address_width: layout.data_address_width,
+    stored_size_offset,
+    stored_size_width,
+    mask_offset,
+    metadata_start: message.chunk_start,
+    metadata_checksum_offset: message.checksum_offset,
+  }
+}
+
+///|
 fn Hdf5File::patch_chunked_dataset_data(
   self : Hdf5File,
   header : ObjectHeader,
@@ -727,44 +901,32 @@ fn Hdf5File::patch_chunked_dataset_data(
     metadata.datatype.size,
   )
   let chunk_elements = product(chunk_widths)
-  let records = collect_raw_chunk_records(
-    self.bytes,
-    layout,
-    metadata.dataspace,
-    metadata.datatype,
-    filters,
-    self.superblock.offset_size,
-    self.superblock.length_size,
-    self.superblock.base_address,
-  )
-  if layout.chunk_index is Single(Some(_), _) {
-    guard records.length() == 1 else {
-      raise InvalidField("single chunk index must contain one record")
-    }
-    let message = match header.first(msg_data_layout) {
-      Some(message) => message
-      None =>
-        raise InvalidField(
-          "dataset is missing a required object header message",
-        )
-    }
-    let (field_offset, field_width) = single_chunk_stored_size_field(
-      message,
-      self.superblock.length_size,
-    )
-    let record = records[0]
-    records[0] = {
-      offsets: record.offsets,
-      address: record.address,
-      size: record.size,
-      mask: record.mask,
-      address_offset: metadata.layout.data_address_offset,
-      address_width: metadata.layout.data_address_width,
-      stored_size_offset: field_offset,
-      stored_size_width: field_width,
-      metadata_start: message.chunk_start,
-      metadata_checksum_offset: message.checksum_offset,
-    }
+  let undefined = if self.superblock.offset_size == 8 {
+    0xFFFFFFFFFFFFFFFFUL
+  } else {
+    (1UL << (self.superblock.offset_size * 8)) - 1UL
+  }
+  let records = match layout.chunk_index {
+    Single(_, _) =>
+      [
+        single_chunk_slot_record(
+          header,
+          metadata,
+          chunk_size,
+          self.superblock.length_size,
+        ),
+      ]
+    _ =>
+      collect_raw_chunk_records(
+        self.bytes,
+        layout,
+        metadata.dataspace,
+        metadata.datatype,
+        filters,
+        self.superblock.offset_size,
+        self.superblock.length_size,
+        self.superblock.base_address,
+      )
   }
   let record_for_chunk : Array[RawChunkRecord?] = Array::make(
     total_chunks.to_int(),
@@ -793,8 +955,13 @@ fn Hdf5File::patch_chunked_dataset_data(
     }
     record_for_chunk[chunk_linear.to_int()] = Some(record)
   }
-  let fill = if records.length() == total_chunks.to_int() &&
-    filters.length() == 0 {
+  let mut all_chunks_allocated = records.length() == total_chunks.to_int()
+  for record in records {
+    if record.address == undefined {
+      all_chunks_allocated = false
+    }
+  }
+  let fill = if all_chunks_allocated && filters.length() == 0 {
     b""
   } else {
     effective_fill_element(header, metadata.datatype)
@@ -846,100 +1013,74 @@ fn Hdf5File::patch_chunked_dataset_data(
             )
           }
         }
-        let chunk_offset = address_to_offset(
-          record.address,
-          self.superblock.base_address,
-        )
-        guard record.size > 0UL && record.size <= 0x7FFFFFFFUL else {
-          raise InvalidField("invalid stored chunk size")
-        }
-        guard chunk_offset >= 0 &&
-          chunk_offset.to_int64() + record.size.reinterpret_as_int64() <=
-          self.bytes.length().to_int64() else {
-          raise UnexpectedEof(chunk_offset.to_int64())
-        }
-        let chunk = if filtered {
-          let decoded = read_filtered_chunk(
-            self.bytes,
-            record.address,
-            self.superblock.base_address,
-            record.size,
-            filters,
-            record.mask,
-            metadata.datatype.size,
-            chunk_size,
-          ).to_array()
-          guard decoded.length() == chunk_size else {
-            raise InvalidField(
-              "decoded filtered chunk size does not match the chunk shape",
-            )
-          }
-          decoded
-        } else {
-          Reader::at(self.bytes, chunk_offset).read_bytes(chunk_size).to_array()
-        }
-        for chunk_element in 0..<chunk_elements.to_int() {
-          let mut remaining = chunk_element.to_int64()
-          let mut dataset_linear = 0L
-          let mut outside = false
-          let mut axis = rank
-          while axis > 0 {
-            axis = axis - 1
-            let coordinate = remaining % chunk_widths[axis]
-            remaining = remaining / chunk_widths[axis]
-            let global = offsets[axis] + coordinate.reinterpret_as_uint64()
-            if global >= metadata.dataspace.dimensions[axis] {
-              outside = true
-            } else {
-              dataset_linear = dataset_linear +
-                global.reinterpret_as_int64() * strides[axis]
+        if record.address == undefined {
+          let chunk = FixedArray::make(chunk_size, b'\x00')
+          write_repeated_element(chunk, fill)
+          let mut has_non_fill = false
+          for chunk_element in 0..<chunk_elements.to_int() {
+            let mut remaining = chunk_element.to_int64()
+            let mut dataset_linear = 0L
+            let mut outside = false
+            let mut axis = rank
+            while axis > 0 {
+              axis = axis - 1
+              let coordinate = remaining % chunk_widths[axis]
+              remaining = remaining / chunk_widths[axis]
+              let global = offsets[axis] + coordinate.reinterpret_as_uint64()
+              if global >= metadata.dataspace.dimensions[axis] {
+                outside = true
+              } else {
+                dataset_linear = dataset_linear +
+                  global.reinterpret_as_int64() * strides[axis]
+              }
+            }
+            if outside {
+              continue
+            }
+            let source = dataset_linear * metadata.datatype.size.to_int64()
+            let destination = chunk_element.to_int64() *
+              metadata.datatype.size.to_int64()
+            for byte_index in 0..<metadata.datatype.size {
+              let value = payload[source.to_int() + byte_index]
+              chunk[destination.to_int() + byte_index] = value
+              if value != fill[byte_index] {
+                has_non_fill = true
+              }
             }
           }
-          if outside {
-            continue
-          }
-          let source = dataset_linear * metadata.datatype.size.to_int64()
-          let destination = chunk_element.to_int64() *
-            metadata.datatype.size.to_int64()
-          for byte_index in 0..<metadata.datatype.size {
-            chunk[destination.to_int() + byte_index] = payload[source.to_int() +
-              byte_index]
-          }
-        }
-        if filtered {
-          let scaleoffset_little_endian = patch_scaleoffset_needs_little_endian_input(
-            filters,
-            record.mask,
-            metadata.datatype,
-            metadata.datatype.size,
-          )
-          let filter_data = Bytes::from_array(chunk)
-          let filter_fill = if scaleoffset_little_endian {
-            patch_byteswap_elements(fill, metadata.datatype.size)
-          } else {
-            fill
-          }
-          let encoded = encode_chunk_filters(
-            if scaleoffset_little_endian {
-              patch_byteswap_elements(filter_data, metadata.datatype.size)
+          if has_non_fill {
+            let encoded = if filtered {
+              let scaleoffset_little_endian = patch_scaleoffset_needs_little_endian_input(
+                filters,
+                0U,
+                metadata.datatype,
+                metadata.datatype.size,
+              )
+              let filter_data = Bytes::from_array(chunk)
+              let filter_fill = if scaleoffset_little_endian {
+                patch_byteswap_elements(fill, metadata.datatype.size)
+              } else {
+                fill
+              }
+              encode_chunk_filters(
+                if scaleoffset_little_endian {
+                  patch_byteswap_elements(filter_data, metadata.datatype.size)
+                } else {
+                  filter_data
+                },
+                write_filters,
+                0U,
+                metadata.datatype.size,
+                values,
+                filter_fill,
+                self.custom_filters,
+              )
             } else {
-              filter_data
-            },
-            write_filters,
-            record.mask,
-            metadata.datatype.size,
-            values,
-            filter_fill,
-            self.custom_filters,
-          )
-          guard encoded.length() > 0 else {
-            raise InvalidField("filtered chunk encoded to an empty payload")
-          }
-          if encoded.length().to_uint64() <= record.size {
-            for byte_index in 0..<encoded.length() {
-              output[chunk_offset + byte_index] = encoded[byte_index]
+              Bytes::from_array(chunk)
             }
-          } else {
+            guard encoded.length() > 0 else {
+              raise InvalidField("allocated chunk encoded to an empty payload")
+            }
             let new_offset = append_aligned_chunk_to_tail(
               tail,
               self.bytes.length(),
@@ -950,14 +1091,25 @@ fn Hdf5File::patch_chunked_dataset_data(
               self.superblock.base_address,
             )
             patch_chunk_address_field(output, record, new_address)
+            if record.stored_size_offset >= 0 {
+              patch_stored_size_field(
+                output,
+                record,
+                if filtered {
+                  encoded.length().to_uint64()
+                } else {
+                  chunk_size.to_uint64()
+                },
+              )
+            } else if filtered {
+              raise InvalidField(
+                "filtered chunk index is missing its stored size",
+              )
+            }
+            if filtered {
+              patch_chunk_mask_field(output, record, 0U)
+            }
             relocated = true
-          }
-          if encoded.length().to_uint64() != record.size {
-            patch_stored_size_field(
-              output,
-              record,
-              encoded.length().to_uint64(),
-            )
             if record.metadata_start >= 0 &&
               record.metadata_checksum_offset >= 0 {
               let mut known = false
@@ -974,8 +1126,139 @@ fn Hdf5File::patch_chunked_dataset_data(
             }
           }
         } else {
-          for byte_index in 0..<chunk_size {
-            output[chunk_offset + byte_index] = chunk[byte_index]
+          let chunk_offset = address_to_offset(
+            record.address,
+            self.superblock.base_address,
+          )
+          guard record.size > 0UL && record.size <= 0x7FFFFFFFUL else {
+            raise InvalidField("invalid stored chunk size")
+          }
+          guard chunk_offset >= 0 &&
+            chunk_offset.to_int64() + record.size.reinterpret_as_int64() <=
+            self.bytes.length().to_int64() else {
+            raise UnexpectedEof(chunk_offset.to_int64())
+          }
+          let chunk = if filtered {
+            let decoded = read_filtered_chunk(
+              self.bytes,
+              record.address,
+              self.superblock.base_address,
+              record.size,
+              filters,
+              record.mask,
+              metadata.datatype.size,
+              chunk_size,
+            ).to_array()
+            guard decoded.length() == chunk_size else {
+              raise InvalidField(
+                "decoded filtered chunk size does not match the chunk shape",
+              )
+            }
+            decoded
+          } else {
+            Reader::at(self.bytes, chunk_offset)
+            .read_bytes(chunk_size)
+            .to_array()
+          }
+          for chunk_element in 0..<chunk_elements.to_int() {
+            let mut remaining = chunk_element.to_int64()
+            let mut dataset_linear = 0L
+            let mut outside = false
+            let mut axis = rank
+            while axis > 0 {
+              axis = axis - 1
+              let coordinate = remaining % chunk_widths[axis]
+              remaining = remaining / chunk_widths[axis]
+              let global = offsets[axis] + coordinate.reinterpret_as_uint64()
+              if global >= metadata.dataspace.dimensions[axis] {
+                outside = true
+              } else {
+                dataset_linear = dataset_linear +
+                  global.reinterpret_as_int64() * strides[axis]
+              }
+            }
+            if outside {
+              continue
+            }
+            let source = dataset_linear * metadata.datatype.size.to_int64()
+            let destination = chunk_element.to_int64() *
+              metadata.datatype.size.to_int64()
+            for byte_index in 0..<metadata.datatype.size {
+              chunk[destination.to_int() + byte_index] = payload[source.to_int() +
+                byte_index]
+            }
+          }
+          if filtered {
+            let scaleoffset_little_endian = patch_scaleoffset_needs_little_endian_input(
+              filters,
+              record.mask,
+              metadata.datatype,
+              metadata.datatype.size,
+            )
+            let filter_data = Bytes::from_array(chunk)
+            let filter_fill = if scaleoffset_little_endian {
+              patch_byteswap_elements(fill, metadata.datatype.size)
+            } else {
+              fill
+            }
+            let encoded = encode_chunk_filters(
+              if scaleoffset_little_endian {
+                patch_byteswap_elements(filter_data, metadata.datatype.size)
+              } else {
+                filter_data
+              },
+              write_filters,
+              record.mask,
+              metadata.datatype.size,
+              values,
+              filter_fill,
+              self.custom_filters,
+            )
+            guard encoded.length() > 0 else {
+              raise InvalidField("filtered chunk encoded to an empty payload")
+            }
+            if encoded.length().to_uint64() <= record.size {
+              for byte_index in 0..<encoded.length() {
+                output[chunk_offset + byte_index] = encoded[byte_index]
+              }
+            } else {
+              let new_offset = append_aligned_chunk_to_tail(
+                tail,
+                self.bytes.length(),
+                encoded,
+              )
+              let new_address = file_offset_to_stored_address(
+                new_offset,
+                self.superblock.base_address,
+              )
+              patch_chunk_address_field(output, record, new_address)
+              relocated = true
+            }
+            if encoded.length().to_uint64() != record.size {
+              patch_stored_size_field(
+                output,
+                record,
+                encoded.length().to_uint64(),
+              )
+              if record.metadata_start >= 0 &&
+                record.metadata_checksum_offset >= 0 {
+                let mut known = false
+                for region in 0..<checksum_starts.length() {
+                  if checksum_starts[region] == record.metadata_start &&
+                    checksum_offsets[region] == record.metadata_checksum_offset {
+                    known = true
+                  }
+                }
+                if !known {
+                  checksum_starts.push(record.metadata_start)
+                  checksum_offsets.push(record.metadata_checksum_offset)
+                }
+              }
+            }
+          } else {
+            for byte_index in 0..<chunk_size {
+              output[chunk_offset + byte_index] = chunk[byte_index]
+            }
           }
         }
       }
@@ -1004,7 +1287,7 @@ fn Hdf5File::patch_chunked_dataset_data(
           for byte_index in 0..<metadata.datatype.size {
             guard payload[source.to_int() + byte_index] == fill[byte_index] else {
               raise UnsupportedFeature(
-                "chunked patching cannot allocate missing chunks for non-fill values",
+                "chunk index has no writable slot for a non-fill chunk",
               )
             }
           }
@@ -1019,38 +1302,7 @@ fn Hdf5File::patch_chunked_dataset_data(
     )
   }
   if relocated {
-    guard tail.length().to_int64() <=
-      0x7FFFFFFFL - self.bytes.length().to_int64() else {
-      raise UnsupportedFeature("file is too large to relocate a filtered chunk")
-    }
-    let final_length = self.bytes.length() + tail.length()
-    let eof_address = file_offset_to_stored_address(
-      final_length.to_uint64(),
-      self.superblock.base_address,
-    )
-    patch_end_of_file_address(output, self.superblock, eof_address)
-    if self.superblock.superblock_checksum_offset >= 0 {
-      patch_metadata_checksum_in_place(
-        output,
-        self.superblock._superblock_offset,
-        self.superblock.superblock_checksum_offset,
-      )
-    }
-    let tail_bytes = tail.to_bytes()
-    let result = FixedArray::make(final_length, b'\x00')
-    result.blit_from_bytes(
-      0,
-      output.unsafe_reinterpret_as_bytes(),
-      0,
-      self.bytes.length(),
-    )
-    result.blit_from_bytes(
-      self.bytes.length(),
-      tail_bytes,
-      0,
-      tail_bytes.length(),
-    )
-    return Bytes::from_array(result)
+    return self.finish_appended_image(output, tail)
   }
   Bytes::from_array(output)
 }
@@ -1126,7 +1378,9 @@ fn Hdf5File::patch_dataset_values_impl(
   } else if chunked {
     self.patch_chunked_dataset_data(header, metadata, payload, values)
   } else {
-    self.patch_contiguous_dataset_data(metadata, payload)
+    self.patch_contiguous_dataset_data(
+      header, metadata, payload, allow_noncontiguous,
+    )
   }
 }
 
@@ -1147,19 +1401,24 @@ pub fn Hdf5File::patch_contiguous_dataset(
 }
 
 ///|
-/// Replaces the values of a compact, allocated contiguous or chunked dataset
-/// and returns a new byte image. The shape and datatype must match exactly.
+/// Replaces the values of a compact, contiguous or chunked dataset and returns
+/// a new byte image. The shape and datatype must match exactly.
 ///
 /// Compact payloads stay inline; only the containing object-header chunk
-/// checksum is recomputed. Contiguous payloads stay at their existing address.
-/// Chunk bytes are updated in place and edge padding is preserved. Filtered
-/// chunks are decoded and re-encoded with their existing mask and built-in
-/// pipeline. Encodings that fit overwrite the original payload; larger encodings
-/// are appended at an aligned file offset and linked by updating the index
-/// address and size fields, the superblock EOF address and affected checksums.
-/// Missing chunks stay unallocated only for fill values. External,
-/// variable-length and reference storage is rejected, and the dataset shape and
-/// chunk grid are never changed.
+/// checksum is recomputed. Allocated contiguous payloads stay at their existing
+/// address; unallocated payloads are appended at an aligned file offset and
+/// linked by updating the layout address and size. Chunk bytes are updated in
+/// place and edge padding is preserved. Filtered chunks are decoded and
+/// re-encoded with their existing mask and pipeline. Encodings that fit
+/// overwrite the original payload; larger encodings are appended and linked by
+/// updating the index address and size fields, the superblock EOF address and
+/// affected checksums.
+///
+/// Missing chunks stay unallocated for fill values. A non-fill chunk can be
+/// allocated only into a writable slot already present in the chunk index;
+/// missing fixed-/extensible-array blocks or pages and B-tree records are not
+/// created. External, variable-length and reference storage is rejected, and
+/// the dataset shape and chunk grid are never changed.
 pub fn Hdf5File::patch_dataset_values(
   self : Hdf5File,
   path : String,

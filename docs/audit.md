@@ -5,15 +5,19 @@ v1.0 delivery profile and post-v1.0 extensions.
 
 ## Verdict
 
-The release gate passes on the current worktree:
+The MoonBit release checks pass on the current worktree:
 
-- wasm: 281 tests passed;
-- native: 281 tests passed;
+- wasm: 286 tests passed;
+- native: 286 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
-- writer demo verified by h5py 3.13.0/HDF5 1.14.6;
-- compact and sparse chunked patch output was re-read by h5py 3.13.0/HDF5 1.14.6;
+- the writer demo and earlier compact and sparse chunked patch output were
+  previously verified by h5py 3.13.0/HDF5 1.14.6; h5py was not rerun for the
+  new allocation paths in this iteration;
 - caller-defined filter encoding, named pipelines, chunk-mask skips, patch
   re-encoding and growth relocation are covered by MoonBit round-trip tests;
+- unallocated contiguous payloads and undefined slots in existing single,
+  fixed-array and extensible-array indexes are covered by MoonBit round-trip
+  tests, including filtered and registered custom-filter chunks;
 - numeric-layout, scale-offset, vlen-fill, NetCDF-4, external-storage,
   shared-message, hard-link, MATLAB-compatible and reference fixtures verified;
 - the version-4 reference fixture and writer output are exercised by MoonBit
@@ -35,7 +39,7 @@ structures raise errors; detection is not exhaustive.
 | References | 4-/8-byte object references, legacy region references and version-4 object/region/attribute references against compact, contiguous and filtered targets |
 | Shared messages | Table/indexes/heaps, wrappers v1–v3, field sharing, fills, filter pipelines, whole attributes and committed targets |
 | Writer | Superblock v3, OHDR/OCHK, dense metadata, chunk indexes, SOHM, references and external slots |
-| In-place patching | Compact, contiguous and filtered or unfiltered chunked datasets, including sparse fill-only chunks and registered custom filters with encoders; filtered chunks are re-encoded in place when they fit or appended at an aligned EOF when they grow, with address, stored size, affected checksums and superblock EOF updated; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved |
+| In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including sparse fill-only chunks, undefined slots in existing indexes and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout or slot fields, affected checksums and superblock EOF updated; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
 
 ## Reader findings
@@ -178,6 +182,9 @@ heaps and heap extension across multiple blocks are not emitted.
   structures are reader-side features unless explicitly listed as writer output.
 - V2 B-tree output is bulk-built for a completed in-memory shape; arbitrary
   incremental insertion at interior coordinates is not exposed.
+- Value patching can allocate raw data only into existing writable layout or
+  chunk-index slots. It cannot create missing fixed-array data blocks or pages,
+  extensible-array blocks or pages, or v1/v2 B-tree records.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB
@@ -231,3 +238,8 @@ heaps and heap extension across multiple blocks are not emitted.
   entries for IDs above 255, built-in pipeline combinations, chunk-mask skips,
   shared filter pipelines and growth relocation. Decoder-only implementations
   remain source compatible and report a clear unsupported-output error.
+- 2026-11-10: raw-data allocation for unallocated contiguous datasets and
+  undefined slots in existing single, fixed-array, extensible-array and v1/v2
+  B-tree indexes, including filtered and registered custom-filter chunks, with
+  layout or slot updates and checksum/EOF repair. Missing index blocks, pages
+  and records remain outside the patching boundary.

@@ -187,25 +187,36 @@ global heap; repeated payloads and custom fills share heap objects. Sequence
 bases must be fixed-size. Sequence bases containing region references are
 rejected because HDF5 1.14.6 cannot safely consume them.
 
-In-place value patching keeps object identity and layout. Contiguous payloads
-are overwritten at their assigned address. Compact payloads are located from the
-stored object-header message offset; when the containing OHDR chunk or OCHK
-continuation has a checksum, it is recomputed after the bytes change. The
-chunked path walks the active chunk index while recording the stored size,
-filter mask and writable index location for every allocated chunk, then rewrites
-only in-bounds elements so padding survives. Unfiltered chunks use their native
-size. Filtered chunks are decoded and re-encoded with the existing mask and
-registered pipeline. Caller-defined filters are resolved through the
-`Hdf5File` registrations and require an encoder. Scale-offset input is normalized
-to little endian when the dataset is big-endian, while the stored filter
-metadata keeps the original byte order and fill marker. Results that fit
+In-place value patching keeps object identity and layout. Allocated contiguous
+payloads are overwritten at their assigned address. Compact payloads are located
+from the stored object-header message offset; when the containing OHDR chunk or
+OCHK continuation has a checksum, it is recomputed after the bytes change. An
+unallocated contiguous payload is collected in a tail buffer, appended at an
+aligned file offset, and linked by updating the layout address and contiguous
+stored size. The chunked path walks the active chunk index while recording the
+stored size, filter mask and writable index location for every represented
+chunk, then rewrites only in-bounds elements so padding survives. Unfiltered
+chunks use their native size. Filtered chunks are decoded and re-encoded with
+the existing mask and registered pipeline. Caller-defined filters are resolved
+through the `Hdf5File` registrations and require an encoder. Scale-offset input
+is normalized to little endian when the dataset is big-endian, while the stored
+filter metadata keeps the original byte order and fill marker. Results that fit
 overwrite the original payload and update its size field when needed. Larger
-results are collected in a tail buffer, appended at aligned file offsets, then
+results are collected in the tail buffer, appended at aligned file offsets, then
 linked by updating the chunk address and size fields, covering checksums and the
 superblock EOF address and checksum.
+
+An undefined chunk slot represented by the active index is handled similarly:
+the patch constructs a fill-initialized chunk, overlays the requested values,
+applies the pipeline and appends the encoded payload. It then updates the slot
+address, stored size and filter mask and recomputes the containing index
+checksum. This covers the single-chunk layout and fixed- and extensible-array
+entries in existing blocks or pages.
 Missing chunks stay unallocated only when their patched values equal the
-effective fill element; otherwise the patch is rejected. Relocation is
-append-only and leaves the old chunk bytes unreferenced.
+effective fill element. Non-fill chunks whose fixed-array block or page,
+extensible-array block or page, or B-tree record does not exist are rejected;
+the patcher does not construct chunk-index metadata. Relocation and allocation
+are append-only and leave old chunk bytes unreferenced.
 `patch_dataset_values` accepts all three layouts, while
 `patch_contiguous_dataset` is the contiguous-only compatibility entry point.
 

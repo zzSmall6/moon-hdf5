@@ -53,6 +53,8 @@ pub struct DataLayout {
   priv data_address_offset : Int32
   priv data_address_width : Int32
   priv data_size : UInt64
+  priv data_size_offset : Int32
+  priv data_size_width : Int32
   priv chunk_dimensions : Array[UInt32]
   priv element_size : Int32
   priv compact_data : Bytes
@@ -106,6 +108,8 @@ fn parse_data_layout(
   let mut data_address_offset = -1
   let mut data_address_width = 0
   let mut data_size = 0UL
+  let mut data_size_offset = -1
+  let mut data_size_width = 0
   let mut element_size = 0
   let mut compact_data : Bytes = b""
   let mut chunk_index = BTreeV1
@@ -145,6 +149,12 @@ fn parse_data_layout(
         }
         data_address_width = offset_size
         data_address = reader.read_uint_le(offset_size)
+        data_size_offset = if message.data_offset >= 0 {
+          message.data_offset + reader.position()
+        } else {
+          -1
+        }
+        data_size_width = length_size
         data_size = reader.read_uint_le(length_size)
       }
       2 =>
@@ -266,6 +276,8 @@ fn parse_data_layout(
     data_address_offset,
     data_address_width,
     data_size,
+    data_size_offset,
+    data_size_width,
     chunk_dimensions,
     element_size,
     compact_data,

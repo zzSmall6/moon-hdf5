@@ -157,9 +157,6 @@ fn read_fixed_array_chunks(
       (if paged { page * 4 } else { 0L })
     let entry = Reader::at(bytes, position.to_int())
     let address = entry.read_uint_le(offset_size)
-    if address == undefined {
-      continue
-    }
     let mut stored_size = chunk_size.to_uint64()
     let mut mask = 0U
     if client == 1 {
@@ -182,6 +179,11 @@ fn read_fixed_array_chunks(
     } else {
       entries_start + maximum_total * entry_size.to_int64()
     }
+    let mask_offset = if client == 1 {
+      position.to_int() + offset_size + size_width
+    } else {
+      -1
+    }
     guard stored_size_offset >= 0L &&
       stored_size_offset <= 0x7FFFFFFFL &&
       metadata_start >= 0L &&
@@ -190,7 +192,7 @@ fn read_fixed_array_chunks(
       metadata_checksum_offset <= 0x7FFFFFFFL else {
       raise InvalidField("fixed array metadata offset is out of range")
     }
-    push_located_raw_chunk_record(
+    push_chunk_slot_record(
       records,
       offsets.copy(),
       address,
@@ -208,17 +210,13 @@ fn read_fixed_array_chunks(
       } else {
         0
       },
-      if client == 1 {
-        metadata_start.to_int()
-      } else {
-        -1
-      },
-      if client == 1 {
-        metadata_checksum_offset.to_int()
-      } else {
-        -1
-      },
+      mask_offset,
+      metadata_start.to_int(),
+      metadata_checksum_offset.to_int(),
     )
+    if address == undefined {
+      continue
+    }
     if !chunk_contains_selection(
         offsets,
         layout.chunk_dimensions,

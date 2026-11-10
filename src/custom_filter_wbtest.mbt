@@ -477,3 +477,28 @@ test "custom filters re-encode patches and support growth relocation" {
     second.map(value => value.to_int64()),
   )
 }
+
+///|
+test "custom filters encode newly allocated missing chunks" {
+  let writer = Hdf5Writer::new()
+  let custom : &Hdf5CustomFilter = { marker: 1, }
+  writer.add_custom_filter(custom)
+  writer.add_chunked_dataset(
+    "/values",
+    [8UL],
+    [2U],
+    Int32Values([1, 2, 3, 4, -7, -7, -7, -7]),
+    fill_value=Int32Values([-7]),
+    filters=[Custom(42, [6U])],
+  )
+  let original = writer.encode()
+  let file = Hdf5File::parse(original).with_custom_filter(custom)
+  let expected = [10, 11, 12, 13, 20, 21, 22, 23]
+  let patched = file.patch_dataset_values("/values", Int32Values(expected))
+  assert_true(patched.length() > original.length())
+  let patched_file = Hdf5File::parse(patched).with_custom_filter(custom)
+  assert_eq(
+    integer_values(patched_file.read_dataset("/values")),
+    expected.map(value => value.to_int64()),
+  )
+}

@@ -84,9 +84,6 @@ fn ExtensibleReader::entries(
       self.chunk_size.to_uint64()
     }
     let mask = if self.client == 1 { reader.read_u32_le() } else { 0U }
-    if address == self.undefined {
-      continue
-    }
     let rank = self.order.length()
     let offsets = Array::make(rank, 0UL)
     let mut remaining = start + entry_index.to_int64()
@@ -106,7 +103,7 @@ fn ExtensibleReader::entries(
     if outside {
       continue
     }
-    push_located_raw_chunk_record(
+    push_chunk_slot_record(
       self.records,
       offsets,
       address,
@@ -125,16 +122,16 @@ fn ExtensibleReader::entries(
         0
       },
       if self.client == 1 {
-        metadata_start
+        stored_size_offset + self.entry_size - self.offset_size - 4
       } else {
         -1
       },
-      if self.client == 1 {
-        metadata_checksum_offset
-      } else {
-        -1
-      },
+      metadata_start,
+      metadata_checksum_offset,
     )
+    if address == self.undefined {
+      continue
+    }
     if !chunk_contains_selection(
         offsets,
         self.layout.chunk_dimensions,

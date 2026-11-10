@@ -25,6 +25,7 @@ priv struct RawChunkRecord {
   address_width : Int32
   stored_size_offset : Int32
   stored_size_width : Int32
+  mask_offset : Int32
   metadata_start : Int32
   metadata_checksum_offset : Int32
 }
@@ -47,6 +48,7 @@ fn push_raw_chunk_record(
         address_width: 0,
         stored_size_offset: -1,
         stored_size_width: 0,
+        mask_offset: -1,
         metadata_start: -1,
         metadata_checksum_offset: -1,
       })
@@ -68,6 +70,27 @@ fn push_located_raw_chunk_record(
   metadata_start : Int32,
   metadata_checksum_offset : Int32,
 ) -> Unit {
+  push_chunk_slot_record(
+    records, offsets, address, size, mask, address_offset, address_width, stored_size_offset,
+    stored_size_width, -1, metadata_start, metadata_checksum_offset,
+  )
+}
+
+///|
+fn push_chunk_slot_record(
+  records : Array[RawChunkRecord]?,
+  offsets : Array[UInt64],
+  address : UInt64,
+  size : UInt64,
+  mask : UInt32,
+  address_offset : Int32,
+  address_width : Int32,
+  stored_size_offset : Int32,
+  stored_size_width : Int32,
+  mask_offset : Int32,
+  metadata_start : Int32,
+  metadata_checksum_offset : Int32,
+) -> Unit {
   match records {
     Some(records) =>
       records.push({
@@ -79,6 +102,7 @@ fn push_located_raw_chunk_record(
         address_width,
         stored_size_offset,
         stored_size_width,
+        mask_offset,
         metadata_start,
         metadata_checksum_offset,
       })

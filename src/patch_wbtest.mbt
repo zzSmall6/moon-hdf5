@@ -385,7 +385,7 @@ test "chunked patches cover v1 and v2 B-tree indexes" {
     sparse_error,
     Some(
       UnsupportedFeature(
-        "chunked patching cannot allocate missing chunks for non-fill values",
+        "chunk index has no writable slot for a non-fill chunk",
       ),
     ),
   )
@@ -508,7 +508,7 @@ test "chunked patches cover fixed and extensible array indexes" {
     paged_error,
     Some(
       UnsupportedFeature(
-        "chunked patching cannot allocate missing chunks for non-fill values",
+        "chunk index has no writable slot for a non-fill chunk",
       ),
     ),
   )
@@ -955,5 +955,188 @@ test "filtered patches cover external scale-offset byte orders and pipelines" {
   assert_eq(
     integer_values(full.read_dataset("/int32_full")),
     full_expected.map(value => value.to_int64()),
+  )
+}
+
+///|
+test "patch_dataset_values allocates unallocated contiguous storage" {
+  for
+    path in ["testdata/contiguous_fill_v2.h5", "testdata/contiguous_fill_v3.h5"] {
+    let bytes = @fs.read_file_to_bytes(path)
+    let file = Hdf5File::parse(bytes)
+    let strict = try {
+      file.patch_contiguous_dataset("/signed", Int32Values([1, 2, 3])) |> ignore
+      None
+    } catch {
+      error => Some(error)
+    }
+    assert_eq(
+      strict,
+      Some(
+        UnsupportedFeature("unallocated contiguous storage cannot be patched"),
+      ),
+    )
+    let patched_bytes = file.patch_dataset_values(
+      "/signed",
+      Int32Values([11, -12, 13]),
+    )
+    assert_true(patched_bytes.length() > bytes.length())
+    let patched = Hdf5File::parse(patched_bytes)
+    assert_eq(integer_values(patched.read_dataset("/signed")), [11L, -12L, 13L])
+    assert_eq(
+      patched.superblock.end_of_file_address,
+      patched_bytes.length().to_uint64() - patched.superblock.base_address,
+    )
+    let second = Hdf5File::parse(
+      patched.patch_dataset_values("/signed", Int32Values([21, 22, 23])),
+    )
+    assert_eq(integer_values(second.read_dataset("/signed")), [21L, 22L, 23L])
+  }
+}
+
+///|
+test "missing single and fixed-array chunks allocate at the file tail" {
+  let layout_bytes = @fs.read_file_to_bytes("testdata/layout_v4.h5")
+  let layout = Hdf5File::parse(layout_bytes)
+  let single_expected = patch_int32_sequence(12, 40, 3)
+  let single_bytes = layout.patch_dataset_values(
+    "/single/unallocated",
+    Int32Values(single_expected),
+  )
+  assert_true(single_bytes.length() > layout_bytes.length())
+  let single = Hdf5File::parse(single_bytes)
+  assert_true(
+    single.read_dataset_metadata("/single/unallocated").layout.chunk_index
+    is Single(_, _),
+  )
+  assert_eq(
+    integer_values(single.read_dataset("/single/unallocated")),
+    single_expected.map(value => value.to_int64()),
+  )
+
+  let fixed_bytes = @fs.read_file_to_bytes("testdata/fixed_array.h5")
+  let fixed = Hdf5File::parse(fixed_bytes)
+  let fixed_expected = patch_int32_sequence(8, 100, 10)
+  let patched_bytes = fixed.patch_dataset_values(
+    "/skipped",
+    Int32Values(fixed_expected),
+  )
+  assert_true(patched_bytes.length() > fixed_bytes.length())
+  let patched = Hdf5File::parse(patched_bytes)
+  assert_eq(
+    integer_values(patched.read_dataset("/skipped")),
+    fixed_expected.map(value => value.to_int64()),
+  )
+}
+
+///|
+test "filtered missing fixed and extensible chunks allocate existing slots" {
+  let fixed_writer = Hdf5Writer::new()
+  fixed_writer.add_chunked_dataset(
+    "/fixed",
+    [8UL],
+    [2U],
+    Int32Values(Array::make(8, -7)),
+    fill_value=Int32Values([-7]),
+    filters=[Deflate(6)],
+  )
+  let fixed_bytes = fixed_writer.encode()
+  let fixed = Hdf5File::parse(fixed_bytes)
+  let fixed_expected = patch_int32_sequence(8, 200, 2)
+  let fixed_patched_bytes = fixed.patch_dataset_values(
+    "/fixed",
+    Int32Values(fixed_expected),
+  )
+  assert_true(fixed_patched_bytes.length() > fixed_bytes.length())
+  let fixed_patched = Hdf5File::parse(fixed_patched_bytes)
+  assert_eq(
+    integer_values(fixed_patched.read_dataset("/fixed")),
+    fixed_expected.map(value => value.to_int64()),
+  )
+
+  let extensible_writer = Hdf5Writer::new()
+  let extensible_values = Array::make(8, -7)
+  extensible_values[7] = 99
+  extensible_writer.add_extensible_dataset(
+    "/extensible",
+    [8UL],
+    [None],
+    [2U],
+    Int32Values(extensible_values),
+    fill_value=Int32Values([-7]),
+    filters=[Deflate(6)],
+  )
+  let extensible_bytes = extensible_writer.encode()
+  let extensible = Hdf5File::parse(extensible_bytes)
+  assert_true(
+    extensible.read_dataset_metadata("/extensible").layout.chunk_index
+    is ExtensibleArray(_),
+  )
+  let extensible_expected = patch_int32_sequence(8, 300, 3)
+  let extensible_patched_bytes = extensible.patch_dataset_values(
+    "/extensible",
+    Int32Values(extensible_expected),
+  )
+  assert_true(extensible_patched_bytes.length() > extensible_bytes.length())
+  let extensible_patched = Hdf5File::parse(extensible_patched_bytes)
+  assert_eq(
+    integer_values(extensible_patched.read_dataset("/extensible")),
+    extensible_expected.map(value => value.to_int64()),
+  )
+}
+
+///|
+test "unfiltered missing fixed and extensible slots refresh index checksums" {
+  let fixed_writer = Hdf5Writer::new()
+  let fixed_values = Array::make(8, -7)
+  fixed_values[4] = 40
+  fixed_values[5] = 41
+  fixed_values[6] = 42
+  fixed_values[7] = 43
+  fixed_writer.add_chunked_dataset(
+    "/fixed",
+    [8UL],
+    [2U],
+    Int32Values(fixed_values),
+    fill_value=Int32Values([-7]),
+  )
+  let fixed_bytes = fixed_writer.encode()
+  let fixed = Hdf5File::parse(fixed_bytes)
+  let fixed_expected = patch_int32_sequence(8, -100, 1)
+  let fixed_patched_bytes = fixed.patch_dataset_values(
+    "/fixed",
+    Int32Values(fixed_expected),
+  )
+  assert_true(fixed_patched_bytes.length() > fixed_bytes.length())
+  let fixed_patched = Hdf5File::parse(fixed_patched_bytes)
+  assert_eq(
+    integer_values(fixed_patched.read_dataset("/fixed")),
+    fixed_expected.map(value => value.to_int64()),
+  )
+
+  let extensible_writer = Hdf5Writer::new()
+  let extensible_values = Array::make(8, -7)
+  extensible_values[6] = 60
+  extensible_values[7] = 61
+  extensible_writer.add_extensible_dataset(
+    "/extensible",
+    [8UL],
+    [None],
+    [2U],
+    Int32Values(extensible_values),
+    fill_value=Int32Values([-7]),
+  )
+  let extensible_bytes = extensible_writer.encode()
+  let extensible = Hdf5File::parse(extensible_bytes)
+  let extensible_expected = patch_int32_sequence(8, -200, 1)
+  let extensible_patched_bytes = extensible.patch_dataset_values(
+    "/extensible",
+    Int32Values(extensible_expected),
+  )
+  assert_true(extensible_patched_bytes.length() > extensible_bytes.length())
+  let extensible_patched = Hdf5File::parse(extensible_patched_bytes)
+  assert_eq(
+    integer_values(extensible_patched.read_dataset("/extensible")),
+    extensible_expected.map(value => value.to_int64()),
   )
 }
