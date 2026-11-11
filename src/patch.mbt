@@ -467,31 +467,43 @@ fn patch_end_of_file_address(
 }
 
 ///|
+fn next_aligned_tail_start(
+  file_length : Int32,
+  tail_length : Int32,
+  purpose : String,
+) -> UInt64 raise Hdf5Error {
+  guard file_length >= 0 && file_length.to_int64() <= 0x7FFFFFFFL - 7L else {
+    raise UnsupportedFeature("file is too large to " + purpose)
+  }
+  guard tail_length >= 0 &&
+    tail_length.to_int64() <= 0x7FFFFFFFL - file_length.to_int64() else {
+    raise UnsupportedFeature("file is too large to " + purpose)
+  }
+  let unpadded = file_length + tail_length
+  guard unpadded.to_int64() <= 0x7FFFFFFFL - 7L else {
+    raise UnsupportedFeature("file is too large to " + purpose)
+  }
+  ((unpadded + 7) / 8 * 8).to_uint64()
+}
+
+///|
 fn append_aligned_bytes_to_tail(
   tail : @buffer.Buffer,
   file_length : Int32,
   encoded : Bytes,
   purpose : String,
 ) -> UInt64 raise Hdf5Error {
-  guard file_length >= 0 && file_length.to_int64() <= 0x7FFFFFFFL - 7L else {
-    raise UnsupportedFeature("file is too large to " + purpose)
-  }
-  guard tail.length().to_int64() <= 0x7FFFFFFFL - file_length.to_int64() else {
-    raise UnsupportedFeature("file is too large to " + purpose)
-  }
+  let start = next_aligned_tail_start(file_length, tail.length(), purpose)
   let unpadded = file_length + tail.length()
-  guard unpadded.to_int64() <= 0x7FFFFFFFL - 7L else {
+  guard encoded.length().to_int64() <=
+    0x7FFFFFFFL - start.reinterpret_as_int64() else {
     raise UnsupportedFeature("file is too large to " + purpose)
   }
-  let start = (unpadded + 7) / 8 * 8
-  guard encoded.length().to_int64() <= 0x7FFFFFFFL - start.to_int64() else {
-    raise UnsupportedFeature("file is too large to " + purpose)
-  }
-  for _ in 0..<(start - unpadded) {
+  for _ in 0..<(start.to_int() - unpadded) {
     tail.write_byte(b'\x00')
   }
   tail.write_bytes(encoded.get_view().unwrap())
-  start.to_uint64()
+  start
 }
 
 ///|
@@ -958,6 +970,108 @@ fn chunk_slot_has_non_fill(
 }
 
 ///|
+/// Builds and encodes a non-fill chunk for an index slot that has no writable
+/// record storage. New chunks use filter mask zero because every filter is
+/// applied by this write path.
+fn encode_missing_chunk_from_payload(
+  offsets : Array[UInt64],
+  chunk_widths : Array[Int64],
+  dataspace_dimensions : Array[UInt64],
+  strides : Array[Int64],
+  chunk_elements : Int64,
+  element_size : Int32,
+  datatype : Datatype,
+  filters : Array[Filter],
+  payload : Bytes,
+  fill : Bytes,
+  filtered : Bool,
+  write_filters : Array[Hdf5WriteFilter],
+  values : Hdf5WriteValues,
+  custom_filters : Array[&Hdf5CustomFilter],
+) -> (Bytes, Bool) raise Hdf5Error {
+  let rank = chunk_widths.length()
+  guard offsets.length() == rank &&
+    dataspace_dimensions.length() == rank &&
+    strides.length() == rank &&
+    chunk_elements > 0L &&
+    element_size > 0 &&
+    fill.length() == element_size &&
+    chunk_elements <= 0x7FFFFFFFL / element_size.to_int64() else {
+    raise InvalidField("invalid missing chunk payload geometry")
+  }
+  let chunk_size = (chunk_elements * element_size.to_int64()).to_int()
+  let chunk = FixedArray::make(chunk_size, b'\x00')
+  write_repeated_element(chunk, fill)
+  let mut has_non_fill = false
+  for chunk_element in 0..<chunk_elements.to_int() {
+    let mut remaining = chunk_element.to_int64()
+    let mut dataset_linear = 0L
+    let mut outside = false
+    let mut axis = rank
+    while axis > 0 {
+      axis = axis - 1
+      let coordinate = remaining % chunk_widths[axis]
+      remaining = remaining / chunk_widths[axis]
+      let global = offsets[axis] + coordinate.reinterpret_as_uint64()
+      if global >= dataspace_dimensions[axis] {
+        outside = true
+      } else {
+        dataset_linear = dataset_linear +
+          global.reinterpret_as_int64() * strides[axis]
+      }
+    }
+    if outside {
+      continue
+    }
+    let source = dataset_linear * element_size.to_int64()
+    let destination = chunk_element.to_int64() * element_size.to_int64()
+    guard source >= 0L &&
+      source + element_size.to_int64() <= payload.length().to_int64() else {
+      raise InvalidField("chunk payload is smaller than the dataspace")
+    }
+    for byte_index in 0..<element_size {
+      let value = payload[source.to_int() + byte_index]
+      chunk[destination.to_int() + byte_index] = value
+      if value != fill[byte_index] {
+        has_non_fill = true
+      }
+    }
+  }
+  if !has_non_fill {
+    return (b"", false)
+  }
+  if !filtered {
+    return (Bytes::from_array(chunk), has_non_fill)
+  }
+  let scaleoffset_little_endian = patch_scaleoffset_needs_little_endian_input(
+    filters, 0U, datatype, element_size,
+  )
+  let filter_data = Bytes::from_array(chunk)
+  let filter_fill = if scaleoffset_little_endian {
+    patch_byteswap_elements(fill, element_size)
+  } else {
+    fill
+  }
+  let encoded = encode_chunk_filters(
+    if scaleoffset_little_endian {
+      patch_byteswap_elements(filter_data, element_size)
+    } else {
+      filter_data
+    },
+    write_filters,
+    0U,
+    element_size,
+    values,
+    filter_fill,
+    custom_filters,
+  )
+  guard encoded.length() > 0 else {
+    raise InvalidField("allocated chunk encoded to an empty payload")
+  }
+  (encoded, has_non_fill)
+}
+
+///|
 fn missing_extensible_block_used(
   descriptor : MissingExtensibleDataBlock,
   layout : DataLayout,
@@ -1222,6 +1336,11 @@ fn Hdf5File::patch_chunked_dataset_data(
     ExtensibleArray(config) => Some(config)
     _ => None
   }
+  let btree_v2_config : BTreeV2Config? = match layout.chunk_index {
+    BTreeV2(config) => Some(config)
+    _ => None
+  }
+  let is_btree_v2 = btree_v2_config is Some(_)
   let extensible_header_info : ExtensibleArrayHeaderInfo? = match
     extensible_config {
     Some(_) =>
@@ -1896,6 +2015,10 @@ fn Hdf5File::patch_chunked_dataset_data(
     total_chunks.to_int(),
     None,
   )
+  let v2_present = Array::make(total_chunks.to_int(), false)
+  let v2_addresses = Array::make(total_chunks.to_int(), undefined)
+  let v2_sizes = Array::make(total_chunks.to_int(), 0UL)
+  let v2_masks = Array::make(total_chunks.to_int(), 0U)
   for record in all_records {
     guard record.offsets.length() == rank else {
       raise InvalidField("chunk record rank does not match the dataspace rank")
@@ -1918,9 +2041,16 @@ fn Hdf5File::patch_chunked_dataset_data(
       raise InvalidField("duplicate chunk record")
     }
     record_for_chunk[chunk_linear.to_int()] = Some(record)
+    if is_btree_v2 {
+      v2_present[chunk_linear.to_int()] = true
+      v2_addresses[chunk_linear.to_int()] = record.address
+      v2_sizes[chunk_linear.to_int()] = record.size
+      v2_masks[chunk_linear.to_int()] = record.mask
+    }
   }
   let tail = @buffer.Buffer::Buffer()
   let mut relocated = false
+  let mut rebuild_v2_tree = false
   let allocated_pages : Array[Int32] = []
   let checksum_starts : Array[Int32] = []
   let checksum_offsets : Array[Int32] = []
@@ -2222,10 +2352,11 @@ fn Hdf5File::patch_chunked_dataset_data(
             guard encoded.length() > 0 else {
               raise InvalidField("filtered chunk encoded to an empty payload")
             }
-            if encoded.length().to_uint64() <= record.size {
+            let final_address = if encoded.length().to_uint64() <= record.size {
               for byte_index in 0..<encoded.length() {
                 output[chunk_offset + byte_index] = encoded[byte_index]
               }
+              record.address
             } else {
               let new_offset = append_aligned_chunk_to_tail(
                 tail, chunk_tail_base, encoded,
@@ -2241,28 +2372,41 @@ fn Hdf5File::patch_chunked_dataset_data(
                 target_start=index_start,
               )
               relocated = true
+              new_address
             }
             if encoded.length().to_uint64() != record.size {
-              patch_stored_size_field(
-                index_output,
-                record,
-                encoded.length().to_uint64(),
-                target_start=index_start,
-              )
-              if record.metadata_start >= 0 &&
-                record.metadata_checksum_offset >= 0 {
-                let mut known = false
-                for region in 0..<checksum_starts.length() {
-                  if checksum_starts[region] == record.metadata_start &&
-                    checksum_offsets[region] == record.metadata_checksum_offset {
-                    known = true
+              if is_btree_v2 &&
+                btree_integer_width(encoded.length().to_uint64()) >
+                record.stored_size_width {
+                rebuild_v2_tree = true
+              } else {
+                patch_stored_size_field(
+                  index_output,
+                  record,
+                  encoded.length().to_uint64(),
+                  target_start=index_start,
+                )
+                if record.metadata_start >= 0 &&
+                  record.metadata_checksum_offset >= 0 {
+                  let mut known = false
+                  for region in 0..<checksum_starts.length() {
+                    if checksum_starts[region] == record.metadata_start &&
+                      checksum_offsets[region] ==
+                      record.metadata_checksum_offset {
+                      known = true
+                    }
+                  }
+                  if !known {
+                    checksum_starts.push(record.metadata_start)
+                    checksum_offsets.push(record.metadata_checksum_offset)
                   }
                 }
-                if !known {
-                  checksum_starts.push(record.metadata_start)
-                  checksum_offsets.push(record.metadata_checksum_offset)
-                }
               }
+            }
+            if is_btree_v2 {
+              v2_addresses[chunk_linear] = final_address
+              v2_sizes[chunk_linear] = encoded.length().to_uint64()
+              v2_masks[chunk_linear] = record.mask
             }
           } else {
             for byte_index in 0..<chunk_size {
@@ -2272,32 +2416,66 @@ fn Hdf5File::patch_chunked_dataset_data(
         }
       }
       None =>
-        for chunk_element in 0..<chunk_elements.to_int() {
-          let mut remaining = chunk_element.to_int64()
-          let mut dataset_linear = 0L
-          let mut outside = false
-          let mut axis = rank
-          while axis > 0 {
-            axis = axis - 1
-            let coordinate = remaining % chunk_widths[axis]
-            remaining = remaining / chunk_widths[axis]
-            let global = offsets[axis] + coordinate.reinterpret_as_uint64()
-            if global >= metadata.dataspace.dimensions[axis] {
-              outside = true
-            } else {
-              dataset_linear = dataset_linear +
-                global.reinterpret_as_int64() * strides[axis]
+        if is_btree_v2 {
+          let (encoded, has_non_fill) = encode_missing_chunk_from_payload(
+            offsets,
+            chunk_widths,
+            metadata.dataspace.dimensions,
+            strides,
+            chunk_elements,
+            metadata.datatype.size,
+            metadata.datatype,
+            filters,
+            payload,
+            fill,
+            filters.length() > 0,
+            write_filters,
+            values,
+            self.custom_filters,
+          )
+          if has_non_fill {
+            let new_offset = append_aligned_chunk_to_tail(
+              tail, chunk_tail_base, encoded,
+            )
+            let new_address = file_offset_to_stored_address(
+              new_offset,
+              self.superblock.base_address,
+            )
+            v2_present[chunk_linear] = true
+            v2_addresses[chunk_linear] = new_address
+            v2_sizes[chunk_linear] = encoded.length().to_uint64()
+            v2_masks[chunk_linear] = 0U
+            rebuild_v2_tree = true
+            relocated = true
+          }
+        } else {
+          for chunk_element in 0..<chunk_elements.to_int() {
+            let mut remaining = chunk_element.to_int64()
+            let mut dataset_linear = 0L
+            let mut outside = false
+            let mut axis = rank
+            while axis > 0 {
+              axis = axis - 1
+              let coordinate = remaining % chunk_widths[axis]
+              remaining = remaining / chunk_widths[axis]
+              let global = offsets[axis] + coordinate.reinterpret_as_uint64()
+              if global >= metadata.dataspace.dimensions[axis] {
+                outside = true
+              } else {
+                dataset_linear = dataset_linear +
+                  global.reinterpret_as_int64() * strides[axis]
+              }
             }
-          }
-          if outside {
-            continue
-          }
-          let source = dataset_linear * metadata.datatype.size.to_int64()
-          for byte_index in 0..<metadata.datatype.size {
-            guard payload[source.to_int() + byte_index] == fill[byte_index] else {
-              raise UnsupportedFeature(
-                "chunk index has no writable slot for a non-fill chunk",
-              )
+            if outside {
+              continue
+            }
+            let source = dataset_linear * metadata.datatype.size.to_int64()
+            for byte_index in 0..<metadata.datatype.size {
+              guard payload[source.to_int() + byte_index] == fill[byte_index] else {
+                raise UnsupportedFeature(
+                  "chunk index has no writable slot for a non-fill chunk",
+                )
+              }
             }
           }
         }
@@ -2309,6 +2487,102 @@ fn Hdf5File::patch_chunked_dataset_data(
       checksum_starts[region] - index_start,
       checksum_offsets[region] - index_start,
     )
+  }
+  if is_btree_v2 && rebuild_v2_tree {
+    let config = match btree_v2_config {
+      Some(config) => config
+      None => raise InvalidField("v2 B-tree configuration is unavailable")
+    }
+    let filtered = filters.length() > 0
+    let mut maximum_stored = 0UL
+    for chunk_linear in 0..<total_chunks.to_int() {
+      if v2_present[chunk_linear] && v2_sizes[chunk_linear] > maximum_stored {
+        maximum_stored = v2_sizes[chunk_linear]
+      }
+    }
+    let size_width = if filtered {
+      btree_v2_stored_size_width(maximum_stored)
+    } else {
+      0
+    }
+    let record_size = self.superblock.offset_size +
+      (if filtered { size_width + 4 } else { 0 }) +
+      8 * rank
+    let encoded_records : Array[Bytes] = []
+    for chunk_linear in 0..<total_chunks.to_int() {
+      if v2_present[chunk_linear] {
+        let coordinates = btree_v2_coordinates(chunk_linear, grid)
+        encoded_records.push(
+          encode_btree_v2_chunk_record(
+            v2_addresses[chunk_linear],
+            v2_sizes[chunk_linear],
+            v2_masks[chunk_linear],
+            coordinates,
+            filtered,
+            size_width,
+            self.superblock.offset_size,
+          ),
+        )
+      }
+    }
+    let tree_start_offset = next_aligned_tail_start(
+      self.bytes.length(),
+      tail.length(),
+      "rebuild the v2 B-tree chunk index",
+    )
+    let tree_start_address = file_offset_to_stored_address(
+      tree_start_offset,
+      self.superblock.base_address,
+    )
+    let tree = encode_btree_v2_chunk_tree(
+      tree_start_address,
+      encoded_records,
+      config,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      record_size,
+      if filtered {
+        11
+      } else {
+        10
+      },
+    )
+    let appended_start = append_aligned_bytes_to_tail(
+      tail,
+      self.bytes.length(),
+      tree,
+      "rebuild the v2 B-tree chunk index",
+    )
+    guard appended_start == tree_start_offset else {
+      raise InvalidField("v2 B-tree placement changed during encoding")
+    }
+    guard layout.data_address_offset >= 0 && layout.data_address_width >= 1 else {
+      raise UnsupportedFeature(
+        "v2 B-tree layout does not expose a writable address field",
+      )
+    }
+    patch_little_endian_uint(
+      output,
+      layout.data_address_offset,
+      layout.data_address_width,
+      tree_start_address,
+      "v2 B-tree chunk index address",
+    )
+    let layout_message = match header.first(msg_data_layout) {
+      Some(message) => message
+      None =>
+        raise InvalidField(
+          "dataset is missing a required object header message",
+        )
+    }
+    if layout_message.checksum_offset >= 0 {
+      patch_metadata_checksum_in_place(
+        output,
+        layout_message.chunk_start,
+        layout_message.checksum_offset,
+      )
+    }
+    relocated = true
   }
   if relocated {
     match missing_fixed_array {
@@ -2480,11 +2754,14 @@ pub fn Hdf5File::patch_contiguous_dataset(
 /// affected checksums.
 ///
 /// Missing chunks stay unallocated for fill values. A non-fill chunk can be
-/// allocated only into writable storage already present in the chunk index.
-/// Missing fixed- or extensible-array pages inside an existing data block are
-/// initialized and marked allocated; missing data blocks, super/index blocks and
-/// B-tree records are not created. External, variable-length and reference
-/// storage is rejected, and the dataset shape and chunk grid are never changed.
+/// allocated into writable storage already present in the chunk index, and a
+/// missing v2 B-tree chunk record is created by rebuilding the complete chunk
+/// tree from final addresses, stored sizes, masks and coordinates. Missing
+/// fixed- or extensible-array pages inside an existing data block are initialized
+/// and marked allocated; missing v1 B-tree records, other data blocks, super
+/// blocks and index blocks are not created. External, variable-length and
+/// reference storage is rejected, and the dataset shape and chunk grid are never
+/// changed.
 pub fn Hdf5File::patch_dataset_values(
   self : Hdf5File,
   path : String,

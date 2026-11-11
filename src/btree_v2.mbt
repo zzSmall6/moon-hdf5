@@ -375,3 +375,245 @@ fn read_source_btree_v2_chunks(
     raise InvalidField("v2 B-tree record count mismatch")
   }
 }
+
+///|
+fn btree_v2_stored_size_width(value : UInt64) -> Int32 {
+  let width = btree_integer_width(value)
+  if width > 8 {
+    8
+  } else {
+    width
+  }
+}
+
+///|
+fn btree_v2_coordinates(
+  index : Int32,
+  grid : Array[Int64],
+) -> Array[UInt64] raise Hdf5Error {
+  let coordinates : Array[UInt64] = Array::make(grid.length(), 0UL)
+  let mut remaining = index.to_int64()
+  let mut axis = grid.length()
+  while axis > 0 {
+    axis = axis - 1
+    let width = grid[axis]
+    guard width > 0L else { raise InvalidField("invalid v2 B-tree chunk grid") }
+    coordinates[axis] = (remaining % width).reinterpret_as_uint64()
+    remaining = remaining / width
+  }
+  guard remaining == 0L else {
+    raise InvalidField("v2 B-tree chunk index is outside the grid")
+  }
+  coordinates
+}
+
+///|
+fn encode_btree_v2_chunk_record(
+  address : UInt64,
+  stored_size : UInt64,
+  filter_mask : UInt32,
+  coordinates : Array[UInt64],
+  filtered : Bool,
+  size_width : Int32,
+  offset_size : Int32,
+) -> Bytes raise Hdf5Error {
+  guard offset_size >= 1 && offset_size <= 8 else {
+    raise UnsupportedAddressSize(offset_size)
+  }
+  if filtered {
+    guard size_width >= 1 && size_width <= 8 else {
+      raise InvalidField("invalid v2 B-tree chunk size width")
+    }
+    guard btree_integer_width(stored_size) <= size_width else {
+      raise InvalidField("v2 B-tree chunk size exceeds its record field")
+    }
+  }
+  let buffer = @buffer.Buffer::Buffer(
+    size_hint=offset_size +
+      (if filtered { size_width + 4 } else { 0 }) +
+      8 * coordinates.length(),
+  )
+  writer_write_uint_width(buffer, address, offset_size)
+  if filtered {
+    writer_write_uint_width(buffer, stored_size, size_width)
+    writer_write_uint_width(buffer, filter_mask.to_uint64(), 4)
+  }
+  for coordinate in coordinates {
+    buffer.write_uint64_le(coordinate)
+  }
+  buffer.to_bytes()
+}
+
+///|
+fn encode_btree_v2_header(
+  root : UInt64,
+  root_count : Int32,
+  depth : Int32,
+  total : UInt64,
+  node_size : Int32,
+  record_size : Int32,
+  split_percent : Int32,
+  merge_percent : Int32,
+  client : Int32,
+  offset_size : Int32,
+  length_size : Int32,
+) -> Bytes raise Hdf5Error {
+  guard root_count >= 0 &&
+    root_count <= 65535 &&
+    depth >= 0 &&
+    depth <= 65535 &&
+    split_percent >= 1 &&
+    split_percent <= 100 &&
+    merge_percent >= 1 &&
+    merge_percent <= 100 &&
+    offset_size >= 1 &&
+    offset_size <= 8 &&
+    length_size >= 1 &&
+    length_size <= 8 else {
+    raise InvalidField("invalid v2 B-tree header fields")
+  }
+  let buffer = @buffer.Buffer::Buffer(size_hint=22 + offset_size + length_size)
+  writer_write_bytes(buffer, b"BTHD")
+  buffer.write_byte(b'\x00')
+  buffer.write_byte(client.to_byte())
+  buffer.write_uint_le(node_size.reinterpret_as_uint())
+  buffer.write_uint16_le(record_size.to_uint16())
+  buffer.write_uint16_le(depth.to_uint16())
+  buffer.write_byte(split_percent.to_byte())
+  buffer.write_byte(merge_percent.to_byte())
+  writer_write_uint_width(buffer, root, offset_size)
+  buffer.write_uint16_le(root_count.to_uint16())
+  writer_write_uint_width(buffer, total, length_size)
+  buffer.write_uint_le(metadata_checksum(buffer.to_bytes(), 0, buffer.length()))
+  buffer.to_bytes()
+}
+
+///|
+fn encode_btree_v2_node(
+  node : WriterBTreeV2Node,
+  nodes : Array[WriterBTreeV2Node],
+  node_size : Int32,
+  record_size : Int32,
+  offset_size : Int32,
+  count_width : Int32,
+  total_widths : Array[Int32],
+  client : Int32,
+) -> Bytes raise Hdf5Error {
+  let buffer = @buffer.Buffer::Buffer(size_hint=node_size)
+  writer_write_bytes(buffer, if node.depth == 0 { b"BTLF" } else { b"BTIN" })
+  buffer.write_byte(b'\x00')
+  buffer.write_byte(client.to_byte())
+  for record in node.records {
+    guard record.length() == record_size else {
+      raise InvalidField("v2 B-tree record size changed")
+    }
+    writer_write_bytes(buffer, record)
+  }
+  if node.depth > 0 {
+    for child_index in node.children {
+      let child = nodes[child_index]
+      writer_write_uint_width(buffer, child.address, offset_size)
+      writer_write_uint_width(
+        buffer,
+        child.records.length().to_uint64(),
+        count_width,
+      )
+      if node.depth > 1 {
+        writer_write_uint_width(
+          buffer,
+          child.total,
+          total_widths[node.depth - 1],
+        )
+      }
+    }
+  }
+  guard buffer.length() + 4 <= node_size else {
+    raise InvalidField("v2 B-tree node exceeds its configured size")
+  }
+  buffer.write_uint_le(metadata_checksum(buffer.to_bytes(), 0, buffer.length()))
+  writer_write_zeros(buffer, node_size - buffer.length())
+  buffer.to_bytes()
+}
+
+///|
+fn encode_btree_v2_chunk_tree(
+  start : UInt64,
+  records : Array[Bytes],
+  config : BTreeV2Config,
+  offset_size : Int32,
+  length_size : Int32,
+  record_size : Int32,
+  client : Int32,
+) -> Bytes raise Hdf5Error {
+  validate_btree_v2_config(config)
+  guard record_size > 0 && record_size <= 65535 else {
+    raise InvalidField("invalid v2 B-tree record size")
+  }
+  let header_length = 22 + offset_size + length_size
+  let (capacities, total_widths, count_width) = writer_btree_capacities(
+    config.node_size,
+    record_size,
+    offset_size,
+  )
+  let nodes : Array[WriterBTreeV2Node] = []
+  let mut root = -1
+  let mut depth = 0
+  if records.length() > 0 {
+    depth = writer_btree_depth(records.length().to_uint64(), capacities)
+    root = writer_btree_build_node(records, depth, capacities, nodes)
+  }
+  let node_start = writer_align(header_length)
+  for index in 0..<nodes.length() {
+    nodes[index].address = start +
+      node_start.to_uint64() +
+      config.node_size.to_uint64() * index.to_uint64()
+  }
+  let root_address = if root >= 0 {
+    nodes[root].address
+  } else {
+    0xFFFFFFFFFFFFFFFFUL
+  }
+  let root_count = if root >= 0 { nodes[root].records.length() } else { 0 }
+  let header = encode_btree_v2_header(
+    root_address,
+    root_count,
+    depth,
+    records.length().to_uint64(),
+    config.node_size,
+    record_size,
+    config.split_percent,
+    config.merge_percent,
+    client,
+    offset_size,
+    length_size,
+  )
+  let tree_length = if nodes.length() == 0 {
+    header_length
+  } else {
+    node_start + config.node_size * nodes.length()
+  }
+  let output = @buffer.Buffer::Buffer(size_hint=tree_length)
+  writer_write_bytes(output, header)
+  if nodes.length() > 0 {
+    writer_write_zeros(output, node_start - output.length())
+    for node in nodes {
+      writer_write_bytes(
+        output,
+        encode_btree_v2_node(
+          node,
+          nodes,
+          config.node_size,
+          record_size,
+          offset_size,
+          count_width,
+          total_widths,
+          client,
+        ),
+      )
+    }
+  }
+  guard output.length() == tree_length else {
+    raise InvalidField("v2 B-tree tree size changed during encoding")
+  }
+  output.to_bytes()
+}

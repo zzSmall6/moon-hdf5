@@ -236,10 +236,12 @@ updates the EAHD index address, maximum set, secondary/data block counts and
 sizes, realized-element count and checksum before normal slot linking. An
 undefined EASB pointer is repaired by appending an EASB with an empty bitmap and
 undefined child pointers, linking it into the EAIB, and creating only the child
-EADBs that contain non-fill data. Non-fill chunks whose v1/v2 B-tree record does
-not exist are rejected; the patcher does not construct those records or other
-unrelated metadata. Relocation and allocation are append-only and leave old
-chunk bytes unreferenced.
+EADBs that contain non-fill data. A non-fill chunk whose v2 B-tree record does
+not exist is encoded and appended, after which the complete BTHD/node tree is
+rebuilt from the final addresses, stored sizes, masks and coordinates and linked
+through the data-layout address. Non-fill chunks in v1 B-trees or other indexes
+without writable record storage are still rejected. Relocation and allocation
+are append-only and leave old chunk bytes unreferenced.
 `patch_dataset_values` accepts all three layouts, while
 `patch_contiguous_dataset` is the contiguous-only compatibility entry point.
 

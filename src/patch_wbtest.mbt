@@ -405,20 +405,30 @@ test "chunked patches cover v1 and v2 B-tree indexes" {
   assert_eq(deep_values[0], -5L)
   assert_eq(deep_values[9999], 9994L)
 
-  let sparse_error = try {
-    btree.patch_dataset_values("/raw/sparse", Int32Values(Array::make(63, 1)))
-    |> ignore
-    None
-  } catch {
-    error => Some(error)
-  }
+  let sparse_expected = Array::make(63, 1)
+  let sparse_bytes = btree.patch_dataset_values(
+    "/raw/sparse",
+    Int32Values(sparse_expected),
+  )
+  let sparse_file = Hdf5File::parse(sparse_bytes)
+  assert_true(
+    sparse_file.read_dataset_metadata("/raw/sparse").layout.chunk_index
+    is BTreeV2(_),
+  )
   assert_eq(
-    sparse_error,
-    Some(
-      UnsupportedFeature(
-        "chunk index has no writable slot for a non-fill chunk",
-      ),
+    integer_values(sparse_file.read_dataset("/raw/sparse")),
+    Array::make(63, 1L),
+  )
+  let rewritten_expected = patch_int32_sequence(63, 500, 3)
+  let rewritten = Hdf5File::parse(
+    sparse_file.patch_dataset_values(
+      "/raw/sparse",
+      Int32Values(rewritten_expected),
     ),
+  )
+  assert_eq(
+    integer_values(rewritten.read_dataset("/raw/sparse")),
+    rewritten_expected.map(value => value.to_int64()),
   )
 }
 
@@ -702,6 +712,73 @@ test "filtered patches cover v1 and v2 B-tree indexes" {
   assert_eq(sparse_values[0], -7L)
   assert_eq(sparse_values[11], 41L)
   assert_eq(sparse_values[62], 43L)
+}
+
+///|
+test "filtered v2 sparse patches create missing B-tree records" {
+  let bytes = @fs.read_file_to_bytes("testdata/btree_v2.h5")
+  let file = Hdf5File::parse(bytes)
+  let expected = patch_int32_sequence(63, 2000, 3)
+  let patched_bytes = file.patch_dataset_values(
+    "/filtered/sparse",
+    Int32Values(expected),
+  )
+  assert_true(patched_bytes.length() > bytes.length())
+  let patched = Hdf5File::parse(patched_bytes)
+  assert_true(
+    patched.read_dataset_metadata("/filtered/sparse").layout.chunk_index
+    is BTreeV2(_),
+  )
+  assert_eq(
+    integer_values(patched.read_dataset("/filtered/sparse")),
+    expected.map(value => value.to_int64()),
+  )
+  let rewritten_expected = patch_int32_sequence(63, -300, 2)
+  let rewritten = Hdf5File::parse(
+    patched.patch_dataset_values(
+      "/filtered/sparse",
+      Int32Values(rewritten_expected),
+    ),
+  )
+  assert_eq(
+    integer_values(rewritten.read_dataset("/filtered/sparse")),
+    rewritten_expected.map(value => value.to_int64()),
+  )
+}
+
+///|
+test "v2 sparse patches rebuild empty and internal B-tree levels" {
+  let writer = Hdf5Writer::new()
+  writer.add_extensible_dataset(
+    "/sparse",
+    [16UL, 16UL],
+    [None, None],
+    [1U, 1U],
+    Int32Values(Array::make(256, -7)),
+    fill_value=Int32Values([-7]),
+  )
+  let original = writer.encode()
+  let file = Hdf5File::parse(original)
+  let before = file.read_dataset("/sparse")
+  assert_true(before.layout.chunk_index is BTreeV2(_))
+  assert_eq(integer_values(before), Array::make(256, -7L))
+  let expected = patch_int32_sequence(256, -20, 1)
+  let patched_bytes = file.patch_dataset_values(
+    "/sparse",
+    Int32Values(expected),
+  )
+  assert_true(patched_bytes.length() > original.length())
+  let patched = Hdf5File::parse(patched_bytes)
+  let dataset = patched.read_dataset("/sparse")
+  assert_true(dataset.layout.chunk_index is BTreeV2(_))
+  let header = address_to_offset(
+    dataset.layout.data_address,
+    patched.superblock.base_address,
+  )
+  assert_true(
+    Reader::at(patched_bytes, header + 12).read_u16_le().to_int() >= 1,
+  )
+  assert_eq(integer_values(dataset), expected.map(value => value.to_int64()))
 }
 
 ///|

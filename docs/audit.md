@@ -7,8 +7,8 @@ v1.0 delivery profile and post-v1.0 extensions.
 
 The MoonBit release checks pass on the current worktree:
 
-- wasm: 293 tests passed;
-- native: 293 tests passed;
+- wasm: 295 tests passed;
+- native: 295 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output were
   previously verified by h5py 3.13.0/HDF5 1.14.6; h5py was not rerun for the
@@ -202,9 +202,11 @@ heaps and heap extension across multiple blocks are not emitted.
 - Value patching can allocate raw data only into existing writable layout or
   chunk-index storage, including a missing fixed-array data block, a missing
   extensible-array data, EAIB or EASB block, or an unallocated fixed- or
-  extensible-array page inside an existing data block. Rebuilding a missing EAIB
-  may create its direct/super hierarchy and derives or extends the EAHD maximum
-  set. It cannot create v1/v2 B-tree records or other index metadata.
+  extensible-array page inside an existing data block. Missing v2 B-tree chunk
+  records cause the complete chunk tree to be rebuilt from final records.
+  Rebuilding a missing EAIB may create its direct/super hierarchy and derives or
+  extends the EAHD maximum set. It cannot create v1 B-tree records or other
+  index metadata.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB
@@ -287,3 +289,8 @@ heaps and heap extension across multiple blocks are not emitted.
   super-block and paged child storage, block-count/size and realized-element
   accounting, parent/index checksums, and later patching through the rebuilt
   hierarchy. V1/v2 B-tree record creation remains outside the boundary.
+- 2026-11-11: creation of missing v2 B-tree chunk records, including filtered
+  variable-width stored sizes and masks, complete BTHD/leaf/internal tree
+  rebuilds with the index's node size and split/merge thresholds, data-layout
+  address and object-header checksum updates, and later patching through the
+  rebuilt tree. V1 B-tree record creation remains outside the boundary.
