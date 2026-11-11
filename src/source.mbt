@@ -74,7 +74,7 @@ fn parse_source_superblock(source : &Hdf5Source) -> Superblock raise Hdf5Error {
   guard offset <= 0x7FFFFFFFUL else {
     raise InvalidField("superblock offset is out of range")
   }
-  let bytes = source_read_available(source, offset, 96)
+  let bytes = source_read_available(source, offset, 128)
   let parsed = parse_superblock(bytes)
   {
     _superblock_offset: offset.to_int(),
@@ -93,6 +93,7 @@ fn parse_source_superblock(source : &Hdf5Source) -> Superblock raise Hdf5Error {
     root_group_object_header: parsed.root_group_object_header,
     group_leaf_node_k: parsed.group_leaf_node_k,
     group_internal_node_k: parsed.group_internal_node_k,
+    indexed_storage_node_k: parsed.indexed_storage_node_k,
     superblock_checksum: parsed.superblock_checksum,
     superblock_checksum_offset: if parsed.superblock_checksum_offset < 0 {
       -1

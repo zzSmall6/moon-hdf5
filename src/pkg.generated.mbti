@@ -266,6 +266,7 @@ pub fn Hdf5File::attributes(Self, String) -> Array[Attribute] raise Hdf5Error
 pub fn Hdf5File::chunk_iterator(Self, String, Array[UInt64]) -> DatasetChunkIterator raise Hdf5Error
 pub fn Hdf5File::parse(Bytes) -> Self raise Hdf5Error
 pub fn Hdf5File::parse_source(&Hdf5Source) -> Self raise Hdf5Error
+pub fn Hdf5File::patch_attribute_values(Self, String, String, Hdf5WriteValues) -> Bytes raise Hdf5Error
 pub fn Hdf5File::patch_contiguous_dataset(Self, String, Hdf5WriteValues) -> Bytes raise Hdf5Error
 pub fn Hdf5File::patch_dataset_values(Self, String, Hdf5WriteValues) -> Bytes raise Hdf5Error
 pub fn Hdf5File::read_attribute_reference(Self, Bytes) -> Attribute? raise Hdf5Error

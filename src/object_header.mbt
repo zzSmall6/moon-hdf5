@@ -39,6 +39,9 @@ let msg_object_continuation : Int32 = 0x0010
 let msg_symbol_table : Int32 = 0x0011
 
 ///|
+let msg_btree_k : Int32 = 0x0013
+
+///|
 let msg_attribute_info : Int32 = 0x0015
 
 ///|

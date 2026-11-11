@@ -239,11 +239,28 @@ undefined child pointers, linking it into the EAIB, and creating only the child
 EADBs that contain non-fill data. A non-fill chunk whose v2 B-tree record does
 not exist is encoded and appended, after which the complete BTHD/node tree is
 rebuilt from the final addresses, stored sizes, masks and coordinates and linked
-through the data-layout address. Non-fill chunks in v1 B-trees or other indexes
-without writable record storage are still rejected. Relocation and allocation
+through the data-layout address. The v1 path is similar: a missing record's
+payload is appended, then the complete v1 tree is rebuilt using the
+indexed-storage K from the superblock, including a non-default K carried by the
+superblock-extension B-tree K message. Rebuilt nodes balance records by capacity,
+link same-level left and right siblings, and use termination keys whose final
+field is the datatype storage size. The layout address and object-header
+checksum are updated after the tree is placed. Indexes without a writable record
+path continue to require fill values for absent chunks. Relocation and allocation
 are append-only and leave old chunk bytes unreferenced.
 `patch_dataset_values` accepts all three layouts, while
 `patch_contiguous_dataset` is the contiguous-only compatibility entry point.
+
+`patch_attribute_values` locates attributes through the object header's attribute
+info message and its name or creation-order B-tree. Inline values are rewritten
+inside the containing object-header chunk, after which the OHDR or continuation
+checksum is refreshed. Dense values are written through the managed fractal-heap
+object identified by the dense attribute record; the direct block's checksum is
+recomputed with the checksum field treated as zero, matching the HDF5 direct
+block layout. The attribute message, name, creation order, datatype, dataspace
+and index records are not changed. Shared attribute messages, filtered heap
+storage, variable-length values and references are rejected. Adding, deleting
+or renaming attributes remains outside the patching API.
 
 ## Errors and verification
 

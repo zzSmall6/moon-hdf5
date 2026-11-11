@@ -7,12 +7,19 @@ v1.0 delivery profile and post-v1.0 extensions.
 
 The MoonBit release checks pass on the current worktree:
 
-- wasm: 295 tests passed;
-- native: 295 tests passed;
+- wasm: 304 tests passed;
+- native: 304 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
-- the writer demo and earlier compact and sparse chunked patch output were
-  previously verified by h5py 3.13.0/HDF5 1.14.6; h5py was not rerun for the
-  new allocation paths in this iteration;
+- the writer demo and earlier compact and sparse chunked patch output remain
+  covered by prior h5py 3.13.0/HDF5 1.14.6 verification, and the new v1 B-tree
+  record creation paths were independently read back by the same h5py/HDF5
+  versions;
+- missing v1 B-tree chunk records are covered for sparse and filtered fixtures,
+  including a non-default K=4 tree with 256 chunks, and the complete rebuilt
+  tree is re-read correctly by h5py;
+- inline, dense, creation-order-tracked and big-endian attribute patching is
+  covered by MoonBit round-trip tests; compact, dense, ordered and 7000-element
+  attribute output was independently re-read by h5py 3.13.0/HDF5 1.14.6;
 - caller-defined filter encoding, named pipelines, chunk-mask skips, patch
   re-encoding and growth relocation are covered by MoonBit round-trip tests;
 - unallocated contiguous payloads and undefined slots in existing single,
@@ -55,7 +62,8 @@ structures raise errors; detection is not exhaustive.
 | References | 4-/8-byte object references, legacy region references and version-4 object/region/attribute references against compact, contiguous and filtered targets |
 | Shared messages | Table/indexes/heaps, wrappers v1–v3, field sharing, fills, filter pipelines, whole attributes and committed targets |
 | Writer | Superblock v3, OHDR/OCHK, dense metadata, chunk indexes, SOHM, references and external slots |
-| In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including sparse fill-only chunks, undefined slots in existing indexes, missing fixed-array data blocks, missing extensible-array data/index/super blocks, unallocated fixed- and extensible-array pages and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout, slot, page-bitmap, FADB/FAHD and EAHD/EAIB/EASB/EADB fields, affected checksums and superblock EOF updated; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved |
+| In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including sparse fill-only chunks, undefined slots in existing indexes, missing fixed-array data blocks, missing extensible-array data/index/super blocks, unallocated fixed- and extensible-array pages, missing v1/v2 B-tree chunk records and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout, slot, page-bitmap, FADB/FAHD, EAHD/EAIB/EASB/EADB and B-tree fields, affected checksums and superblock EOF updated; v1 tree rebuilds honor the superblock K, sibling links and datatype-sized termination keys; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved |
+| Attribute patching | Existing fixed-size inline, dense and creation-order-tracked attributes on objects, including compact attributes, big-endian numeric values and large dense values; object-header/OCHK and fractal-heap direct-block checksums are refreshed, while attribute message metadata and indexes remain unchanged |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
 
 ## Reader findings
@@ -201,12 +209,17 @@ heaps and heap extension across multiple blocks are not emitted.
   incremental insertion at interior coordinates is not exposed.
 - Value patching can allocate raw data only into existing writable layout or
   chunk-index storage, including a missing fixed-array data block, a missing
-  extensible-array data, EAIB or EASB block, or an unallocated fixed- or
-  extensible-array page inside an existing data block. Missing v2 B-tree chunk
-  records cause the complete chunk tree to be rebuilt from final records.
-  Rebuilding a missing EAIB may create its direct/super hierarchy and derives or
-  extends the EAHD maximum set. It cannot create v1 B-tree records or other
-  index metadata.
+  extensible-array data, EAIB or EASB block, an unallocated fixed- or
+  extensible-array page inside an existing data block, or a missing v1/v2 B-tree
+  chunk record. Missing B-tree records cause the complete tree to be rebuilt
+  from the final records; v1 uses the superblock K and v2 preserves its node
+  size and split/merge thresholds. Rebuilding a missing EAIB may create its
+  direct/super hierarchy and derives or extends the EAHD maximum set. It does
+  not create unrelated metadata structures.
+- Attribute patching is limited to replacing values of existing fixed-size,
+  non-vlen and non-reference attributes. Shared attribute messages and filtered
+  fractal-heap storage are rejected, and attributes cannot be added, deleted,
+  renamed or moved between inline and dense storage.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB
@@ -288,9 +301,20 @@ heaps and heap extension across multiple blocks are not emitted.
   including EAHD `maximum_set` recovery from non-fill payload slots, direct,
   super-block and paged child storage, block-count/size and realized-element
   accounting, parent/index checksums, and later patching through the rebuilt
-  hierarchy. V1/v2 B-tree record creation remains outside the boundary.
+  hierarchy. V1/v2 B-tree record creation remained outside that boundary.
 - 2026-11-11: creation of missing v2 B-tree chunk records, including filtered
   variable-width stored sizes and masks, complete BTHD/leaf/internal tree
   rebuilds with the index's node size and split/merge thresholds, data-layout
   address and object-header checksum updates, and later patching through the
-  rebuilt tree. V1 B-tree record creation remains outside the boundary.
+  rebuilt tree. V1 B-tree record creation remained outside that boundary.
+- 2026-11-11: creation of missing v1 B-tree chunk records, including sparse and
+  filtered datasets, complete multi-level rebuilds with the superblock's
+  indexed-storage K, balanced same-level nodes, sibling links and datatype-sized
+  termination keys, plus layout-address, object-header-checksum and superblock
+  EOF updates. Default-K output and a non-default K=4 tree with 256 chunks were
+  independently re-read by h5py 3.13.0/HDF5 1.14.6.
+- 2026-11-11: in-place attribute value patching for existing fixed-size inline
+  and dense attributes, including creation-order indexes, compact attributes,
+  big-endian numeric values, managed fractal-heap writes and direct-block
+  checksum repair. Compact, dense, ordered and 7000-element output was
+  independently re-read by h5py 3.13.0/HDF5 1.14.6.

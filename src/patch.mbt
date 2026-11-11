@@ -1232,6 +1232,32 @@ fn effective_fill_element(
 }
 
 ///|
+fn Hdf5File::btree_v1_k(self : Hdf5File) -> Int32 raise Hdf5Error {
+  let mut value = self.superblock.indexed_storage_node_k.to_int()
+  let undefined = heap_undefined_address(self.superblock.offset_size)
+  if self.superblock.version >= 2 &&
+    self.superblock.superblock_extension_address != undefined {
+    let extension = self.object_header_at(
+      self.superblock.superblock_extension_address,
+    )
+    if extension.first(msg_btree_k) is Some(message) {
+      let reader = Reader::new(message.data)
+      guard reader.remaining() >= 7 else {
+        raise InvalidField("B-tree K message is too short")
+      }
+      guard reader.read_u8() == b'\x00' else {
+        raise UnsupportedFeature("unsupported B-tree K message version")
+      }
+      value = reader.read_u16_le().to_int()
+    }
+  }
+  guard value > 0 else {
+    raise InvalidField("indexed storage B-tree K must be positive")
+  }
+  value
+}
+
+///|
 fn single_chunk_slot_record(
   header : ObjectHeader,
   metadata : DatasetMetadata,
@@ -1340,6 +1366,7 @@ fn Hdf5File::patch_chunked_dataset_data(
     BTreeV2(config) => Some(config)
     _ => None
   }
+  let is_btree_v1 = layout.chunk_index is BTreeV1
   let is_btree_v2 = btree_v2_config is Some(_)
   let extensible_header_info : ExtensibleArrayHeaderInfo? = match
     extensible_config {
@@ -2015,6 +2042,10 @@ fn Hdf5File::patch_chunked_dataset_data(
     total_chunks.to_int(),
     None,
   )
+  let v1_present = Array::make(total_chunks.to_int(), false)
+  let v1_addresses = Array::make(total_chunks.to_int(), undefined)
+  let v1_sizes = Array::make(total_chunks.to_int(), 0UL)
+  let v1_masks = Array::make(total_chunks.to_int(), 0U)
   let v2_present = Array::make(total_chunks.to_int(), false)
   let v2_addresses = Array::make(total_chunks.to_int(), undefined)
   let v2_sizes = Array::make(total_chunks.to_int(), 0UL)
@@ -2041,7 +2072,12 @@ fn Hdf5File::patch_chunked_dataset_data(
       raise InvalidField("duplicate chunk record")
     }
     record_for_chunk[chunk_linear.to_int()] = Some(record)
-    if is_btree_v2 {
+    if is_btree_v1 {
+      v1_present[chunk_linear.to_int()] = true
+      v1_addresses[chunk_linear.to_int()] = record.address
+      v1_sizes[chunk_linear.to_int()] = record.size
+      v1_masks[chunk_linear.to_int()] = record.mask
+    } else if is_btree_v2 {
       v2_present[chunk_linear.to_int()] = true
       v2_addresses[chunk_linear.to_int()] = record.address
       v2_sizes[chunk_linear.to_int()] = record.size
@@ -2050,6 +2086,7 @@ fn Hdf5File::patch_chunked_dataset_data(
   }
   let tail = @buffer.Buffer::Buffer()
   let mut relocated = false
+  let mut rebuild_v1_tree = false
   let mut rebuild_v2_tree = false
   let allocated_pages : Array[Int32] = []
   let checksum_starts : Array[Int32] = []
@@ -2403,7 +2440,11 @@ fn Hdf5File::patch_chunked_dataset_data(
                 }
               }
             }
-            if is_btree_v2 {
+            if is_btree_v1 {
+              v1_addresses[chunk_linear] = final_address
+              v1_sizes[chunk_linear] = encoded.length().to_uint64()
+              v1_masks[chunk_linear] = record.mask
+            } else if is_btree_v2 {
               v2_addresses[chunk_linear] = final_address
               v2_sizes[chunk_linear] = encoded.length().to_uint64()
               v2_masks[chunk_linear] = record.mask
@@ -2416,7 +2457,7 @@ fn Hdf5File::patch_chunked_dataset_data(
         }
       }
       None =>
-        if is_btree_v2 {
+        if is_btree_v1 || is_btree_v2 {
           let (encoded, has_non_fill) = encode_missing_chunk_from_payload(
             offsets,
             chunk_widths,
@@ -2441,11 +2482,19 @@ fn Hdf5File::patch_chunked_dataset_data(
               new_offset,
               self.superblock.base_address,
             )
-            v2_present[chunk_linear] = true
-            v2_addresses[chunk_linear] = new_address
-            v2_sizes[chunk_linear] = encoded.length().to_uint64()
-            v2_masks[chunk_linear] = 0U
-            rebuild_v2_tree = true
+            if is_btree_v1 {
+              v1_present[chunk_linear] = true
+              v1_addresses[chunk_linear] = new_address
+              v1_sizes[chunk_linear] = encoded.length().to_uint64()
+              v1_masks[chunk_linear] = 0U
+              rebuild_v1_tree = true
+            } else {
+              v2_present[chunk_linear] = true
+              v2_addresses[chunk_linear] = new_address
+              v2_sizes[chunk_linear] = encoded.length().to_uint64()
+              v2_masks[chunk_linear] = 0U
+              rebuild_v2_tree = true
+            }
             relocated = true
           }
         } else {
@@ -2487,6 +2536,73 @@ fn Hdf5File::patch_chunked_dataset_data(
       checksum_starts[region] - index_start,
       checksum_offsets[region] - index_start,
     )
+  }
+  if is_btree_v1 && rebuild_v1_tree {
+    let capacity = self.btree_v1_k() * 2
+    let tree_records : Array[BTreeV1ChunkRecord] = []
+    for chunk_linear in 0..<total_chunks.to_int() {
+      if v1_present[chunk_linear] {
+        tree_records.push({
+          address: v1_addresses[chunk_linear],
+          size: v1_sizes[chunk_linear],
+          mask: v1_masks[chunk_linear],
+          offsets: btree_v1_chunk_offsets(chunk_linear, grid, chunk_widths),
+        })
+      }
+    }
+    let tree_start_offset = next_aligned_tail_start(
+      self.bytes.length(),
+      tail.length(),
+      "rebuild the v1 B-tree chunk index",
+    )
+    let tree_start_address = file_offset_to_stored_address(
+      tree_start_offset,
+      self.superblock.base_address,
+    )
+    let tree = encode_btree_v1_chunk_tree(
+      tree_start_address,
+      tree_records,
+      chunk_widths,
+      metadata.datatype.size,
+      self.superblock.offset_size,
+      capacity,
+    )
+    let appended_start = append_aligned_bytes_to_tail(
+      tail,
+      self.bytes.length(),
+      tree,
+      "rebuild the v1 B-tree chunk index",
+    )
+    guard appended_start == tree_start_offset else {
+      raise InvalidField("v1 B-tree placement changed during encoding")
+    }
+    guard layout.data_address_offset >= 0 && layout.data_address_width >= 1 else {
+      raise UnsupportedFeature(
+        "v1 B-tree layout does not expose a writable address field",
+      )
+    }
+    patch_little_endian_uint(
+      output,
+      layout.data_address_offset,
+      layout.data_address_width,
+      tree_start_address,
+      "v1 B-tree chunk index address",
+    )
+    let layout_message = match header.first(msg_data_layout) {
+      Some(message) => message
+      None =>
+        raise InvalidField(
+          "dataset is missing a required object header message",
+        )
+    }
+    if layout_message.checksum_offset >= 0 {
+      patch_metadata_checksum_in_place(
+        output,
+        layout_message.chunk_start,
+        layout_message.checksum_offset,
+      )
+    }
+    relocated = true
   }
   if is_btree_v2 && rebuild_v2_tree {
     let config = match btree_v2_config {
@@ -2755,11 +2871,13 @@ pub fn Hdf5File::patch_contiguous_dataset(
 ///
 /// Missing chunks stay unallocated for fill values. A non-fill chunk can be
 /// allocated into writable storage already present in the chunk index, and a
-/// missing v2 B-tree chunk record is created by rebuilding the complete chunk
-/// tree from final addresses, stored sizes, masks and coordinates. Missing
-/// fixed- or extensible-array pages inside an existing data block are initialized
-/// and marked allocated; missing v1 B-tree records, other data blocks, super
-/// blocks and index blocks are not created. External, variable-length and
+/// missing v1 or v2 B-tree chunk record is created by rebuilding the complete
+/// chunk tree from final addresses, stored sizes, masks and coordinates. V1
+/// rebuilds use the superblock's indexed-storage K, sibling links and
+/// datatype-sized termination keys; v2 rebuilds preserve the node size and
+/// split/merge thresholds. Missing fixed- or extensible-array pages inside an
+/// existing data block are initialized and marked allocated; other data blocks,
+/// super blocks and index blocks are not created. External, variable-length and
 /// reference storage is rejected, and the dataset shape and chunk grid are never
 /// changed.
 pub fn Hdf5File::patch_dataset_values(

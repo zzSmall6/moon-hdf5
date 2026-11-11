@@ -75,6 +75,23 @@ test "Hdf5File accepts a random-access source" {
 }
 
 ///|
+test "source superblock reads the complete v1 header" {
+  let buf = @buffer.Buffer::Buffer(size_hint=128)
+  write_v1_superblock(buf)
+  let source = CountingSource::{
+    bytes: buf.to_bytes(),
+    reads: 0,
+    requested: 0UL,
+    largest_read: 0,
+  }
+  let superblock = parse_source_superblock(source)
+  assert_eq(superblock.version, 1)
+  assert_eq(superblock.indexed_storage_node_k, 16)
+  assert_eq(superblock.superblock_end, 100)
+  assert_eq(source.largest_read, 100)
+}
+
+///|
 test "version 2 object headers use bounded source reads" {
   let source = CountingSource::{
     bytes: @fs.read_file_to_bytes("testdata/latest_v3.h5"),

@@ -50,6 +50,7 @@ priv struct Superblock {
   root_group_object_header : UInt64
   group_leaf_node_k : UInt16
   group_internal_node_k : UInt16
+  indexed_storage_node_k : UInt16
   superblock_checksum : UInt32
   superblock_checksum_offset : Int32
 }
@@ -84,6 +85,16 @@ fn parse_superblock_v0(
   let group_leaf_node_k = reader.read_u16_le()
   let group_internal_node_k = reader.read_u16_le()
   let file_consistency_flags = reader.read_u32_le()
+  let indexed_storage_node_k = if version == 1 {
+    let value = reader.read_u16_le()
+    let _reserved = reader.read_u16_le()
+    guard value > 0 else {
+      raise InvalidField("indexed storage B-tree K must be positive")
+    }
+    value
+  } else {
+    32
+  }
   let base_address = reader.read_uint_le(offset_size)
   let free_space_address = reader.read_uint_le(offset_size)
   let end_of_file_offset = reader.position()
@@ -111,6 +122,7 @@ fn parse_superblock_v0(
     root_group_object_header,
     group_leaf_node_k,
     group_internal_node_k,
+    indexed_storage_node_k,
     superblock_checksum: 0U,
     superblock_checksum_offset: -1,
   }
@@ -156,6 +168,7 @@ fn parse_superblock_v2(
     root_group_object_header: root_group_address,
     group_leaf_node_k: 0,
     group_internal_node_k: 0,
+    indexed_storage_node_k: 32,
     superblock_checksum,
     superblock_checksum_offset,
   }

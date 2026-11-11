@@ -5,6 +5,7 @@ priv struct FractalHeapBlock {
   address : UInt64
   size : Int32
   data : Bytes
+  checksum_offset : Int32
 }
 
 ///|
@@ -270,15 +271,19 @@ fn FractalHeap::add_direct_block(
     raise InvalidField("fractal heap direct block has the wrong header address")
   }
   let heap_offset = reader.read_var_uint_le(self.block_offset_size)
-  if (self.flags & 2) != 0 {
+  let checksum_offset = if (self.flags & 2) != 0 {
+    let offset = reader.position()
     verify_metadata_checksum_zeroed(
       data,
       0,
       block_size.to_int(),
-      reader.position(),
+      offset,
       "fractal heap direct block",
     )
     reader.skip(4)
+    offset
+  } else {
+    -1
   }
   guard heap_offset <= self.managed_space_size &&
     block_size <= self.managed_space_size - heap_offset else {
@@ -287,7 +292,13 @@ fn FractalHeap::add_direct_block(
   guard reader.position() <= reader.limit else {
     raise InvalidField("fractal heap direct block header is truncated")
   }
-  self.blocks.push({ heap_offset, address, size: block_size.to_int(), data, })
+  self.blocks.push({
+    heap_offset,
+    address,
+    size: block_size.to_int(),
+    data,
+    checksum_offset,
+  })
 }
 
 ///|
@@ -694,6 +705,141 @@ fn FractalHeap::get_data(
       }
       heap_id.get_view(start~, end=start + size).unwrap().to_owned()
     }
+    _ => raise InvalidField("invalid fractal heap ID type")
+  }
+}
+
+///|
+fn patch_heap_output_bytes(
+  output : FixedArray[Byte],
+  offset : Int32,
+  payload : Bytes,
+) -> Unit raise Hdf5Error {
+  guard offset >= 0 &&
+    payload.length() >= 0 &&
+    offset.to_int64() + payload.length().to_int64() <=
+    output.length().to_int64() else {
+    raise UnexpectedEof(offset.to_int64())
+  }
+  for index in 0..<payload.length() {
+    output[offset + index] = payload[index]
+  }
+}
+
+///|
+fn FractalHeap::patch_data(
+  self : FractalHeap,
+  heap_id : Bytes,
+  relative_offset : Int32,
+  payload : Bytes,
+  output : FixedArray[Byte],
+) -> Unit raise Hdf5Error {
+  guard relative_offset >= 0 && payload.length() >= 0 else {
+    raise InvalidArgument("invalid fractal heap patch range")
+  }
+  guard heap_id.length() >= self.id_length else {
+    raise InvalidField("fractal heap ID is truncated")
+  }
+  let first = heap_id.unsafe_get(0).to_int()
+  let version = first >> 6
+  guard version == 0 else {
+    raise UnsupportedFeature("unsupported fractal heap ID version")
+  }
+  let id_type = (first >> 4) & 3
+  let reader = Reader::new(heap_id)
+  reader.skip(1)
+  match id_type {
+    0 => {
+      let object_offset = reader.read_var_uint_le(self.managed_offset_size)
+      let object_size = reader.read_var_uint_le(self.managed_length_size)
+      guard object_size > 0UL && object_size <= 0x7FFFFFFFUL else {
+        raise InvalidField("invalid fractal heap object size")
+      }
+      guard relative_offset.to_uint64() + payload.length().to_uint64() <=
+        object_size else {
+        raise InvalidArgument("fractal heap patch exceeds the object")
+      }
+      guard self.filter_len == 0 else {
+        raise UnsupportedFeature(
+          "filtered fractal heap blocks cannot be patched",
+        )
+      }
+      let block = match self.find_block(object_offset) {
+        Some(block) => block
+        None =>
+          raise InvalidField("fractal heap object offset is outside blocks")
+      }
+      let relative = object_offset - block.heap_offset
+      guard relative + object_size <= block.size.to_uint64() else {
+        raise InvalidField("fractal heap object extends past its direct block")
+      }
+      let block_offset = self.file_offset(block.address)
+      guard block_offset <= 0x7FFFFFFFUL else {
+        raise InvalidField("fractal heap direct block address is out of range")
+      }
+      let start = block_offset.to_int() + relative.to_int() + relative_offset
+      patch_heap_output_bytes(output, start, payload)
+      if block.checksum_offset >= 0 {
+        patch_metadata_checksum_zeroed_in_place(
+          output,
+          block_offset.to_int(),
+          block.size,
+          block_offset.to_int() + block.checksum_offset,
+        )
+      }
+    }
+    1 => {
+      guard self.filter_len == 0 else {
+        raise UnsupportedFeature(
+          "filtered fractal heap huge objects cannot be patched",
+        )
+      }
+      if self.huge_ids_direct {
+        let address = reader.read_uint_le(self.offset_size)
+        let object_size = reader.read_uint_le(self.length_size)
+        guard object_size > 0UL && object_size <= 0x7FFFFFFFUL else {
+          raise InvalidField("invalid fractal heap huge object size")
+        }
+        guard relative_offset.to_uint64() + payload.length().to_uint64() <=
+          object_size else {
+          raise InvalidArgument("fractal heap patch exceeds the huge object")
+        }
+        let offset = self.file_offset(address)
+        guard offset <= 0x7FFFFFFFUL else {
+          raise InvalidField("fractal heap huge object address is out of range")
+        }
+        patch_heap_output_bytes(
+          output,
+          offset.to_int() + relative_offset,
+          payload,
+        )
+      } else {
+        guard self.huge_id_size > 0 && reader.remaining() >= self.huge_id_size else {
+          raise InvalidField("fractal heap huge object ID is truncated")
+        }
+        let id = reader.read_var_uint_le(self.huge_id_size)
+        let record = self.huge_record(id)
+        guard record.object_size == record.stored_size else {
+          raise UnsupportedFeature(
+            "filtered fractal heap huge objects cannot be patched",
+          )
+        }
+        guard relative_offset.to_uint64() + payload.length().to_uint64() <=
+          record.object_size else {
+          raise InvalidArgument("fractal heap patch exceeds the huge object")
+        }
+        let offset = self.file_offset(record.address)
+        guard offset <= 0x7FFFFFFFUL else {
+          raise InvalidField("fractal heap huge object address is out of range")
+        }
+        patch_heap_output_bytes(
+          output,
+          offset.to_int() + relative_offset,
+          payload,
+        )
+      }
+    }
+    2 => raise UnsupportedFeature("tiny fractal heap objects cannot be patched")
     _ => raise InvalidField("invalid fractal heap ID type")
   }
 }

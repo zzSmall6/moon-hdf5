@@ -33,6 +33,35 @@ fn write_v0_superblock(buf : @buffer.Buffer) -> Unit {
 }
 
 ///|
+fn write_v1_superblock(buf : @buffer.Buffer) -> Unit {
+  write_signature(buf)
+  buf.write_byte(b'\x01')
+  buf.write_byte(b'\x00')
+  buf.write_byte(b'\x00')
+  buf.write_byte(b'\x00')
+  buf.write_byte(b'\x00')
+  buf.write_byte(b'\x08')
+  buf.write_byte(b'\x08')
+  buf.write_byte(b'\x00')
+  buf.write_uint16_le(4)
+  buf.write_uint16_le(16)
+  buf.write_uint_le(0U)
+  buf.write_uint16_le(16)
+  buf.write_uint16_le(0)
+  buf.write_uint64_le(0UL)
+  buf.write_uint64_le(0UL)
+  buf.write_uint64_le(256UL)
+  buf.write_uint64_le(0UL)
+  buf.write_uint64_le(0UL)
+  buf.write_uint64_le(0x40UL)
+  buf.write_uint_le(0U)
+  buf.write_uint_le(0U)
+  for _ in 0..<16 {
+    buf.write_byte(b'\x00')
+  }
+}
+
+///|
 test "parse v0 superblock" {
   let buf = @buffer.Buffer::Buffer(size_hint=128)
   write_v0_superblock(buf)
@@ -45,6 +74,20 @@ test "parse v0 superblock" {
   assert_eq(superblock.root_group_object_header, 0x40UL)
   assert_eq(superblock._superblock_offset, 0)
   assert_eq(superblock.superblock_end, 96)
+}
+
+///|
+test "parse v1 superblock indexed-storage B-tree K" {
+  let buf = @buffer.Buffer::Buffer(size_hint=128)
+  write_v1_superblock(buf)
+  let superblock = parse_superblock(buf.to_bytes())
+  assert_eq(superblock.version, 1)
+  assert_eq(superblock.group_leaf_node_k, 4)
+  assert_eq(superblock.group_internal_node_k, 16)
+  assert_eq(superblock.indexed_storage_node_k, 16)
+  assert_eq(superblock.end_of_file_address, 256UL)
+  assert_eq(superblock.root_group_object_header, 0x40UL)
+  assert_eq(superblock.superblock_end, 100)
 }
 
 ///|

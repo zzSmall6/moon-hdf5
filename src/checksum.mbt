@@ -237,3 +237,33 @@ fn verify_metadata_checksum_zeroed(
     raise InvalidField(label + " checksum mismatch")
   }
 }
+
+///|
+/// Recomputes a checksum inside the covered range whose stored bytes are
+/// treated as zero. This is the layout used by fractal heap direct blocks.
+fn patch_metadata_checksum_zeroed_in_place(
+  output : FixedArray[Byte],
+  start : Int32,
+  length : Int32,
+  checksum_offset : Int32,
+) -> Unit raise Hdf5Error {
+  guard start >= 0 &&
+    length >= 4 &&
+    checksum_offset >= start &&
+    checksum_offset.to_int64() + 4L <= start.to_int64() + length.to_int64() &&
+    start.to_int64() + length.to_int64() <= output.length().to_int64() else {
+    raise UnexpectedEof(start.to_int64())
+  }
+  let bytes = output.unsafe_reinterpret_as_bytes()
+  let checksum = checksum_lookup3(
+    bytes,
+    start,
+    length,
+    checksum_offset - start,
+    metadata_checksum_size,
+    0U,
+  )
+  for index in 0..<metadata_checksum_size {
+    output[checksum_offset + index] = ((checksum >> (index * 8)) & 0xFFU).to_byte()
+  }
+}

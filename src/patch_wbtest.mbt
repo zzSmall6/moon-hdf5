@@ -747,6 +747,60 @@ test "filtered v2 sparse patches create missing B-tree records" {
 }
 
 ///|
+test "v1 sparse chunk patches create and rewrite B-tree records" {
+  let bytes = @fs.read_file_to_bytes("testdata/interop_earliest.h5")
+  let file = Hdf5File::parse(bytes)
+  let metadata = file.read_dataset_metadata("/data/chunked_sparse")
+  assert_true(metadata.layout.chunk_index is BTreeV1)
+  let expected = patch_int32_sequence(63, 100, 1)
+  let patched_bytes = file.patch_dataset_values(
+    "/data/chunked_sparse",
+    Int32Values(expected),
+  )
+  assert_true(patched_bytes.length() > bytes.length())
+  let patched = Hdf5File::parse(patched_bytes)
+  assert_true(
+    patched.read_dataset_metadata("/data/chunked_sparse").layout.chunk_index
+    is BTreeV1,
+  )
+  assert_eq(
+    integer_values(patched.read_dataset("/data/chunked_sparse")),
+    expected.map(value => value.to_int64()),
+  )
+  let rewritten_expected = patch_int32_sequence(63, -50, 2)
+  let rewritten = Hdf5File::parse(
+    patched.patch_dataset_values(
+      "/data/chunked_sparse",
+      Int32Values(rewritten_expected),
+    ),
+  )
+  assert_eq(
+    integer_values(rewritten.read_dataset("/data/chunked_sparse")),
+    rewritten_expected.map(value => value.to_int64()),
+  )
+}
+
+///|
+test "filtered v1 sparse patches create missing B-tree records" {
+  let bytes = @fs.read_file_to_bytes("testdata/filters_v1.h5")
+  let file = Hdf5File::parse(bytes)
+  assert_true(
+    file.read_dataset_metadata("/special/partial").layout.chunk_index is BTreeV1,
+  )
+  let expected : Array[Int32] = [5, 6, 7, 8, 9, 10]
+  let patched_bytes = file.patch_dataset_values(
+    "/special/partial",
+    Int32Values(expected),
+  )
+  assert_true(patched_bytes.length() > bytes.length())
+  let patched = Hdf5File::parse(patched_bytes)
+  assert_eq(
+    integer_values(patched.read_dataset("/special/partial")),
+    expected.map(value => value.to_int64()),
+  )
+}
+
+///|
 test "v2 sparse patches rebuild empty and internal B-tree levels" {
   let writer = Hdf5Writer::new()
   writer.add_extensible_dataset(

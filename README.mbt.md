@@ -21,9 +21,12 @@ moon-hdf5 implements a documented subset of HDF5. The
   image. Allocation is limited to raw payloads that fit existing layout or
   chunk-index storage, including a missing fixed-array data block, a missing
   extensible-array data or index/super block, missing fixed- or extensible-array
-  pages in an existing data block, and missing v2 B-tree chunk records. General
-  metadata editing, external storage and construction of v1 B-tree records
-  remain unsupported.
+  pages in an existing data block, and missing v1 or v2 B-tree chunk records.
+- `patch_attribute_values` replaces the values of an existing fixed-size inline
+  or dense attribute on a group or dataset while preserving its name, creation
+  order, datatype and storage location.
+- Adding, deleting or renaming attributes, other general metadata editing and
+  external storage remain unsupported.
 
 ## Installation
 
@@ -329,15 +332,27 @@ child EADBs, bitmap and checksums.
 An unallocated fixed-array page is first initialized to undefined entries, then
 its page checksum, bitmap bit and FADB checksum are written. An unallocated
 extensible-array page follows the same entry and page-checksum steps, but sets
-its EASB bitmap bit and refreshes the EASB checksum instead. Missing v2 B-tree
-chunk records are appended at aligned file offsets. The patcher then rebuilds the
-complete BTHD/node tree from the final chunk addresses, stored sizes, masks and
-coordinates, preserves the index node size and split/merge thresholds, and
-updates the layout address, object-header checksum and superblock EOF. Patching
-does not create v1 B-tree records or other metadata structures. Attributes, links
-and other metadata are preserved; external, variable-length and reference
-storage is rejected, and the dataset shape and chunk grid are never changed. The
-operation returns a complete new byte image.
+its EASB bitmap bit and refreshes the EASB checksum instead. Missing v1 or v2
+B-tree chunk records are appended at aligned file offsets. The patcher then
+rebuilds the complete chunk index from the final chunk addresses, stored sizes,
+masks and coordinates. V1 trees use the indexed-storage K from the superblock,
+including a non-default K carried by the superblock-extension B-tree K message,
+regenerate sibling links and emit termination keys with the datatype storage
+size. V2 trees preserve their node size and split/merge thresholds. The rebuild
+updates the layout address, object-header checksum and superblock EOF.
+Attributes, links and other metadata are preserved; external, variable-length
+and reference storage is rejected, and the dataset shape and chunk grid are
+never changed. The operation returns a complete new byte image.
+
+`patch_attribute_values` targets an existing attribute on any resolvable object.
+Inline attribute messages are rewritten inside their object-header chunk, and
+dense attributes are updated through the managed fractal-heap object referenced
+by the name or creation-order index. The attribute message, name, creation order,
+datatype and index records stay unchanged; only the value bytes and the
+containing object-header or direct-block checksum are refreshed. Compact, dense,
+ordered-dense and big-endian numeric attributes are supported. Shared attribute
+messages, filtered fractal-heap storage, variable-length and reference datatypes
+are rejected. Adding, deleting or renaming attributes is not supported.
 
 Run the larger example and verify it independently with h5py:
 
@@ -374,19 +389,21 @@ the items below summarize the main user-visible gaps.
   result.
 - **Writer lifecycle:** `Hdf5Writer` is an in-memory builder and `encode` returns
   the complete file. `patch_contiguous_dataset` and `patch_dataset_values`
-  return another complete byte image, but streaming output and general in-place
-  metadata editing are unsupported. Multi-unlimited resizing and v2 B-tree
-  output are rebuilt for the current in-memory shape.
+  return another complete byte image. `patch_attribute_values` updates existing
+  fixed-size inline or dense attributes, but streaming output and general
+  in-place metadata editing are unsupported. Multi-unlimited resizing and v2
+  B-tree output are rebuilt for the current in-memory shape.
 - **Value patching:** allocation is limited to an unallocated contiguous payload,
   an undefined slot already represented by the single-chunk layout or a
   fixed-/extensible-array entry, a missing fixed-array data block, a missing
   extensible-array data, EAIB or EASB block, or a missing fixed- or
-  extensible-array page inside an existing data block, or a missing v2 B-tree
-  chunk record. Rebuilding a missing EAIB may create the direct and super-block
-  hierarchy and updates the EAHD maximum set, block counts and sizes,
-  realized-element count and checksum. Adding or relocating v2 B-tree records
-  rebuilds the complete chunk index and links it through the layout address.
-  Patching does not create v1 B-tree records or other index metadata.
+  extensible-array page inside an existing data block, or a missing v1 or v2
+  B-tree chunk record. Rebuilding a missing EAIB may create the direct and
+  super-block hierarchy and updates the EAHD maximum set, block counts and
+  sizes, realized-element count and checksum. Adding or relocating v1 or v2
+  B-tree records rebuilds the complete chunk index and links it through the
+  layout address; v1 rebuilds use the superblock's indexed-storage K, including
+  a non-default K from the superblock-extension message.
   Filtered chunk growth is handled by appending a relocated chunk at the aligned
   file end and updating the index, stored size, checksum and superblock
   end-of-file address. Relocation and allocation are append-only; unreferenced
@@ -394,9 +411,14 @@ the items below summarize the main user-visible gaps.
   Built-in Shuffle, deflate, Fletcher32 and scale-offset pipelines can be
   re-encoded, including supported big-endian numeric data; scale-offset
   requires a stored fill marker. Registered caller-defined filters can be
-  re-encoded when their implementation provides `encode`. Missing chunks in a
-  v1 B-tree or another index without writable record storage accept fill values
-  only.
+  re-encoded when their implementation provides `encode`. Missing chunks in an
+  index without a writable record path continue to read as fill values.
+- **Attribute patching:** `patch_attribute_values` updates only an existing
+  fixed-size, non-variable-length and non-reference attribute. The attribute
+  must remain the same shape and datatype, and its name, creation order and
+  inline/dense storage are preserved. Shared attribute messages and filtered
+  fractal-heap storage are rejected. Attributes cannot be added, deleted,
+  renamed or moved to a different storage form.
 - **Read coverage:** virtual datasets, SWMR and parallel HDF5 are outside the
   profile. Built-in chunk filters are decoded directly; other dataset chunk
   filter IDs can be supplied through `Hdf5CustomFilter`. Custom filters on
