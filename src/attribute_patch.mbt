@@ -164,10 +164,12 @@ fn Hdf5File::find_patchable_attribute(
 
 ///|
 /// Replaces the values of an existing fixed-size attribute and returns a new
-/// byte image. The attribute datatype, dataspace, name and creation order are
-/// preserved. Inline messages are updated in their object-header chunk; dense
-/// attributes are updated through their fractal-heap record. Shared attribute
-/// messages, variable-length and reference datatypes are rejected. Adding,
+/// byte image. Existing variable-length UTF-8 string attributes are also
+/// supported; their new values are placed in an appended global heap. The
+/// attribute datatype, dataspace, name and creation order are preserved. Inline
+/// messages are updated in their object-header chunk; dense attributes are
+/// updated through their fractal-heap record. Shared attribute messages,
+/// references and non-string variable-length datatypes are rejected. Adding,
 /// removing or renaming attributes is not supported.
 pub fn Hdf5File::patch_attribute_values(
   self : Hdf5File,
@@ -182,10 +184,13 @@ pub fn Hdf5File::patch_attribute_values(
   let header = self.object_header_at(node.address)
   let slot = self.find_patchable_attribute(header, name)
   let datatype = slot.attribute.datatype
-  guard !datatype_contains_vlen(datatype) &&
-    !datatype_contains_reference(datatype) else {
+  let variable_string = datatype.class == 9 && datatype.vlen_is_string
+  guard !datatype_contains_reference(datatype) else {
+    raise UnsupportedFeature("reference attributes cannot be patched")
+  }
+  guard variable_string || !datatype_contains_vlen(datatype) else {
     raise UnsupportedFeature(
-      "variable-length and reference attributes cannot be patched",
+      "only variable-length string attributes can be patched",
     )
   }
   guard patch_values_match_datatype(values, datatype) else {
@@ -198,15 +203,31 @@ pub fn Hdf5File::patch_attribute_values(
     raise InvalidField("attribute byte size is too large")
   }
   let full_size = count.to_int() * datatype.size
-  let encoded = encode_write_values(values)
-  let payload = match values {
-    StructuredValues(_) => encoded.payload
-    _ =>
-      if !datatype.little_endian && (datatype.class == 0 || datatype.class == 1) {
-        patch_byteswap_elements(encoded.payload, datatype.size)
-      } else {
-        encoded.payload
-      }
+  let output = self.bytes.to_fixedarray()
+  let tail = @buffer.Buffer::Buffer()
+  let payload = if variable_string {
+    encode_patch_vlen_string_values(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      tail,
+      "append a variable-length attribute heap",
+    )
+  } else {
+    let encoded = encode_write_values(values)
+    match values {
+      StructuredValues(_) => encoded.payload
+      _ =>
+        if !datatype.little_endian &&
+          (datatype.class == 0 || datatype.class == 1) {
+          patch_byteswap_elements(encoded.payload, datatype.size)
+        } else {
+          encoded.payload
+        }
+    }
   }
   guard payload.length() == full_size else {
     raise InvalidArgument("patched values do not match the attribute shape")
@@ -214,7 +235,6 @@ pub fn Hdf5File::patch_attribute_values(
   guard payload.length() <= slot.value_length else {
     raise InvalidArgument("patched attribute value exceeds its message storage")
   }
-  let output = self.bytes.to_fixedarray()
   match slot.heap {
     Some(heap) => {
       let heap_id = match slot.heap_id {
@@ -237,5 +257,9 @@ pub fn Hdf5File::patch_attribute_values(
       slot.checksum_offset,
     )
   }
-  Bytes::from_array(output)
+  if tail.length() > 0 {
+    self.finish_appended_image(output, tail)
+  } else {
+    Bytes::from_array(output)
+  }
 }

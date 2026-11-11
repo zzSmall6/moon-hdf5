@@ -304,13 +304,16 @@ test "patching rejects nested variable-length and reference datatypes" {
   } catch {
     error => Some(error)
   }
-  let expected = Some(
-    UnsupportedFeature(
-      "variable-length and reference datatypes cannot be patched",
+  assert_eq(
+    reference_error,
+    Some(UnsupportedFeature("reference datatypes cannot be patched")),
+  )
+  assert_eq(
+    sequence_error,
+    Some(
+      UnsupportedFeature("only variable-length string datatypes can be patched"),
     ),
   )
-  assert_eq(reference_error, expected)
-  assert_eq(sequence_error, expected)
 }
 
 ///|

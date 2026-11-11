@@ -206,6 +206,21 @@ results are collected in the tail buffer, appended at aligned file offsets, then
 linked by updating the chunk address and size fields, covering checksums and the
 superblock EOF address and checksum.
 
+Variable-length UTF-8 string datasets use the same three layouts. Patching first
+deduplicates all new strings into one global heap collection whose size is a
+multiple of 4096 bytes. Unless every value is empty, that collection is appended
+at an 8-byte-aligned file offset before any relocated chunk or rebuilt index
+payload, so later addresses are computed from the complete tail. Dataset elements are rewritten as fixed-size references
+containing the string length, collection address and one-based object index;
+empty strings use a null collection address and index. Compact values keep their
+inline references, contiguous values stay at their address or are allocated with
+the payload after the heap, and chunked values are encoded through the normal
+chunk path. Chunked variable-length data accepts unfiltered storage, Shuffle or
+deflate.
+The patcher rejects Fletcher32, scale-offset and attempts that would require
+creating a missing fixed-array data block or extensible-array metadata. Old heap
+collections are not reclaimed.
+
 An undefined chunk slot represented by the active index is handled similarly:
 the patch constructs a fill-initialized chunk, overlays the requested values,
 applies the pipeline and appends the encoded payload. It then updates the slot
@@ -258,9 +273,14 @@ checksum is refreshed. Dense values are written through the managed fractal-heap
 object identified by the dense attribute record; the direct block's checksum is
 recomputed with the checksum field treated as zero, matching the HDF5 direct
 block layout. The attribute message, name, creation order, datatype, dataspace
-and index records are not changed. Shared attribute messages, filtered heap
-storage, variable-length values and references are rejected. Adding, deleting
-or renaming attributes remains outside the patching API.
+and index records are not changed. For variable-length UTF-8 strings, patching
+deduplicates the new values in a global heap collection whose size is a multiple
+of 4096 bytes, appends it at an 8-byte-aligned file offset and rewrites only the
+fixed-size global heap references in the value area. The superblock EOF and checksum are updated;
+all-empty values skip the append. Shared attribute messages, filtered heap
+storage, references and non-string variable-length values are rejected. Old
+global heaps remain unreferenced because no free-space reclamation is written.
+Adding, deleting or renaming attributes remains outside the patching API.
 
 ## Errors and verification
 

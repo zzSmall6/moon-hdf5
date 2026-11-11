@@ -135,6 +135,7 @@ fn patch_values_match_datatype(
       datatype.base_types[0].size == 8 &&
       datatype.base_types[0].little_endian &&
       is_ieee_float_layout(datatype.base_types[0])
+    VariableStringValues(_) => datatype.class == 9 && datatype.vlen_is_string
     StructuredValues(write_datatype, _) =>
       datatype_semantically_equal(write_datatype, datatype)
     _ => false
@@ -210,29 +211,6 @@ fn compact_data_relative_offset(
     }
   }
   reader.position()
-}
-
-///|
-fn patch_metadata_checksum(
-  bytes : Bytes,
-  start : Int32,
-  checksum_offset : Int32,
-) -> Bytes raise Hdf5Error {
-  guard start >= 0 &&
-    checksum_offset >= start &&
-    checksum_offset.to_int64() + metadata_checksum_size.to_int64() <=
-    bytes.length().to_int64() else {
-    raise UnexpectedEof(checksum_offset.to_int64())
-  }
-  let checksum = metadata_checksum(bytes, start, checksum_offset - start)
-  let output = bytes.to_array()
-  let encoded = @buffer.Buffer::Buffer(size_hint=metadata_checksum_size)
-  encoded.write_uint_le(checksum)
-  let checksum_bytes = encoded.to_bytes()
-  for index in 0..<metadata_checksum_size {
-    output[checksum_offset + index] = checksum_bytes[index]
-  }
-  Bytes::from_array(output)
 }
 
 ///|
@@ -584,8 +562,11 @@ fn patch_write_filters(
         result.push(Deflate(filter.parameters[0].reinterpret_as_int()))
       }
       2 => {
-        guard filter.parameters.length() == 1 &&
-          filter.parameters[0] == datatype.size.reinterpret_as_uint() else {
+        guard filter.parameters.length() == 0 ||
+          (
+            filter.parameters.length() == 1 &&
+            filter.parameters[0] == datatype.size.reinterpret_as_uint()
+          ) else {
           raise InvalidField("invalid shuffle filter parameters")
         }
         result.push(Shuffle)
@@ -754,6 +735,7 @@ fn Hdf5File::patch_compact_dataset_data(
   header : ObjectHeader,
   metadata : DatasetMetadata,
   payload : Bytes,
+  tail_prefix : Bytes,
 ) -> Bytes raise Hdf5Error {
   let message = match header.first(msg_data_layout) {
     Some(message) => message
@@ -773,19 +755,23 @@ fn Hdf5File::patch_compact_dataset_data(
     self.bytes.length().to_int64() else {
     raise UnexpectedEof(offset.to_int64())
   }
-  let output = self.bytes.to_array()
+  let output = self.bytes.to_fixedarray()
   for index in 0..<payload.length() {
     output[offset + index] = payload[index]
   }
-  let patched = Bytes::from_array(output)
   if message.checksum_offset >= 0 {
-    patch_metadata_checksum(
-      patched,
+    patch_metadata_checksum_in_place(
+      output,
       message.chunk_start,
       message.checksum_offset,
     )
+  }
+  if tail_prefix.length() == 0 {
+    Bytes::from_array(output)
   } else {
-    patched
+    let tail = @buffer.Buffer::Buffer()
+    writer_write_bytes(tail, tail_prefix)
+    self.finish_appended_image(output, tail)
   }
 }
 
@@ -796,8 +782,11 @@ fn Hdf5File::patch_contiguous_dataset_data(
   metadata : DatasetMetadata,
   payload : Bytes,
   allow_allocate : Bool,
+  tail_prefix : Bytes,
 ) -> Bytes raise Hdf5Error {
   let full_size = payload.length()
+  let tail = @buffer.Buffer::Buffer()
+  writer_write_bytes(tail, tail_prefix)
   let undefined = if self.superblock.offset_size == 8 {
     0xFFFFFFFFFFFFFFFFUL
   } else {
@@ -823,7 +812,6 @@ fn Hdf5File::patch_contiguous_dataset_data(
         "contiguous layout does not expose a writable address field",
       )
     }
-    let tail = @buffer.Buffer::Buffer()
     let new_offset = append_aligned_bytes_to_tail(
       tail,
       self.bytes.length(),
@@ -877,11 +865,15 @@ fn Hdf5File::patch_contiguous_dataset_data(
     self.bytes.length().to_int64() else {
     raise UnexpectedEof(offset.to_int64())
   }
-  let output = self.bytes.to_array()
+  let output = self.bytes.to_fixedarray()
   for index in 0..<payload.length() {
     output[offset + index] = payload[index]
   }
-  Bytes::from_array(output)
+  if tail.length() > 0 {
+    self.finish_appended_image(output, tail)
+  } else {
+    Bytes::from_array(output)
+  }
 }
 
 ///|
@@ -1308,6 +1300,7 @@ fn Hdf5File::patch_chunked_dataset_data(
   metadata : DatasetMetadata,
   payload : Bytes,
   values : Hdf5WriteValues,
+  tail_prefix : Bytes,
 ) -> Bytes raise Hdf5Error {
   let layout = metadata.layout
   guard metadata.dataspace.kind == Simple &&
@@ -1404,6 +1397,11 @@ fn Hdf5File::patch_chunked_dataset_data(
         self.superblock.base_address,
       )
       if records.length() == 0 && layout.data_address != undefined {
+        guard tail_prefix.length() == 0 else {
+          raise UnsupportedFeature(
+            "variable-length dataset patching cannot create a fixed-array data block",
+          )
+        }
         let block_start = (self.bytes.length() + 7) / 8 * 8
         let storage = prepare_missing_fixed_array_storage(
           self.bytes,
@@ -2085,6 +2083,7 @@ fn Hdf5File::patch_chunked_dataset_data(
     }
   }
   let tail = @buffer.Buffer::Buffer()
+  writer_write_bytes(tail, tail_prefix)
   let mut relocated = false
   let mut rebuild_v1_tree = false
   let mut rebuild_v2_tree = false
@@ -2700,6 +2699,11 @@ fn Hdf5File::patch_chunked_dataset_data(
     }
     relocated = true
   }
+  guard tail_prefix.length() == 0 || appended_metadata_images.length() == 0 else {
+    raise UnsupportedFeature(
+      "variable-length dataset patching cannot create extensible-array metadata",
+    )
+  }
   if relocated {
     match missing_fixed_array {
       Some(storage) => {
@@ -2759,7 +2763,11 @@ fn Hdf5File::patch_chunked_dataset_data(
         }
     }
   }
-  Bytes::from_array(output)
+  if tail.length() > 0 {
+    self.finish_appended_image(output, tail)
+  } else {
+    Bytes::from_array(output)
+  }
 }
 
 ///|
@@ -2799,11 +2807,27 @@ fn Hdf5File::patch_dataset_values_impl(
     }
     raise UnsupportedFeature("only contiguous storage can be patched")
   }
-  guard !datatype_contains_vlen(metadata.datatype) &&
-    !datatype_contains_reference(metadata.datatype) else {
+  let variable_string = metadata.datatype.class == 9 &&
+    metadata.datatype.vlen_is_string
+  guard !datatype_contains_reference(metadata.datatype) else {
+    raise UnsupportedFeature("reference datatypes cannot be patched")
+  }
+  guard variable_string || !datatype_contains_vlen(metadata.datatype) else {
     raise UnsupportedFeature(
-      "variable-length and reference datatypes cannot be patched",
+      "only variable-length string datatypes can be patched",
     )
+  }
+  if variable_string && chunked {
+    let filters = match header.first(msg_filter_pipeline) {
+      Some(message) =>
+        parse_filters(message, custom_filters=self.custom_filters)
+      None => []
+    }
+    guard !filters.any(filter => filter.id != 1 && filter.id != 2) else {
+      raise UnsupportedFeature(
+        "variable-length datasets support only shuffle and deflate filters",
+      )
+    }
   }
   guard patch_values_match_datatype(values, metadata.datatype) else {
     raise InvalidArgument("patched values must match the dataset datatype")
@@ -2814,39 +2838,57 @@ fn Hdf5File::patch_dataset_values_impl(
     raise InvalidField("dataset byte size is too large")
   }
   let full_size = count.to_int() * metadata.datatype.size
-  let encoded = encode_write_values(values)
-  let payload = match values {
-    StructuredValues(_) => encoded.payload
-    _ =>
-      if !metadata.datatype.little_endian &&
-        (metadata.datatype.class == 0 || metadata.datatype.class == 1) {
-        patch_byteswap_elements(encoded.payload, metadata.datatype.size)
-      } else {
-        encoded.payload
-      }
+  let prefix_tail = @buffer.Buffer::Buffer()
+  let payload = if variable_string {
+    encode_patch_vlen_string_values(
+      values,
+      metadata.datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append a variable-length dataset heap",
+    )
+  } else {
+    let encoded = encode_write_values(values)
+    match values {
+      StructuredValues(_) => encoded.payload
+      _ =>
+        if !metadata.datatype.little_endian &&
+          (metadata.datatype.class == 0 || metadata.datatype.class == 1) {
+          patch_byteswap_elements(encoded.payload, metadata.datatype.size)
+        } else {
+          encoded.payload
+        }
+    }
   }
   guard payload.length() == full_size else {
     raise InvalidArgument("patched values do not match the dataset shape")
   }
+  let tail_prefix = prefix_tail.to_bytes()
   if compact {
-    self.patch_compact_dataset_data(header, metadata, payload)
+    self.patch_compact_dataset_data(header, metadata, payload, tail_prefix)
   } else if chunked {
-    self.patch_chunked_dataset_data(header, metadata, payload, values)
+    self.patch_chunked_dataset_data(
+      header, metadata, payload, values, tail_prefix,
+    )
   } else {
     self.patch_contiguous_dataset_data(
-      header, metadata, payload, allow_noncontiguous,
+      header, metadata, payload, allow_noncontiguous, tail_prefix,
     )
   }
 }
 
 ///|
 /// Replaces the values of an allocated contiguous dataset and returns a new
-/// byte image. The shape and datatype must match exactly.
+/// byte image. The shape and datatype must match exactly. Fixed-size values and
+/// variable-length UTF-8 strings are supported.
 ///
-/// Only raw dataset bytes change: object headers, attributes, links and
-/// checksums are preserved. Chunked, compact, external, filtered and
-/// variable-length storage is rejected. Use `patch_dataset_values` to patch
-/// compact storage as well.
+/// Attributes and links are preserved. Variable-length strings append an aligned
+/// global heap and update the superblock EOF/checksum. Chunked, compact, external,
+/// filtered, reference and non-string variable-length storage is rejected. Use
+/// `patch_dataset_values` to patch compact or unallocated storage as well.
 pub fn Hdf5File::patch_contiguous_dataset(
   self : Hdf5File,
   path : String,
@@ -2877,9 +2919,12 @@ pub fn Hdf5File::patch_contiguous_dataset(
 /// datatype-sized termination keys; v2 rebuilds preserve the node size and
 /// split/merge thresholds. Missing fixed- or extensible-array pages inside an
 /// existing data block are initialized and marked allocated; other data blocks,
-/// super blocks and index blocks are not created. External, variable-length and
-/// reference storage is rejected, and the dataset shape and chunk grid are never
-/// changed.
+/// super blocks and index blocks are not created. Fixed-size values and
+/// variable-length UTF-8 strings are supported. Variable-length strings use one
+/// appended global heap; chunked values accept unfiltered storage, Shuffle or deflate,
+/// and cannot create a missing fixed-array data block or extensible-array
+/// metadata. External storage, reference datatypes and non-string variable-length
+/// datatypes are rejected. The dataset shape and chunk grid are never changed.
 pub fn Hdf5File::patch_dataset_values(
   self : Hdf5File,
   path : String,

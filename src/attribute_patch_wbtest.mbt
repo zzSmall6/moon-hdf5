@@ -149,7 +149,108 @@ test "big-endian and compact attributes can be patched" {
 }
 
 ///|
-test "attribute patching rejects missing incompatible source and vlen values" {
+test "variable-length string attributes are patched through a new global heap" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/dataset", [1UL], Int64Values([9L]))
+  writer.add_attribute(
+    "/dataset",
+    "labels",
+    [3UL],
+    VariableStringValues(["one", "二", "three"]),
+  )
+  writer.add_attribute(
+    "/dataset",
+    "note",
+    [],
+    VariableStringValues(["unchanged"]),
+  )
+  let encoded = writer.encode()
+  let file = Hdf5File::parse(encoded)
+  let patched = file.patch_attribute_values(
+    "/dataset",
+    "labels",
+    VariableStringValues(["alpha", "", "alpha"]),
+  )
+  assert_true(patched.length() > encoded.length())
+  let patched_file = Hdf5File::parse(patched)
+  assert_eq(
+    patched_file.superblock.end_of_file_address,
+    patched.length().to_uint64(),
+  )
+  let attributes = patched_file.attributes("/dataset")
+  match find_attribute(attributes, "labels").values {
+    Some(Strings(values)) => assert_eq(values, ["alpha", "", "alpha"])
+    _ => fail("expected patched variable-length string attribute")
+  }
+  match find_attribute(attributes, "note").values {
+    Some(Strings(values)) => assert_eq(values, ["unchanged"])
+    _ => fail("expected unchanged variable-length string attribute")
+  }
+  assert_eq(integer_values(patched_file.read_dataset("/dataset")), [9L])
+
+  let empty = patched_file.patch_attribute_values(
+    "/dataset",
+    "labels",
+    VariableStringValues(["", "", ""]),
+  )
+  assert_eq(empty.length(), patched.length())
+  let empty_file = Hdf5File::parse(empty)
+  match find_attribute(empty_file.attributes("/dataset"), "labels").values {
+    Some(Strings(values)) => assert_eq(values, ["", "", ""])
+    _ => fail("expected empty variable-length strings")
+  }
+
+  let repatched = empty_file.patch_attribute_values(
+    "/dataset",
+    "labels",
+    VariableStringValues(["x", "longer value", "最终"]),
+  )
+  match
+    find_attribute(Hdf5File::parse(repatched).attributes("/dataset"), "labels").values {
+    Some(Strings(values)) => assert_eq(values, ["x", "longer value", "最终"])
+    _ => fail("expected a second variable-length string patch")
+  }
+}
+
+///|
+test "dense variable-length string attributes are patched" {
+  let writer = Hdf5Writer::new()
+  writer.add_group("/dense")
+  for index in 0..<9 {
+    writer.add_attribute(
+      "/dense",
+      "attr_" + index.to_string(),
+      [],
+      Int64Values([index.to_int64()]),
+    )
+  }
+  writer.add_attribute(
+    "/dense",
+    "text",
+    [],
+    VariableStringValues(["密集属性"]),
+  )
+  let file = Hdf5File::parse(writer.encode())
+  let patched = file.patch_attribute_values(
+    "/dense",
+    "text",
+    VariableStringValues(["dense patch 数据"]),
+  )
+  let patched_file = Hdf5File::parse(patched)
+  let attributes = patched_file.attributes("/dense")
+  assert_eq(attributes.length(), 10)
+  match find_attribute(attributes, "text").values {
+    Some(Strings(values)) => assert_eq(values, ["dense patch 数据"])
+    _ => fail("expected patched dense variable-length string attribute")
+  }
+  assert_eq(
+    values_integers(find_attribute(attributes, "attr_8").values.unwrap()),
+    [8L],
+  )
+}
+
+///|
+test "attribute patching rejects missing incompatible source and reference values" {
   let file = Hdf5File::parse(
     @fs.read_file_to_bytes("testdata/attribute_storage.h5"),
   )
@@ -175,17 +276,17 @@ test "attribute patching rejects missing incompatible source and vlen values" {
   writer.add_dataset("/dataset", [1UL], Int64Values([1L]))
   writer.add_attribute(
     "/dataset",
-    "text",
-    [1UL],
-    VariableStringValues(["moon"]),
+    "reference",
+    [],
+    ObjectReferenceValues([Some("/dataset")]),
   )
   let encoded = writer.encode()
-  let vlen_file = Hdf5File::parse(encoded)
-  let vlen = try {
-    vlen_file.patch_attribute_values(
+  let reference_file = Hdf5File::parse(encoded)
+  let reference = try {
+    reference_file.patch_attribute_values(
       "/dataset",
-      "text",
-      VariableStringValues(["moonbit"]),
+      "reference",
+      ObjectReferenceValues([Some("/dataset")]),
     )
     |> ignore
     None
@@ -193,20 +294,16 @@ test "attribute patching rejects missing incompatible source and vlen values" {
     error => Some(error)
   }
   assert_eq(
-    vlen,
-    Some(
-      UnsupportedFeature(
-        "variable-length and reference attributes cannot be patched",
-      ),
-    ),
+    reference,
+    Some(UnsupportedFeature("reference attributes cannot be patched")),
   )
   let sources : Array[&Hdf5Source] = [encoded]
   let sourced = Hdf5File::parse_source(sources[0])
   let source_error = try {
     sourced.patch_attribute_values(
       "/dataset",
-      "text",
-      VariableStringValues(["moonbit"]),
+      "reference",
+      ObjectReferenceValues([Some("/dataset")]),
     )
     |> ignore
     None

@@ -7,8 +7,8 @@ v1.0 delivery profile and post-v1.0 extensions.
 
 The MoonBit release checks pass on the current worktree:
 
-- wasm: 304 tests passed;
-- native: 304 tests passed;
+- wasm: 313 tests passed;
+- native: 313 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output remain
   covered by prior h5py 3.13.0/HDF5 1.14.6 verification, and the new v1 B-tree
@@ -17,9 +17,15 @@ The MoonBit release checks pass on the current worktree:
 - missing v1 B-tree chunk records are covered for sparse and filtered fixtures,
   including a non-default K=4 tree with 256 chunks, and the complete rebuilt
   tree is re-read correctly by h5py;
-- inline, dense, creation-order-tracked and big-endian attribute patching is
-  covered by MoonBit round-trip tests; compact, dense, ordered and 7000-element
-  attribute output was independently re-read by h5py 3.13.0/HDF5 1.14.6;
+- inline, dense, creation-order-tracked, big-endian and variable-length string
+  attribute patching is covered by MoonBit round-trip tests; compact, dense,
+  ordered, 7000-element and vlen-string output, including empty strings, was
+  independently re-read by h5py/HDF5;
+- variable-length UTF-8 string dataset patching is covered for compact,
+  contiguous, unallocated contiguous, chunked, Shuffle and deflate storage,
+  including empty and repeated values and back-to-back patches; h5py-generated
+  contiguous, chunked, filtered and unallocated inputs and compact/contiguous/
+  chunked outputs were independently re-read by h5py/HDF5;
 - caller-defined filter encoding, named pipelines, chunk-mask skips, patch
   re-encoding and growth relocation are covered by MoonBit round-trip tests;
 - unallocated contiguous payloads and undefined slots in existing single,
@@ -62,8 +68,8 @@ structures raise errors; detection is not exhaustive.
 | References | 4-/8-byte object references, legacy region references and version-4 object/region/attribute references against compact, contiguous and filtered targets |
 | Shared messages | Table/indexes/heaps, wrappers v1–v3, field sharing, fills, filter pipelines, whole attributes and committed targets |
 | Writer | Superblock v3, OHDR/OCHK, dense metadata, chunk indexes, SOHM, references and external slots |
-| In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including sparse fill-only chunks, undefined slots in existing indexes, missing fixed-array data blocks, missing extensible-array data/index/super blocks, unallocated fixed- and extensible-array pages, missing v1/v2 B-tree chunk records and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout, slot, page-bitmap, FADB/FAHD, EAHD/EAIB/EASB/EADB and B-tree fields, affected checksums and superblock EOF updated; v1 tree rebuilds honor the superblock K, sibling links and datatype-sized termination keys; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved |
-| Attribute patching | Existing fixed-size inline, dense and creation-order-tracked attributes on objects, including compact attributes, big-endian numeric values and large dense values; object-header/OCHK and fractal-heap direct-block checksums are refreshed, while attribute message metadata and indexes remain unchanged |
+| In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including fixed-size and variable-length UTF-8 string values, sparse fill-only chunks, undefined slots in existing indexes, missing fixed-array data blocks, missing extensible-array data/index/super blocks, unallocated fixed- and extensible-array pages, missing v1/v2 B-tree chunk records and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout, slot, page-bitmap, FADB/FAHD, EAHD/EAIB/EASB/EADB and B-tree fields, affected checksums and superblock EOF updated; v1 tree rebuilds honor the superblock K, sibling links and datatype-sized termination keys; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved; variable-length strings use one appended global heap collection and null references for empty values |
+| Attribute patching | Existing fixed-size inline, dense and creation-order-tracked attributes on objects, including compact attributes, big-endian numeric values, large dense values and variable-length UTF-8 strings; object-header/OCHK and fractal-heap direct-block checksums are refreshed, vlen strings append a global heap and update the superblock EOF, while attribute message metadata and indexes remain unchanged |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
 
 ## Reader findings
@@ -216,10 +222,19 @@ heaps and heap extension across multiple blocks are not emitted.
   size and split/merge thresholds. Rebuilding a missing EAIB may create its
   direct/super hierarchy and derives or extends the EAHD maximum set. It does
   not create unrelated metadata structures.
-- Attribute patching is limited to replacing values of existing fixed-size,
-  non-vlen and non-reference attributes. Shared attribute messages and filtered
-  fractal-heap storage are rejected, and attributes cannot be added, deleted,
-  renamed or moved between inline and dense storage.
+- Variable-length string patching accepts only datatype class 9 with the string
+  flag. References and non-string variable-length values are rejected. Chunked
+  vlen data supports unfiltered storage, Shuffle or deflate, not Fletcher32 or
+  scale-offset, and cannot create a missing fixed-array data block or
+  extensible-array metadata. Each patch appends a new global heap collection
+  whose size is a multiple of 4096 bytes; old heaps and relocated values remain
+  unreferenced because no free-space reclamation is written.
+- Attribute patching is limited to replacing values of existing fixed-size or
+  variable-length UTF-8 string attributes. Reference and non-string
+  variable-length datatypes are rejected, as are shared attribute messages and
+  filtered fractal-heap storage. Attributes cannot be added, deleted, renamed
+  or moved between inline and dense storage, and old global heaps are not
+  reclaimed.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB
@@ -318,3 +333,14 @@ heaps and heap extension across multiple blocks are not emitted.
   big-endian numeric values, managed fractal-heap writes and direct-block
   checksum repair. Compact, dense, ordered and 7000-element output was
   independently re-read by h5py 3.13.0/HDF5 1.14.6.
+- 2026-11-11: variable-length UTF-8 string attribute patching for inline and
+  dense storage, including empty values and repeated updates. Patching appends
+  a global heap collection whose size is a multiple of 4096 bytes, rewrites
+  fixed-size heap references and updates the superblock EOF/checksum. Compact and dense h5py
+  3.12.1/HDF5 1.14.6 inputs were patched and independently re-read.
+- 2026-11-11: variable-length UTF-8 string dataset patching for compact,
+  contiguous and chunked storage, including unallocated contiguous data, empty
+  and repeated values, Shuffle/deflate pipelines, appended global heaps and
+  repeated patches. h5py 3.12.1/HDF5 1.14.6 inputs and outputs were independently
+  re-read. Shuffle pipelines with omitted client data, as written by HDF5, are
+  accepted.
