@@ -1,4 +1,4 @@
-# Code audit — 2026-11-10
+# Code audit — 2026-11-11
 
 Scope: current worktree, reader and writer, with emphasis on the HDF5 1.14.6
 v1.0 delivery profile and post-v1.0 extensions.
@@ -7,8 +7,8 @@ v1.0 delivery profile and post-v1.0 extensions.
 
 The MoonBit release checks pass on the current worktree:
 
-- wasm: 289 tests passed;
-- native: 289 tests passed;
+- wasm: 290 tests passed;
+- native: 290 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output were
   previously verified by h5py 3.13.0/HDF5 1.14.6; h5py was not rerun for the
@@ -24,6 +24,9 @@ The MoonBit release checks pass on the current worktree:
 - missing fixed-array data blocks are covered for unfiltered, filtered, paged
   and non-paged indexes, including FAHD/FADB linkage, page initialization and
   subsequent patches against the new index;
+- missing extensible-array data blocks are covered for EAIB direct pointers and
+  EASB block pointers, unfiltered and filtered entries, and paged or non-paged
+  data blocks, including pointer/checksum updates and subsequent patches;
 - unallocated extensible-array pages in an existing data block are covered for
   both unfiltered and filtered indexes, including page checksums and the EASB
   bitmap checksum;
@@ -48,7 +51,7 @@ structures raise errors; detection is not exhaustive.
 | References | 4-/8-byte object references, legacy region references and version-4 object/region/attribute references against compact, contiguous and filtered targets |
 | Shared messages | Table/indexes/heaps, wrappers v1–v3, field sharing, fills, filter pipelines, whole attributes and committed targets |
 | Writer | Superblock v3, OHDR/OCHK, dense metadata, chunk indexes, SOHM, references and external slots |
-| In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including sparse fill-only chunks, undefined slots in existing indexes, unallocated fixed- and extensible-array pages and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout, slot, page-bitmap and page/EASB fields, affected checksums and superblock EOF updated; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved |
+| In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including sparse fill-only chunks, undefined slots in existing indexes, missing fixed-array data blocks, missing extensible-array data blocks under existing EAIB/EASB metadata, unallocated fixed- and extensible-array pages and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout, slot, page-bitmap, FADB/FAHD and EADB/EASB fields, affected checksums and superblock EOF updated; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
 
 ## Reader findings
@@ -193,9 +196,11 @@ heaps and heap extension across multiple blocks are not emitted.
 - V2 B-tree output is bulk-built for a completed in-memory shape; arbitrary
   incremental insertion at interior coordinates is not exposed.
 - Value patching can allocate raw data only into existing writable layout or
-  chunk-index storage, including an unallocated fixed- or extensible-array page
-  inside an existing data block. It cannot create missing fixed- or
-  extensible-array data blocks, super/index blocks or v1/v2 B-tree records.
+  chunk-index storage, including a missing fixed-array data block, a missing
+  extensible-array data block linked from an existing EAIB or EASB, or an
+  unallocated fixed- or extensible-array page inside an existing data block. It
+  cannot create missing EAIB/EASB or other extensible-array super/index blocks
+  or v1/v2 B-tree records.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB
@@ -267,3 +272,9 @@ heaps and heap extension across multiple blocks are not emitted.
   checksums, FAHD address and checksum updates, and later patching through the
   new index. Missing extensible-array data blocks, extensible-array super/index
   blocks and B-tree records remain outside the boundary.
+- 2026-11-11: creation of missing extensible-array data blocks linked from an
+  existing EAIB direct pointer or EASB block pointer, including undefined entry
+  initialization, paged and non-paged block checksums, EASB page-bitmap updates,
+  pointer and parent-checksum updates, and later patching through the new index.
+  Missing EAIB/EASB or other super/index blocks and B-tree records remain outside
+  the boundary.

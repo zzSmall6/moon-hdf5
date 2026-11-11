@@ -1259,3 +1259,80 @@ test "missing extensible-array pages allocate inside existing data blocks" {
     assert_eq(values[134501], -7L)
   }
 }
+
+///|
+fn patch_extensible_missing_block_case(
+  extent : Int32,
+  seed_positions : Array[Int32],
+  write_positions : Array[Int32],
+  filters : Array[Hdf5WriteFilter],
+) -> Unit raise {
+  let original = Array::make(extent, -7)
+  for position in seed_positions {
+    original[position] = 1000 + position
+  }
+  let writer = Hdf5Writer::new()
+  writer.add_extensible_dataset(
+    "/data",
+    [extent.to_uint64()],
+    [None],
+    [1U],
+    Int32Values(original),
+    fill_value=Int32Values([-7]),
+    filters~,
+  )
+  let bytes = writer.encode()
+  let file = Hdf5File::parse(bytes)
+  assert_true(
+    file.read_dataset_metadata("/data").layout.chunk_index is ExtensibleArray(_),
+  )
+  let original_values = integer_values(file.read_dataset("/data"))
+  assert_eq(original_values.length().to_int64(), extent.to_int64())
+  for position in write_positions {
+    assert_eq(original_values[position], -7L)
+  }
+  let expected = original.copy()
+  for position in write_positions {
+    expected[position] = 500000 + position
+  }
+  let patched_bytes = file.patch_dataset_values("/data", Int32Values(expected))
+  assert_true(patched_bytes.length() > bytes.length())
+  let patched = Hdf5File::parse(patched_bytes)
+  assert_true(
+    patched.read_dataset_metadata("/data").layout.chunk_index
+    is ExtensibleArray(_),
+  )
+  let patched_values = integer_values(patched.read_dataset("/data"))
+  assert_eq(patched_values, expected.map(value => value.to_int64()))
+  assert_eq(
+    patched.superblock.end_of_file_address,
+    patched_bytes.length().to_uint64() - patched.superblock.base_address,
+  )
+  let revised = expected.copy()
+  let revised_position = write_positions[write_positions.length() - 1]
+  revised[revised_position] = 987654
+  let revised_bytes = patched.patch_dataset_values(
+    "/data",
+    Int32Values(revised),
+  )
+  let revised_file = Hdf5File::parse(revised_bytes)
+  assert_eq(
+    integer_values(revised_file.read_dataset("/data")),
+    revised.map(value => value.to_int64()),
+  )
+}
+
+///|
+test "missing extensible-array data blocks allocate direct and super blocks" {
+  let cases : Array[(Int32, Array[Int32], Array[Int32], Array[Hdf5WriteFilter])] = [
+    (300, [10, 299], [200, 220], []),
+    (300, [10, 299], [200, 220], [ScaleOffset(0)]),
+    (5000, [4090, 4700, 4999], [4400, 4500], []),
+    (5000, [4090, 4700, 4999], [4400, 4500], [ScaleOffset(0)]),
+    (138000, [131100, 136000, 137900], [134000, 134500], []),
+    (138000, [131100, 136000, 137900], [134000, 134500], [ScaleOffset(0)]),
+  ]
+  for (extent, seeds, writes, filters) in cases {
+    patch_extensible_missing_block_case(extent, seeds, writes, filters)
+  }
+}

@@ -329,12 +329,23 @@ fn initialize_chunk_page(
   output : FixedArray[Byte],
   page : RawChunkPage,
   target_start~ : Int32 = 0,
+  bitmap_target_start~ : Int32 = -1,
+  bitmap_output~ : FixedArray[Byte]? = None,
 ) -> Unit raise Hdf5Error {
   let page_start = page.start - target_start
   let checksum_offset = page.checksum_offset - target_start
-  let bitmap_offset = page.bitmap_offset - target_start
-  let bitmap_metadata_start = page.bitmap_metadata_start - target_start
-  let bitmap_checksum_offset = page.bitmap_checksum_offset - target_start
+  let bitmap_target = if bitmap_target_start >= 0 {
+    bitmap_target_start
+  } else {
+    target_start
+  }
+  let bitmap_offset = page.bitmap_offset - bitmap_target
+  let bitmap_metadata_start = page.bitmap_metadata_start - bitmap_target
+  let bitmap_checksum_offset = page.bitmap_checksum_offset - bitmap_target
+  let bitmap_image = match bitmap_output {
+    Some(image) => image
+    None => output
+  }
   let page_length = page.entries.to_int64() * page.entry_size.to_int64()
   guard page.entries >= 0 &&
     page.entry_size >= page.address_width &&
@@ -346,9 +357,10 @@ fn initialize_chunk_page(
     checksum_offset.to_int64() == page_start.to_int64() + page_length &&
     checksum_offset.to_int64() + 4L <= output.length().to_int64() &&
     bitmap_offset >= 0 &&
-    bitmap_offset < output.length() &&
+    bitmap_offset < bitmap_image.length() &&
     bitmap_metadata_start >= 0 &&
-    bitmap_checksum_offset >= bitmap_metadata_start else {
+    bitmap_checksum_offset >= bitmap_metadata_start &&
+    bitmap_checksum_offset.to_int64() + 4L <= bitmap_image.length().to_int64() else {
     raise InvalidField("invalid unallocated chunk-index page")
   }
   let undefined = if page.address_width == 8 {
@@ -383,10 +395,10 @@ fn initialize_chunk_page(
     }
   }
   patch_metadata_checksum_in_place(output, page_start, checksum_offset)
-  output[bitmap_offset] = (output[bitmap_offset].to_int() |
+  bitmap_image[bitmap_offset] = (bitmap_image[bitmap_offset].to_int() |
   page.bitmap_mask.to_int()).to_byte()
   patch_metadata_checksum_in_place(
-    output, bitmap_metadata_start, bitmap_checksum_offset,
+    bitmap_image, bitmap_metadata_start, bitmap_checksum_offset,
   )
 }
 
@@ -848,6 +860,7 @@ fn collect_raw_chunk_records(
   offset_size : Int32,
   length_size : Int32,
   base_address : UInt64,
+  missing_blocks~ : Array[MissingExtensibleDataBlock]? = None,
 ) -> Array[RawChunkRecord] raise Hdf5Error {
   let records : Array[RawChunkRecord] = []
   read_chunked_with_filters(
@@ -862,9 +875,118 @@ fn collect_raw_chunk_records(
     length_size,
     selection=Some([]),
     records=Some(records),
+    missing_blocks~,
   )
   |> ignore
   records
+}
+
+///|
+fn chunk_slot_has_non_fill(
+  offsets : Array[UInt64],
+  chunk_widths : Array[Int64],
+  dataspace_dimensions : Array[UInt64],
+  strides : Array[Int64],
+  chunk_elements : Int64,
+  element_size : Int32,
+  payload : Bytes,
+  fill : Bytes,
+) -> Bool raise Hdf5Error {
+  let rank = chunk_widths.length()
+  guard offsets.length() == rank &&
+    dataspace_dimensions.length() == rank &&
+    strides.length() == rank &&
+    fill.length() == element_size else {
+    raise InvalidField("invalid chunk payload comparison")
+  }
+  for chunk_element in 0..<chunk_elements.to_int() {
+    let mut remaining = chunk_element.to_int64()
+    let mut dataset_linear = 0L
+    let mut outside = false
+    let mut axis = rank
+    while axis > 0 {
+      axis = axis - 1
+      let coordinate = remaining % chunk_widths[axis]
+      remaining = remaining / chunk_widths[axis]
+      let global = offsets[axis] + coordinate.reinterpret_as_uint64()
+      if global >= dataspace_dimensions[axis] {
+        outside = true
+      } else {
+        dataset_linear = dataset_linear +
+          global.reinterpret_as_int64() * strides[axis]
+      }
+    }
+    if outside {
+      continue
+    }
+    let source = dataset_linear * element_size.to_int64()
+    guard source >= 0L &&
+      source + element_size.to_int64() <= payload.length().to_int64() else {
+      raise InvalidField("chunk payload is smaller than the dataspace")
+    }
+    for byte_index in 0..<element_size {
+      if payload[source.to_int() + byte_index] != fill[byte_index] {
+        return true
+      }
+    }
+  }
+  false
+}
+
+///|
+fn missing_extensible_block_used(
+  descriptor : MissingExtensibleDataBlock,
+  layout : DataLayout,
+  dataspace : Dataspace,
+  chunk_widths : Array[Int64],
+  grid : Array[Int64],
+  strides : Array[Int64],
+  chunk_elements : Int64,
+  element_size : Int32,
+  payload : Bytes,
+  fill : Bytes,
+) -> Bool raise Hdf5Error {
+  let rank = chunk_widths.length()
+  guard descriptor.order.length() == rank &&
+    descriptor.grid.length() == rank &&
+    grid.length() == rank else {
+    raise InvalidField("invalid extensible array slot geometry")
+  }
+  let end = if descriptor.start + descriptor.count < descriptor.limit {
+    descriptor.start + descriptor.count
+  } else {
+    descriptor.limit
+  }
+  let mut slot = descriptor.start
+  while slot < end {
+    let offsets = extensible_slot_offsets(
+      slot,
+      descriptor.order,
+      descriptor.grid,
+      layout.chunk_dimensions,
+    )
+    let mut outside = false
+    for axis in 0..<rank {
+      if offsets[axis] >= dataspace.dimensions[axis] {
+        outside = true
+      }
+    }
+    if !outside &&
+      chunk_slot_has_non_fill(
+        offsets,
+        chunk_widths,
+        dataspace.dimensions,
+        strides,
+        chunk_elements,
+        element_size,
+        payload,
+        fill,
+      ) {
+      return true
+    }
+    slot = slot + 1L
+  }
+  false
 }
 
 ///|
@@ -922,6 +1044,7 @@ fn single_chunk_slot_record(
     metadata_start: message.chunk_start,
     metadata_checksum_offset: message.checksum_offset,
     page: None,
+    missing_block_index: -1,
   }
 }
 
@@ -980,6 +1103,11 @@ fn Hdf5File::patch_chunked_dataset_data(
     (1UL << (self.superblock.offset_size * 8)) - 1UL
   }
   let mut missing_fixed_array : MissingFixedArrayStorage? = None
+  let missing_extensible_blocks : Array[MissingExtensibleDataBlock] = []
+  let extensible_config : ExtensibleArrayConfig? = match layout.chunk_index {
+    ExtensibleArray(config) => Some(config)
+    _ => None
+  }
   let records = match layout.chunk_index {
     Single(_, _) =>
       [
@@ -1022,6 +1150,18 @@ fn Hdf5File::patch_chunked_dataset_data(
         records
       }
     }
+    ExtensibleArray(_) =>
+      collect_raw_chunk_records(
+        self.bytes,
+        layout,
+        metadata.dataspace,
+        metadata.datatype,
+        filters,
+        self.superblock.offset_size,
+        self.superblock.length_size,
+        self.superblock.base_address,
+        missing_blocks=Some(missing_extensible_blocks),
+      )
     _ =>
       collect_raw_chunk_records(
         self.bytes,
@@ -1033,33 +1173,6 @@ fn Hdf5File::patch_chunked_dataset_data(
         self.superblock.length_size,
         self.superblock.base_address,
       )
-  }
-  let record_for_chunk : Array[RawChunkRecord?] = Array::make(
-    total_chunks.to_int(),
-    None,
-  )
-  for record in records {
-    guard record.offsets.length() == rank else {
-      raise InvalidField("chunk record rank does not match the dataspace rank")
-    }
-    let mut chunk_linear = 0L
-    for axis in 0..<rank {
-      let width = chunk_widths[axis].reinterpret_as_uint64()
-      let offset = record.offsets[axis]
-      guard offset % width == 0UL else {
-        raise InvalidField("chunk offset is not aligned to the chunk shape")
-      }
-      let coordinate = offset / width
-      guard coordinate < grid[axis].reinterpret_as_uint64() else {
-        raise InvalidField("chunk offset is outside the chunk grid")
-      }
-      chunk_linear = chunk_linear * grid[axis] +
-        coordinate.reinterpret_as_int64()
-    }
-    guard record_for_chunk[chunk_linear.to_int()] is None else {
-      raise InvalidField("duplicate chunk record")
-    }
-    record_for_chunk[chunk_linear.to_int()] = Some(record)
   }
   let mut all_chunks_allocated = records.length() == total_chunks.to_int()
   for record in records {
@@ -1096,9 +1209,88 @@ fn Hdf5File::patch_chunked_dataset_data(
     Some(storage) => storage.block_start
     None => 0
   }
-  let chunk_tail_base = match missing_fixed_array {
+  let mut chunk_tail_base = match missing_fixed_array {
     Some(storage) => storage.block_start + storage.image.length()
     None => self.bytes.length()
+  }
+  let missing_extensible_storage : Array[MissingExtensibleBlockStorage] = []
+  let mut extensible_storage_end = chunk_tail_base
+  match extensible_config {
+    Some(config) => {
+      let mut next_start = (self.bytes.length() + 7) / 8 * 8
+      for descriptor in missing_extensible_blocks {
+        if missing_extensible_block_used(
+            descriptor,
+            layout,
+            metadata.dataspace,
+            chunk_widths,
+            grid,
+            strides,
+            chunk_elements,
+            metadata.datatype.size,
+            payload,
+            fill,
+          ) {
+          let storage = prepare_missing_extensible_data_block(
+            self.bytes,
+            layout,
+            metadata.dataspace,
+            metadata.datatype,
+            self.superblock.offset_size,
+            self.superblock.base_address,
+            config,
+            filters,
+            undefined,
+            descriptor,
+            missing_extensible_storage.length(),
+            next_start,
+          )
+          missing_extensible_storage.push(storage)
+          extensible_storage_end = next_start + storage.image.length()
+          next_start = (next_start + storage.image.length() + 7) / 8 * 8
+        }
+      }
+    }
+    None => ()
+  }
+  if missing_extensible_storage.length() > 0 {
+    chunk_tail_base = extensible_storage_end
+  }
+  let all_records : Array[RawChunkRecord] = []
+  for record in records {
+    all_records.push(record)
+  }
+  for storage in missing_extensible_storage {
+    for record in storage.records {
+      all_records.push(record)
+    }
+  }
+  let record_for_chunk : Array[RawChunkRecord?] = Array::make(
+    total_chunks.to_int(),
+    None,
+  )
+  for record in all_records {
+    guard record.offsets.length() == rank else {
+      raise InvalidField("chunk record rank does not match the dataspace rank")
+    }
+    let mut chunk_linear = 0L
+    for axis in 0..<rank {
+      let width = chunk_widths[axis].reinterpret_as_uint64()
+      let offset = record.offsets[axis]
+      guard offset % width == 0UL else {
+        raise InvalidField("chunk offset is not aligned to the chunk shape")
+      }
+      let coordinate = offset / width
+      guard coordinate < grid[axis].reinterpret_as_uint64() else {
+        raise InvalidField("chunk offset is outside the chunk grid")
+      }
+      chunk_linear = chunk_linear * grid[axis] +
+        coordinate.reinterpret_as_int64()
+    }
+    guard record_for_chunk[chunk_linear.to_int()] is None else {
+      raise InvalidField("duplicate chunk record")
+    }
+    record_for_chunk[chunk_linear.to_int()] = Some(record)
   }
   let tail = @buffer.Buffer::Buffer()
   let mut relocated = false
@@ -1131,6 +1323,21 @@ fn Hdf5File::patch_chunked_dataset_data(
               "chunk record offset does not match its grid slot",
             )
           }
+        }
+        let record_output = if record.missing_block_index >= 0 {
+          guard record.missing_block_index < missing_extensible_storage.length() else {
+            raise InvalidField(
+              "missing extensible array block index is invalid",
+            )
+          }
+          missing_extensible_storage[record.missing_block_index].image
+        } else {
+          index_output
+        }
+        let record_start = if record.missing_block_index >= 0 {
+          missing_extensible_storage[record.missing_block_index].block_start
+        } else {
+          index_start
         }
         if record.address == undefined {
           let chunk = FixedArray::make(chunk_size, b'\x00')
@@ -1172,9 +1379,15 @@ fn Hdf5File::patch_chunked_dataset_data(
               Some(page) =>
                 if !allocated_pages.contains(page.start) {
                   initialize_chunk_page(
-                    index_output,
+                    record_output,
                     page,
-                    target_start=index_start,
+                    target_start=record_start,
+                    bitmap_target_start=index_start,
+                    bitmap_output=if record.missing_block_index >= 0 {
+                      Some(output)
+                    } else {
+                      None
+                    },
                   )
                   allocated_pages.push(page.start)
                 }
@@ -1220,21 +1433,21 @@ fn Hdf5File::patch_chunked_dataset_data(
               self.superblock.base_address,
             )
             patch_chunk_address_field(
-              index_output,
+              record_output,
               record,
               new_address,
-              target_start=index_start,
+              target_start=record_start,
             )
             if record.stored_size_offset >= 0 {
               patch_stored_size_field(
-                index_output,
+                record_output,
                 record,
                 if filtered {
                   encoded.length().to_uint64()
                 } else {
                   chunk_size.to_uint64()
                 },
-                target_start=index_start,
+                target_start=record_start,
               )
             } else if filtered {
               raise InvalidField(
@@ -1243,14 +1456,36 @@ fn Hdf5File::patch_chunked_dataset_data(
             }
             if filtered {
               patch_chunk_mask_field(
-                index_output,
+                record_output,
                 record,
                 0U,
-                target_start=index_start,
+                target_start=record_start,
               )
             }
             relocated = true
-            if record.metadata_start >= 0 &&
+            if record.missing_block_index >= 0 {
+              let storage = missing_extensible_storage[record.missing_block_index]
+              patch_metadata_checksum_in_place(
+                record_output,
+                record.metadata_start - record_start,
+                record.metadata_checksum_offset - record_start,
+              )
+              patch_little_endian_uint(
+                output,
+                storage.pointer_offset,
+                storage.pointer_width,
+                file_offset_to_stored_address(
+                  storage.block_start.to_uint64(),
+                  self.superblock.base_address,
+                ),
+                "extensible array data block address",
+              )
+              patch_metadata_checksum_in_place(
+                output,
+                storage.pointer_metadata_start,
+                storage.pointer_checksum_offset,
+              )
+            } else if record.metadata_start >= 0 &&
               record.metadata_checksum_offset >= 0 {
               let mut known = false
               for region in 0..<checksum_starts.length() {
@@ -1475,7 +1710,28 @@ fn Hdf5File::patch_chunked_dataset_data(
         combined.write_bytes(chunk_bytes.get_view().unwrap())
         return self.finish_appended_image(output, combined)
       }
-      None => return self.finish_appended_image(output, tail)
+      None =>
+        if missing_extensible_storage.length() > 0 {
+          let combined = @buffer.Buffer::Buffer()
+          for storage in missing_extensible_storage {
+            let start = append_aligned_bytes_to_tail(
+              combined,
+              self.bytes.length(),
+              storage.image.unsafe_reinterpret_as_bytes(),
+              "create missing extensible array data block",
+            )
+            guard start.to_int() == storage.block_start else {
+              raise InvalidField(
+                "extensible array data block placement mismatch",
+              )
+            }
+          }
+          let chunk_bytes = tail.to_bytes()
+          combined.write_bytes(chunk_bytes.get_view().unwrap())
+          return self.finish_appended_image(output, combined)
+        } else {
+          return self.finish_appended_image(output, tail)
+        }
     }
   }
   Bytes::from_array(output)

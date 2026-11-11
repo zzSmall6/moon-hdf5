@@ -224,10 +224,14 @@ sets its bit in the EASB bitmap and refreshes the EASB checksum. The requested
 chunk is then linked into that page; other entries continue to read as fill
 values.
 Missing chunks stay unallocated only when their patched values equal the
-effective fill element. Non-fill chunks whose extensible-array data block,
-extensible-array super/index block or B-tree record does not exist are rejected;
-the patcher does not construct those index structures. Relocation and allocation
-are append-only and leave old chunk bytes unreferenced.
+effective fill element. When an EAIB direct pointer or an EASB block pointer is
+undefined, patching appends an EADB containing undefined entries and initial
+page or block checksums, writes the new block address into the owning EAIB or
+EASB, and refreshes its checksum. Paged blocks also set their page bits in the
+existing EASB bitmap. Non-fill chunks whose EAIB, EASB or B-tree record does not
+exist are rejected; the patcher does not construct those index structures.
+Relocation and allocation are append-only and leave old chunk bytes
+unreferenced.
 `patch_dataset_values` accepts all three layouts, while
 `patch_contiguous_dataset` is the contiguous-only compatibility entry point.
 

@@ -29,6 +29,7 @@ priv struct RawChunkRecord {
   metadata_start : Int32
   metadata_checksum_offset : Int32
   page : RawChunkPage?
+  missing_block_index : Int32
 }
 
 ///|
@@ -72,6 +73,7 @@ fn push_raw_chunk_record(
         metadata_start: -1,
         metadata_checksum_offset: -1,
         page: None,
+        missing_block_index: -1,
       })
     None => ()
   }
@@ -144,6 +146,7 @@ fn push_chunk_page_slot_record(
   metadata_start : Int32,
   metadata_checksum_offset : Int32,
   page : RawChunkPage?,
+  missing_block_index~ : Int32 = -1,
 ) -> Unit {
   match records {
     Some(records) =>
@@ -160,6 +163,7 @@ fn push_chunk_page_slot_record(
         metadata_start,
         metadata_checksum_offset,
         page,
+        missing_block_index,
       })
     None => ()
   }
@@ -731,6 +735,7 @@ fn read_chunked_with_filters(
   length_size : Int32,
   selection~ : Array[UInt64]? = None,
   records~ : Array[RawChunkRecord]? = None,
+  missing_blocks~ : Array[MissingExtensibleDataBlock]? = None,
 ) -> Bytes raise Hdf5Error {
   guard dataspace.kind == Simple && dataspace.dimensions.length() > 0 else {
     raise InvalidField("chunked datasets require a simple dataspace")
@@ -833,6 +838,7 @@ fn read_chunked_with_filters(
         config,
         selection,
         records~,
+        missing_blocks~,
       )
     BTreeV2(config) =>
       read_btree_v2_chunks(
