@@ -59,6 +59,162 @@ fn extensible_slot_offsets(
 }
 
 ///|
+fn extensible_array_geometry(
+  layout : DataLayout,
+  dataspace : Dataspace,
+  length_size : Int32,
+  maximum_set : UInt64,
+) -> (Array[Int32], Array[Int64], Int64) raise Hdf5Error {
+  let unlimited_value = match length_size {
+    1 | 2 | 4 => (1UL << (length_size * 8)) - 1UL
+    8 => 0xFFFFFFFFFFFFFFFFUL
+    _ => raise UnsupportedAddressSize(length_size)
+  }
+  let rank = dataspace.dimensions.length()
+  guard dataspace.maximum_dimensions.length() == rank else {
+    raise InvalidField("extensible array requires maximum dimensions")
+  }
+  let mut unlimited = -1
+  let grid : Array[Int64] = []
+  for dimension in 0..<rank {
+    let current = dataspace.dimensions[dimension]
+    let maximum = dataspace.maximum_dimensions[dimension]
+    let width = layout.chunk_dimensions[dimension].to_int64()
+    guard current <= maximum && current <= 0x7FFFFFFFUL && width > 0 else {
+      raise InvalidField("invalid extensible array dimensions")
+    }
+    let extent = if maximum == unlimited_value {
+      guard unlimited == -1 else {
+        raise InvalidField("extensible array requires one unlimited dimension")
+      }
+      unlimited = dimension
+      current
+    } else {
+      guard maximum <= 0x7FFFFFFFUL else {
+        raise InvalidField("extensible array maximum dimension is too large")
+      }
+      maximum
+    }
+    grid.push((extent.reinterpret_as_int64() + width - 1) / width)
+  }
+  guard unlimited >= 0 else {
+    raise InvalidField("extensible array requires one unlimited dimension")
+  }
+  let order = [unlimited]
+  for dimension in 0..<rank {
+    if dimension != unlimited {
+      order.push(dimension)
+    }
+  }
+  let total = product(grid)
+  let limit = if maximum_set < total.reinterpret_as_uint64() {
+    maximum_set.reinterpret_as_int64()
+  } else {
+    total
+  }
+  (order, grid, limit)
+}
+
+///|
+priv struct ExtensibleArrayHeaderInfo {
+  client : Int32
+  entry_size : Int32
+  config : ExtensibleArrayConfig
+  secondary_block_count : UInt64
+  secondary_block_size : UInt64
+  data_block_count : UInt64
+  data_block_size : UInt64
+  maximum_set : UInt64
+  maximum_set_offset : Int32
+  realized_elements : UInt64
+  index_address : UInt64
+  secondary_block_count_offset : Int32
+  secondary_block_size_offset : Int32
+  data_block_count_offset : Int32
+  data_block_size_offset : Int32
+  index_address_offset : Int32
+  index_address_width : Int32
+  realized_elements_offset : Int32
+  realized_elements_width : Int32
+  header_checksum_offset : Int32
+}
+
+///|
+fn read_extensible_array_header_info(
+  bytes : Bytes,
+  layout : DataLayout,
+  offset_size : Int32,
+  length_size : Int32,
+  base_address : UInt64,
+) -> ExtensibleArrayHeaderInfo raise Hdf5Error {
+  let header_offset = address_to_offset(layout.data_address, base_address)
+  let header_content = 12 + length_size * 6 + offset_size
+  guard header_offset.to_int64() + header_content.to_int64() + 4L <=
+    bytes.length().to_int64() else {
+    raise UnexpectedEof(header_offset.to_int64())
+  }
+  verify_metadata_checksum(
+    bytes,
+    header_offset,
+    header_offset + header_content,
+    "extensible array header",
+  )
+  let header = Reader::at(bytes, header_offset)
+  guard header.read_bytes(4) == b"EAHD" && header.read_u8() == b'\x00' else {
+    raise InvalidField("invalid extensible array header")
+  }
+  let client = header.read_u8().to_int()
+  let entry_size = header.read_u8().to_int()
+  let config : ExtensibleArrayConfig = {
+    max_bits: header.read_u8().to_int(),
+    index_elements: header.read_u8().to_int(),
+    min_elements: header.read_u8().to_int(),
+    min_pointers: header.read_u8().to_int(),
+    page_bits: header.read_u8().to_int(),
+  }
+  validate_extensible_config(config)
+  let secondary_block_count_offset = header.position()
+  let secondary_block_count = header.read_uint_le(length_size)
+  let secondary_block_size_offset = header.position()
+  let secondary_block_size = header.read_uint_le(length_size)
+  let data_block_count_offset = header.position()
+  let data_block_count = header.read_uint_le(length_size)
+  let data_block_size_offset = header.position()
+  let data_block_size = header.read_uint_le(length_size)
+  let maximum_set_offset = header.position()
+  let maximum_set = header.read_uint_le(length_size)
+  let realized_elements_offset = header.position()
+  let realized_elements = header.read_uint_le(length_size)
+  let index_address_offset = header.position()
+  let index_address = header.read_uint_le(offset_size)
+  guard header.position() == header_offset + header_content else {
+    raise InvalidField("extensible array header size mismatch")
+  }
+  {
+    client,
+    entry_size,
+    config,
+    secondary_block_count,
+    secondary_block_size,
+    data_block_count,
+    data_block_size,
+    maximum_set,
+    maximum_set_offset,
+    realized_elements,
+    index_address,
+    secondary_block_count_offset,
+    secondary_block_size_offset,
+    data_block_count_offset,
+    data_block_size_offset,
+    index_address_offset,
+    index_address_width: offset_size,
+    realized_elements_offset,
+    realized_elements_width: length_size,
+    header_checksum_offset: header_offset + header_content,
+  }
+}
+
+///|
 priv struct MissingExtensibleDataBlock {
   count : Int64
   start : Int64
@@ -76,6 +232,25 @@ priv struct MissingExtensibleDataBlock {
   bitmap_checksum_offset : Int32
   client : Int32
   entry_size : Int32
+}
+
+///|
+priv struct MissingExtensibleSuperBlock {
+  level_start : Int64
+  count : Int64
+  blocks : Int64
+  pages : Int64
+  bitmap_size : Int64
+  super_content : Int64
+  pointer_offset : Int32
+  pointer_width : Int32
+  pointer_metadata_start : Int32
+  pointer_checksum_offset : Int32
+  order : Array[Int32]
+  grid : Array[Int64]
+  client : Int32
+  entry_size : Int32
+  limit : Int64
 }
 
 ///|
@@ -99,6 +274,7 @@ priv struct ExtensibleReader {
   grid : Array[Int64]
   limit : Int64
   missing_blocks : Array[MissingExtensibleDataBlock]?
+  missing_supers : Array[MissingExtensibleSuperBlock]?
 }
 
 ///|
@@ -422,10 +598,34 @@ priv struct MissingExtensibleBlockStorage {
   image : FixedArray[Byte]
   records : Array[RawChunkRecord]
   block_start : Int32
+  pointer_output : FixedArray[Byte]
+  pointer_target_start : Int32
   pointer_offset : Int32
   pointer_width : Int32
   pointer_metadata_start : Int32
   pointer_checksum_offset : Int32
+}
+
+///|
+priv struct MissingExtensibleSuperBlockStorage {
+  image : FixedArray[Byte]
+  block_start : Int32
+  block_pointer_offsets : Array[Int32]
+  bitmap_offset : Int32
+  bitmap_metadata_start : Int32
+  bitmap_checksum_offset : Int32
+}
+
+///|
+priv struct MissingExtensibleIndexStorage {
+  image : FixedArray[Byte]
+  records : Array[RawChunkRecord]
+  block_start : Int32
+  index_content : Int32
+  direct_start : Int32
+  super_start : Int32
+  first_super : Int32
+  levels : Int32
 }
 
 ///|
@@ -459,6 +659,202 @@ fn initialize_extensible_entry(
 }
 
 ///|
+fn prepare_missing_extensible_super_block(
+  layout : DataLayout,
+  offset_size : Int32,
+  config : ExtensibleArrayConfig,
+  descriptor : MissingExtensibleSuperBlock,
+  block_start : Int32,
+) -> MissingExtensibleSuperBlockStorage raise Hdf5Error {
+  guard descriptor.level_start >= 0L &&
+    descriptor.count > 0L &&
+    descriptor.blocks > 0L &&
+    descriptor.blocks <= 0x7FFFFFFFL &&
+    descriptor.bitmap_size >= 0L &&
+    descriptor.super_content >= 0L &&
+    block_start >= 0 else {
+    raise InvalidField("invalid missing extensible array super block")
+  }
+  guard descriptor.blocks <= 0x7FFFFFFFL / descriptor.count &&
+    descriptor.level_start + descriptor.blocks * descriptor.count <= 0x7FFFFFFFL &&
+    descriptor.super_content <= 0x7FFFFFFFL &&
+    block_start.to_int64() + descriptor.super_content + 4L <= 0x7FFFFFFFL else {
+    raise InvalidField("extensible array super block is too large")
+  }
+  let block_offset_width = (config.max_bits + 7) / 8
+  let image = FixedArray::make(descriptor.super_content.to_int() + 4, b'\x00')
+  image[0] = b'E'
+  image[1] = b'A'
+  image[2] = b'S'
+  image[3] = b'B'
+  image[4] = b'\x00'
+  image[5] = descriptor.client.to_byte()
+  patch_little_endian_uint(
+    image,
+    6,
+    offset_size,
+    layout.data_address,
+    "extensible array super block header",
+  )
+  patch_little_endian_uint(
+    image,
+    6 + offset_size,
+    block_offset_width,
+    descriptor.level_start.reinterpret_as_uint64(),
+    "extensible array super block offset",
+  )
+  let bitmap_position = 6 + offset_size + block_offset_width
+  let pointer_position = bitmap_position + descriptor.bitmap_size.to_int()
+  let undefined = if offset_size == 8 {
+    0xFFFFFFFFFFFFFFFFUL
+  } else {
+    (1UL << (offset_size * 8)) - 1UL
+  }
+  let block_pointer_offsets : Array[Int32] = []
+  for block_index in 0..<descriptor.blocks.to_int() {
+    let position = pointer_position + block_index * offset_size
+    patch_little_endian_uint(
+      image, position, offset_size, undefined, "extensible array super block data address",
+    )
+    block_pointer_offsets.push(block_start + position)
+  }
+  patch_metadata_checksum_in_place(image, 0, descriptor.super_content.to_int())
+  {
+    image,
+    block_start,
+    block_pointer_offsets,
+    bitmap_offset: block_start + bitmap_position,
+    bitmap_metadata_start: block_start,
+    bitmap_checksum_offset: block_start + descriptor.super_content.to_int(),
+  }
+}
+
+///|
+fn prepare_missing_extensible_index(
+  bytes : Bytes,
+  layout : DataLayout,
+  dataspace : Dataspace,
+  datatype : Datatype,
+  offset_size : Int32,
+  length_size : Int32,
+  base_address : UInt64,
+  config : ExtensibleArrayConfig,
+  client : Int32,
+  entry_size : Int32,
+  filters : Array[Filter],
+  undefined : UInt64,
+  maximum_set : UInt64,
+  block_start : Int32,
+) -> MissingExtensibleIndexStorage raise Hdf5Error {
+  validate_extensible_config(config)
+  let size_width = entry_size - offset_size - 4
+  guard block_start >= 0 &&
+    (
+      (client == 0 && filters.length() == 0 && entry_size == offset_size) ||
+      (
+        client == 1 &&
+        filters.length() > 0 &&
+        size_width >= 1 &&
+        size_width <= 8
+      )
+    ) &&
+    (config.max_bits == 64 || maximum_set <= 1UL << config.max_bits) else {
+    raise InvalidField("invalid missing extensible array index")
+  }
+  let (order, grid, limit) = extensible_array_geometry(
+    layout, dataspace, length_size, maximum_set,
+  )
+  let first_super = 2 * array_log2(config.min_pointers)
+  let levels = 1 + config.max_bits - array_log2(config.min_elements)
+  let direct_count = 2 * (config.min_pointers - 1)
+  let entry_start = 6 + offset_size
+  let direct_start = entry_start + config.index_elements * entry_size
+  let super_start = direct_start + direct_count * offset_size
+  let index_content = super_start + (levels - first_super) * offset_size
+  guard index_content >= 0 &&
+    index_content <= 0x7FFFFFFF &&
+    block_start.to_int64() + index_content.to_int64() + 4L <= 0x7FFFFFFFL else {
+    raise InvalidField("extensible array index block is too large")
+  }
+  let image = FixedArray::make(index_content + 4, b'\x00')
+  image[0] = b'E'
+  image[1] = b'A'
+  image[2] = b'I'
+  image[3] = b'B'
+  image[4] = b'\x00'
+  image[5] = client.to_byte()
+  patch_little_endian_uint(
+    image,
+    6,
+    offset_size,
+    layout.data_address,
+    "extensible array index block header",
+  )
+  for entry in 0..<config.index_elements {
+    initialize_extensible_entry(
+      image,
+      entry_start + entry * entry_size,
+      offset_size,
+      client,
+      size_width,
+      undefined,
+    )
+  }
+  for slot in 0..<(direct_count + levels - first_super) {
+    patch_little_endian_uint(
+      image,
+      direct_start + slot * offset_size,
+      offset_size,
+      undefined,
+      "extensible array index block data address",
+    )
+  }
+  patch_metadata_checksum_in_place(image, 0, index_content)
+  let records : Array[RawChunkRecord] = []
+  let context : ExtensibleReader = {
+    source: bytes,
+    layout,
+    dataspace,
+    datatype,
+    offset_size,
+    base_address,
+    undefined,
+    filters,
+    output: FixedArray::make(0, b'\x00'),
+    selection: None,
+    records: Some(records),
+    config,
+    client,
+    entry_size,
+    chunk_size: chunk_byte_size(layout.chunk_dimensions, datatype.size),
+    order,
+    grid,
+    limit,
+    missing_blocks: None,
+    missing_supers: None,
+  }
+  context.entries(
+    Reader::at(Bytes::from_array(image), entry_start),
+    config.index_elements.to_int64(),
+    0L,
+    block_start,
+    block_start,
+    block_start + index_content,
+    None,
+  )
+  {
+    image,
+    records,
+    block_start,
+    index_content,
+    direct_start,
+    super_start,
+    first_super,
+    levels,
+  }
+}
+
+///|
 /// Builds an empty EADB for an extensible-array block pointer that is
 /// undefined. Every entry starts as undefined, and paged blocks start with an
 /// empty page bitmap.
@@ -475,6 +871,8 @@ fn prepare_missing_extensible_data_block(
   descriptor : MissingExtensibleDataBlock,
   block_index : Int32,
   block_start : Int32,
+  pointer_output : FixedArray[Byte],
+  pointer_target_start : Int32,
 ) -> MissingExtensibleBlockStorage raise Hdf5Error {
   let client = descriptor.client
   let entry_size = descriptor.entry_size
@@ -560,6 +958,7 @@ fn prepare_missing_extensible_data_block(
     grid: descriptor.grid,
     limit: descriptor.limit,
     missing_blocks: None,
+    missing_supers: None,
   }
   if !paged {
     let entries_start = prefix_size
@@ -658,6 +1057,8 @@ fn prepare_missing_extensible_data_block(
     image,
     records,
     block_start,
+    pointer_output,
+    pointer_target_start,
     pointer_offset: descriptor.pointer_offset,
     pointer_width: descriptor.pointer_width,
     pointer_metadata_start: descriptor.pointer_metadata_start,
@@ -681,6 +1082,7 @@ fn read_extensible_array_chunks(
   selection : Array[UInt64]?,
   records~ : Array[RawChunkRecord]? = None,
   missing_blocks~ : Array[MissingExtensibleDataBlock]? = None,
+  missing_supers~ : Array[MissingExtensibleSuperBlock]? = None,
 ) -> Unit raise Hdf5Error {
   let sources : Array[&Hdf5Source] = [bytes]
   read_source_extensible_array_chunks(
@@ -698,6 +1100,7 @@ fn read_extensible_array_chunks(
     selection,
     records~,
     missing_blocks~,
+    missing_supers~,
   )
 }
 
@@ -717,49 +1120,9 @@ fn read_source_extensible_array_chunks(
   selection : Array[UInt64]?,
   records~ : Array[RawChunkRecord]? = None,
   missing_blocks~ : Array[MissingExtensibleDataBlock]? = None,
+  missing_supers~ : Array[MissingExtensibleSuperBlock]? = None,
 ) -> Unit raise Hdf5Error {
   validate_extensible_config(config)
-  let unlimited_value = match length_size {
-    1 | 2 | 4 => (1UL << (length_size * 8)) - 1UL
-    8 => 0xFFFFFFFFFFFFFFFFUL
-    _ => raise UnsupportedAddressSize(length_size)
-  }
-  let rank = dataspace.dimensions.length()
-  guard dataspace.maximum_dimensions.length() == rank else {
-    raise InvalidField("extensible array requires maximum dimensions")
-  }
-  let mut unlimited = -1
-  let grid : Array[Int64] = []
-  for dimension in 0..<rank {
-    let current = dataspace.dimensions[dimension]
-    let maximum = dataspace.maximum_dimensions[dimension]
-    let width = layout.chunk_dimensions[dimension].to_int64()
-    guard current <= maximum && current <= 0x7FFFFFFFUL && width > 0 else {
-      raise InvalidField("invalid extensible array dimensions")
-    }
-    let extent = if maximum == unlimited_value {
-      guard unlimited == -1 else {
-        raise InvalidField("extensible array requires one unlimited dimension")
-      }
-      unlimited = dimension
-      current
-    } else {
-      guard maximum <= 0x7FFFFFFFUL else {
-        raise InvalidField("extensible array maximum dimension is too large")
-      }
-      maximum
-    }
-    grid.push((extent.reinterpret_as_int64() + width - 1) / width)
-  }
-  guard unlimited >= 0 else {
-    raise InvalidField("extensible array requires one unlimited dimension")
-  }
-  let order = [unlimited]
-  for dimension in 0..<rank {
-    if dimension != unlimited {
-      order.push(dimension)
-    }
-  }
   let header_offset = source_address_to_offset(
     layout.data_address,
     base_address,
@@ -806,12 +1169,9 @@ fn read_source_extensible_array_chunks(
   if index_address == undefined || (output.length() == 0 && records is None) {
     return
   }
-  let total = product(grid)
-  let limit = if maximum_set < total.reinterpret_as_uint64() {
-    maximum_set.reinterpret_as_int64()
-  } else {
-    total
-  }
+  let (order, grid, limit) = extensible_array_geometry(
+    layout, dataspace, length_size, maximum_set,
+  )
   let context : ExtensibleReader = {
     source,
     layout,
@@ -832,6 +1192,7 @@ fn read_source_extensible_array_chunks(
     grid,
     limit,
     missing_blocks,
+    missing_supers,
   }
   let first_super = 2 * array_log2(config.min_pointers)
   let levels = 1 + config.max_bits - array_log2(config.min_elements)
@@ -920,7 +1281,7 @@ fn read_source_extensible_array_chunks(
         )
       }
       direct_start = direct_start + blocks.to_int()
-    } else if supers[level - first_super] != undefined {
+    } else {
       let page_size = 1L << config.page_bits
       let pages = if count > page_size { count / page_size } else { 0L }
       let bitmap_size = blocks * ((pages + 7) / 8)
@@ -932,65 +1293,101 @@ fn read_source_extensible_array_chunks(
       guard super_content <= 0x7FFFFFFFL else {
         raise InvalidField("extensible array super block is too large")
       }
-      let super_address = source_address_to_offset(
-        supers[level - first_super],
-        base_address,
-      )
-      guard super_address <= 0x7FFFFFFFUL &&
-        super_content + super_address.reinterpret_as_int64() <= 0x7FFFFFFFL else {
-        raise InvalidField(
-          "extensible array super block offset is out of range",
+      if supers[level - first_super] != undefined {
+        let super_address = source_address_to_offset(
+          supers[level - first_super],
+          base_address,
         )
-      }
-      let super_offset = super_address.to_int()
-      let super_bytes = source_read_checksummed(
-        source,
-        super_address,
-        super_content.to_int(),
-        "extensible array super block",
-      )
-      let super_block = Reader::new(super_bytes)
-      guard super_block.read_bytes(4) == b"EASB" &&
-        super_block.read_u8() == b'\x00' &&
-        super_block.read_u8().to_int() == client &&
-        super_block.read_uint_le(offset_size) == layout.data_address else {
-        raise InvalidField("invalid extensible array block")
-      }
-      guard super_block.read_var_uint_le((config.max_bits + 7) / 8) ==
-        start.reinterpret_as_uint64() else {
-        raise InvalidField("invalid extensible array super block offset")
-      }
-      guard bitmap_size + blocks * offset_size.to_int64() + 4 <=
-        super_block.remaining().to_int64() else {
-        raise InvalidField("extensible array super block extends beyond input")
-      }
-      let bitmap_position = super_block.position()
-      let bitmap = super_block.read_bytes(bitmap_size.to_int())
-      for block_index in 0..<blocks.to_int() {
-        let pointer_position = super_block.position()
-        let address = super_block.read_uint_le(offset_size)
-        context.data_block(
-          address,
-          count,
-          config.index_elements.to_int64() +
-          start +
-          block_index.to_int64() * count,
-          start + block_index.to_int64() * count,
-          super_offset + pointer_position,
-          offset_size,
-          super_offset,
-          super_offset + super_content.to_int(),
-          bitmap,
-          block_index.to_int64() * pages,
-          super_offset + bitmap_position,
-          super_offset,
-          super_offset + super_content.to_int(),
+        guard super_address <= 0x7FFFFFFFUL &&
+          super_content + super_address.reinterpret_as_int64() <= 0x7FFFFFFFL else {
+          raise InvalidField(
+            "extensible array super block offset is out of range",
+          )
+        }
+        let super_offset = super_address.to_int()
+        let super_bytes = source_read_checksummed(
+          source,
+          super_address,
+          super_content.to_int(),
+          "extensible array super block",
         )
+        let super_block = Reader::new(super_bytes)
+        guard super_block.read_bytes(4) == b"EASB" &&
+          super_block.read_u8() == b'\x00' &&
+          super_block.read_u8().to_int() == client &&
+          super_block.read_uint_le(offset_size) == layout.data_address else {
+          raise InvalidField("invalid extensible array block")
+        }
+        guard super_block.read_var_uint_le((config.max_bits + 7) / 8) ==
+          start.reinterpret_as_uint64() else {
+          raise InvalidField("invalid extensible array super block offset")
+        }
+        guard bitmap_size + blocks * offset_size.to_int64() + 4 <=
+          super_block.remaining().to_int64() else {
+          raise InvalidField(
+            "extensible array super block extends beyond input",
+          )
+        }
+        let bitmap_position = super_block.position()
+        let bitmap = super_block.read_bytes(bitmap_size.to_int())
+        for block_index in 0..<blocks.to_int() {
+          let pointer_position = super_block.position()
+          let address = super_block.read_uint_le(offset_size)
+          context.data_block(
+            address,
+            count,
+            config.index_elements.to_int64() +
+            start +
+            block_index.to_int64() * count,
+            start + block_index.to_int64() * count,
+            super_offset + pointer_position,
+            offset_size,
+            super_offset,
+            super_offset + super_content.to_int(),
+            bitmap,
+            block_index.to_int64() * pages,
+            super_offset + bitmap_position,
+            super_offset,
+            super_offset + super_content.to_int(),
+          )
+        }
+        guard super_block.position() == super_content.to_int() else {
+          raise InvalidField("extensible array super block size mismatch")
+        }
+        super_block.skip(4)
+      } else {
+        let pointer_offset = index_offset +
+          entry_start +
+          config.index_elements * entry_size +
+          direct_count * offset_size +
+          (level - first_super) * offset_size
+        guard pointer_offset <= 0x7FFFFFFF else {
+          raise InvalidField(
+            "extensible array super pointer offset is out of range",
+          )
+        }
+        match context.missing_supers {
+          Some(supers) =>
+            supers.push({
+              level_start: start,
+              count,
+              blocks,
+              pages,
+              bitmap_size,
+              super_content,
+              pointer_offset,
+              pointer_width: offset_size,
+              pointer_metadata_start: index_offset,
+              pointer_checksum_offset: index_offset + index_content,
+              order: context.order,
+              grid: context.grid,
+              client: context.client,
+              entry_size: context.entry_size,
+              limit: context.limit,
+            })
+          None => ()
+        }
       }
-      guard super_block.position() == super_content.to_int() else {
-        raise InvalidField("extensible array super block size mismatch")
-      }
-      super_block.skip(4)
     }
     start = start + blocks * count
   }

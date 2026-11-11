@@ -736,6 +736,7 @@ fn read_chunked_with_filters(
   selection~ : Array[UInt64]? = None,
   records~ : Array[RawChunkRecord]? = None,
   missing_blocks~ : Array[MissingExtensibleDataBlock]? = None,
+  missing_supers~ : Array[MissingExtensibleSuperBlock]? = None,
 ) -> Bytes raise Hdf5Error {
   guard dataspace.kind == Simple && dataspace.dimensions.length() > 0 else {
     raise InvalidField("chunked datasets require a simple dataspace")
@@ -839,6 +840,7 @@ fn read_chunked_with_filters(
         selection,
         records~,
         missing_blocks~,
+        missing_supers~,
       )
     BTreeV2(config) =>
       read_btree_v2_chunks(

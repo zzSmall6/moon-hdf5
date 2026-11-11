@@ -1261,11 +1261,141 @@ test "missing extensible-array pages allocate inside existing data blocks" {
 }
 
 ///|
+fn clear_extensible_index_address(
+  bytes : Bytes,
+  path : String,
+  clear_maximum_set~ : Bool = false,
+) -> Bytes raise Hdf5Error {
+  let file = Hdf5File::parse(bytes)
+  let metadata = file.read_dataset_metadata(path)
+  let info = read_extensible_array_header_info(
+    bytes,
+    metadata.layout,
+    file.superblock.offset_size,
+    file.superblock.length_size,
+    file.superblock.base_address,
+  )
+  guard info.index_address != 0xFFFFFFFFFFFFFFFFUL &&
+    info.index_address_width == file.superblock.offset_size else {
+    raise InvalidField("test file has no writable extensible-array index")
+  }
+  let output = bytes.to_fixedarray()
+  patch_little_endian_uint(
+    output,
+    info.index_address_offset,
+    info.index_address_width,
+    0xFFFFFFFFFFFFFFFFUL,
+    "extensible array test index address",
+  )
+  if clear_maximum_set {
+    patch_little_endian_uint(
+      output,
+      info.maximum_set_offset,
+      file.superblock.length_size,
+      0UL,
+      "extensible array test maximum set",
+    )
+  }
+  patch_metadata_checksum_in_place(
+    output,
+    address_to_offset(
+      metadata.layout.data_address,
+      file.superblock.base_address,
+    ),
+    info.header_checksum_offset,
+  )
+  Bytes::from_array(output)
+}
+
+///|
+fn clear_extensible_super_pointer(
+  bytes : Bytes,
+  path : String,
+  target_slot : Int64,
+) -> Bytes raise Hdf5Error {
+  let file = Hdf5File::parse(bytes)
+  let metadata = file.read_dataset_metadata(path)
+  let config = match metadata.layout.chunk_index {
+    ExtensibleArray(config) => config
+    _ => raise InvalidField("test dataset is not an extensible array")
+  }
+  let info = read_extensible_array_header_info(
+    bytes,
+    metadata.layout,
+    file.superblock.offset_size,
+    file.superblock.length_size,
+    file.superblock.base_address,
+  )
+  let index_offset = address_to_offset(
+    info.index_address,
+    file.superblock.base_address,
+  )
+  let offset_size = file.superblock.offset_size
+  let entry_start = 6 + offset_size
+  let direct_count = 2 * (config.min_pointers - 1)
+  let first_super = 2 * array_log2(config.min_pointers)
+  let levels = 1 + config.max_bits - array_log2(config.min_elements)
+  let direct_start = entry_start + config.index_elements * info.entry_size
+  let super_start = direct_start + direct_count * offset_size
+  let index_content = super_start + (levels - first_super) * offset_size
+  let mut level_start = 0L
+  let mut pointer_offset = -1
+  for level in 0..<levels {
+    let blocks = 1L << (level / 2)
+    let count = config.min_elements.to_int64() << ((level + 1) / 2)
+    if level >= first_super {
+      let start = config.index_elements.to_int64() + level_start
+      if target_slot >= start && target_slot < start + blocks * count {
+        pointer_offset = index_offset +
+          super_start +
+          (level - first_super) * offset_size
+        break
+      }
+    }
+    level_start = level_start + blocks * count
+  }
+  guard pointer_offset >= 0 else {
+    raise InvalidField("test target is not in an extensible-array super block")
+  }
+  guard Reader::at(bytes, pointer_offset).read_uint_le(offset_size) !=
+    0xFFFFFFFFFFFFFFFFUL else {
+    raise InvalidField("test super block pointer is already undefined")
+  }
+  let output = bytes.to_fixedarray()
+  patch_little_endian_uint(
+    output, pointer_offset, offset_size, 0xFFFFFFFFFFFFFFFFUL, "extensible array test super address",
+  )
+  patch_metadata_checksum_in_place(
+    output,
+    index_offset,
+    index_offset + index_content,
+  )
+  Bytes::from_array(output)
+}
+
+///|
 fn patch_extensible_missing_block_case(
   extent : Int32,
   seed_positions : Array[Int32],
   write_positions : Array[Int32],
   filters : Array[Hdf5WriteFilter],
+) -> Unit raise {
+  patch_extensible_structure_case(
+    extent,
+    seed_positions,
+    write_positions,
+    filters,
+    bytes => bytes,
+  )
+}
+
+///|
+fn patch_extensible_structure_case(
+  extent : Int32,
+  seed_positions : Array[Int32],
+  write_positions : Array[Int32],
+  filters : Array[Hdf5WriteFilter],
+  mutate : (Bytes) -> Bytes raise Hdf5Error,
 ) -> Unit raise {
   let original = Array::make(extent, -7)
   for position in seed_positions {
@@ -1281,7 +1411,7 @@ fn patch_extensible_missing_block_case(
     fill_value=Int32Values([-7]),
     filters~,
   )
-  let bytes = writer.encode()
+  let bytes = mutate(writer.encode())
   let file = Hdf5File::parse(bytes)
   assert_true(
     file.read_dataset_metadata("/data").layout.chunk_index is ExtensibleArray(_),
@@ -1334,5 +1464,62 @@ test "missing extensible-array data blocks allocate direct and super blocks" {
   ]
   for (extent, seeds, writes, filters) in cases {
     patch_extensible_missing_block_case(extent, seeds, writes, filters)
+  }
+}
+
+///|
+test "missing extensible-array index blocks are recreated" {
+  let cases : Array[(Int32, Array[Int32], Array[Int32], Array[Hdf5WriteFilter])] = [
+    (4, [1, 3], [2], []),
+    (4, [1, 3], [2], [ScaleOffset(0)]),
+    (300, [10, 299], [200, 220], []),
+    (300, [10, 299], [200, 220], [ScaleOffset(0)]),
+    (5000, [4090, 4700, 4999], [4400, 4500], []),
+    (5000, [4090, 4700, 4999], [4400, 4500], [ScaleOffset(0)]),
+    (138000, [131100, 136000, 137900], [134000, 134500], []),
+    (138000, [131100, 136000, 137900], [134000, 134500], [ScaleOffset(0)]),
+  ]
+  for (extent, seeds, writes, filters) in cases {
+    patch_extensible_structure_case(extent, seeds, writes, filters, bytes => {
+      clear_extensible_index_address(bytes, "/data")
+    })
+  }
+}
+
+///|
+test "missing extensible-array index and maximum set are recreated" {
+  let cases : Array[(Int32, Array[Int32], Array[Int32], Array[Hdf5WriteFilter])] = [
+    (300, [10, 299], [200, 220], []),
+    (300, [10, 299], [200, 220], [ScaleOffset(0)]),
+    (5000, [4090, 4700, 4999], [4400, 4500], []),
+    (5000, [4090, 4700, 4999], [4400, 4500], [ScaleOffset(0)]),
+  ]
+  for (extent, seeds, writes, filters) in cases {
+    patch_extensible_structure_case(extent, seeds, writes, filters, bytes => {
+      clear_extensible_index_address(bytes, "/data", clear_maximum_set=true)
+    })
+  }
+}
+
+///|
+test "missing extensible-array super blocks are recreated" {
+  let cases : Array[
+    (Int32, Array[Int32], Array[Int32], Int64, Array[Hdf5WriteFilter]),
+  ] = [
+    (5000, [4090, 4700, 4999], [4400, 4500], 4400L, []),
+    (5000, [4090, 4700, 4999], [4400, 4500], 4400L, [ScaleOffset(0)]),
+    (138000, [131100, 136000, 137900], [134000, 134500], 134000L, []),
+    (
+      138000,
+      [131100, 136000, 137900],
+      [134000, 134500],
+      134000L,
+      [ScaleOffset(0)],
+    ),
+  ]
+  for (extent, seeds, writes, super_slot, filters) in cases {
+    patch_extensible_structure_case(extent, seeds, writes, filters, bytes => {
+      clear_extensible_super_pointer(bytes, "/data", super_slot)
+    })
   }
 }

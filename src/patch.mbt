@@ -425,6 +425,28 @@ fn patch_chunk_address_field(
 }
 
 ///|
+fn patch_extensible_pointer_in_image(
+  output : FixedArray[Byte],
+  target_start : Int32,
+  pointer_offset : Int32,
+  pointer_width : Int32,
+  pointer_address : UInt64,
+  metadata_start : Int32,
+  metadata_checksum_offset : Int32,
+) -> Unit raise Hdf5Error {
+  let relative_pointer = pointer_offset - target_start
+  let relative_metadata = metadata_start - target_start
+  let relative_checksum = metadata_checksum_offset - target_start
+  guard relative_pointer >= 0 && relative_metadata >= 0 else {
+    raise InvalidField("extensible array parent pointer is outside its image")
+  }
+  patch_little_endian_uint(
+    output, relative_pointer, pointer_width, pointer_address, "extensible array child block address",
+  )
+  patch_metadata_checksum_in_place(output, relative_metadata, relative_checksum)
+}
+
+///|
 fn patch_end_of_file_address(
   output : FixedArray[Byte],
   superblock : Superblock,
@@ -861,6 +883,7 @@ fn collect_raw_chunk_records(
   length_size : Int32,
   base_address : UInt64,
   missing_blocks~ : Array[MissingExtensibleDataBlock]? = None,
+  missing_supers~ : Array[MissingExtensibleSuperBlock]? = None,
 ) -> Array[RawChunkRecord] raise Hdf5Error {
   let records : Array[RawChunkRecord] = []
   read_chunked_with_filters(
@@ -876,6 +899,7 @@ fn collect_raw_chunk_records(
     selection=Some([]),
     records=Some(records),
     missing_blocks~,
+    missing_supers~,
   )
   |> ignore
   records
@@ -946,23 +970,54 @@ fn missing_extensible_block_used(
   payload : Bytes,
   fill : Bytes,
 ) -> Bool raise Hdf5Error {
+  missing_extensible_range_used(
+    descriptor.start,
+    descriptor.count,
+    descriptor.limit,
+    descriptor.order,
+    descriptor.grid,
+    layout,
+    dataspace,
+    chunk_widths,
+    grid,
+    strides,
+    chunk_elements,
+    element_size,
+    payload,
+    fill,
+  )
+}
+
+///|
+fn missing_extensible_range_used(
+  start : Int64,
+  count : Int64,
+  limit : Int64,
+  order : Array[Int32],
+  slot_grid : Array[Int64],
+  layout : DataLayout,
+  dataspace : Dataspace,
+  chunk_widths : Array[Int64],
+  grid : Array[Int64],
+  strides : Array[Int64],
+  chunk_elements : Int64,
+  element_size : Int32,
+  payload : Bytes,
+  fill : Bytes,
+) -> Bool raise Hdf5Error {
   let rank = chunk_widths.length()
-  guard descriptor.order.length() == rank &&
-    descriptor.grid.length() == rank &&
+  guard order.length() == rank &&
+    slot_grid.length() == rank &&
     grid.length() == rank else {
     raise InvalidField("invalid extensible array slot geometry")
   }
-  let end = if descriptor.start + descriptor.count < descriptor.limit {
-    descriptor.start + descriptor.count
-  } else {
-    descriptor.limit
-  }
-  let mut slot = descriptor.start
+  let end = if start + count < limit { start + count } else { limit }
+  let mut slot = start
   while slot < end {
     let offsets = extensible_slot_offsets(
       slot,
-      descriptor.order,
-      descriptor.grid,
+      order,
+      slot_grid,
       layout.chunk_dimensions,
     )
     let mut outside = false
@@ -987,6 +1042,64 @@ fn missing_extensible_block_used(
     slot = slot + 1L
   }
   false
+}
+
+///|
+/// Returns one past the highest extensible-array slot with non-fill values, or
+/// zero when the whole payload is fill. This is used when rebuilding an EAIB
+/// whose header also lost its maximum-set watermark.
+fn highest_non_fill_extensible_slot(
+  order : Array[Int32],
+  slot_grid : Array[Int64],
+  layout : DataLayout,
+  dataspace : Dataspace,
+  chunk_widths : Array[Int64],
+  grid : Array[Int64],
+  strides : Array[Int64],
+  chunk_elements : Int64,
+  element_size : Int32,
+  payload : Bytes,
+  fill : Bytes,
+) -> Int64 raise Hdf5Error {
+  let rank = chunk_widths.length()
+  guard order.length() == rank &&
+    slot_grid.length() == rank &&
+    grid.length() == rank else {
+    raise InvalidField("invalid extensible array slot geometry")
+  }
+  let slots = product(slot_grid)
+  guard slots >= 0L else {
+    raise InvalidField("extensible array slot geometry is too large")
+  }
+  let mut highest = 0L
+  for slot in 0L..<slots {
+    let offsets = extensible_slot_offsets(
+      slot,
+      order,
+      slot_grid,
+      layout.chunk_dimensions,
+    )
+    let mut outside = false
+    for axis in 0..<rank {
+      if offsets[axis] >= dataspace.dimensions[axis] {
+        outside = true
+      }
+    }
+    if !outside &&
+      chunk_slot_has_non_fill(
+        offsets,
+        chunk_widths,
+        dataspace.dimensions,
+        strides,
+        chunk_elements,
+        element_size,
+        payload,
+        fill,
+      ) {
+      highest = slot + 1L
+    }
+  }
+  highest
 }
 
 ///|
@@ -1104,9 +1217,24 @@ fn Hdf5File::patch_chunked_dataset_data(
   }
   let mut missing_fixed_array : MissingFixedArrayStorage? = None
   let missing_extensible_blocks : Array[MissingExtensibleDataBlock] = []
+  let missing_extensible_supers : Array[MissingExtensibleSuperBlock] = []
   let extensible_config : ExtensibleArrayConfig? = match layout.chunk_index {
     ExtensibleArray(config) => Some(config)
     _ => None
+  }
+  let extensible_header_info : ExtensibleArrayHeaderInfo? = match
+    extensible_config {
+    Some(_) =>
+      Some(
+        read_extensible_array_header_info(
+          self.bytes,
+          layout,
+          self.superblock.offset_size,
+          self.superblock.length_size,
+          self.superblock.base_address,
+        ),
+      )
+    None => None
   }
   let records = match layout.chunk_index {
     Single(_, _) =>
@@ -1161,6 +1289,7 @@ fn Hdf5File::patch_chunked_dataset_data(
         self.superblock.length_size,
         self.superblock.base_address,
         missing_blocks=Some(missing_extensible_blocks),
+        missing_supers=Some(missing_extensible_supers),
       )
     _ =>
       collect_raw_chunk_records(
@@ -1201,11 +1330,11 @@ fn Hdf5File::patch_chunked_dataset_data(
       metadata.dataspace.dimensions[dimension].reinterpret_as_int64()
   }
   let output = self.bytes.to_fixedarray()
-  let index_output = match missing_fixed_array {
+  let mut index_output = match missing_fixed_array {
     Some(storage) => storage.image
     None => output
   }
-  let index_start = match missing_fixed_array {
+  let mut index_start = match missing_fixed_array {
     Some(storage) => storage.block_start
     None => 0
   }
@@ -1214,10 +1343,448 @@ fn Hdf5File::patch_chunked_dataset_data(
     None => self.bytes.length()
   }
   let missing_extensible_storage : Array[MissingExtensibleBlockStorage] = []
-  let mut extensible_storage_end = chunk_tail_base
+  let extensible_index_records : Array[RawChunkRecord] = []
+  let appended_metadata_images : Array[FixedArray[Byte]] = []
+  let appended_metadata_starts : Array[Int32] = []
+  let mut next_extensible_start = (self.bytes.length() + 7) / 8 * 8
+  let mut created_index = false
+  let mut new_secondary_block_count = 0L
+  let mut new_secondary_block_size = 0L
+  let mut new_data_block_count = 0L
+  let mut new_data_block_size = 0L
+  let mut new_realized_elements = 0L
   match extensible_config {
     Some(config) => {
-      let mut next_start = (self.bytes.length() + 7) / 8 * 8
+      let info = match extensible_header_info {
+        Some(info) => info
+        None => raise InvalidField("extensible array header is unavailable")
+      }
+      guard info.config == config &&
+        (
+          (info.client == 0 && filters.length() == 0) ||
+          (info.client == 1 && filters.length() > 0)
+        ) else {
+        raise InvalidField("extensible array header does not match layout")
+      }
+      let (slot_order, slot_grid, existing_limit) = extensible_array_geometry(
+        layout,
+        metadata.dataspace,
+        self.superblock.length_size,
+        info.maximum_set,
+      )
+      let mut effective_maximum_set = info.maximum_set
+      if info.index_address == undefined {
+        let required = highest_non_fill_extensible_slot(
+          slot_order,
+          slot_grid,
+          layout,
+          metadata.dataspace,
+          chunk_widths,
+          grid,
+          strides,
+          chunk_elements,
+          metadata.datatype.size,
+          payload,
+          fill,
+        )
+        if required > existing_limit {
+          effective_maximum_set = required.reinterpret_as_uint64()
+        }
+      }
+      let (slot_order, slot_grid, limit) = extensible_array_geometry(
+        layout,
+        metadata.dataspace,
+        self.superblock.length_size,
+        effective_maximum_set,
+      )
+      if info.index_address == undefined &&
+        limit > 0L &&
+        missing_extensible_range_used(
+          0L,
+          limit,
+          limit,
+          slot_order,
+          slot_grid,
+          layout,
+          metadata.dataspace,
+          chunk_widths,
+          grid,
+          strides,
+          chunk_elements,
+          metadata.datatype.size,
+          payload,
+          fill,
+        ) {
+        let storage = prepare_missing_extensible_index(
+          self.bytes,
+          layout,
+          metadata.dataspace,
+          metadata.datatype,
+          self.superblock.offset_size,
+          self.superblock.length_size,
+          self.superblock.base_address,
+          config,
+          info.client,
+          info.entry_size,
+          filters,
+          undefined,
+          effective_maximum_set,
+          next_extensible_start,
+        )
+        created_index = true
+        index_output = storage.image
+        index_start = storage.block_start
+        appended_metadata_images.push(storage.image)
+        appended_metadata_starts.push(storage.block_start)
+        for record in storage.records {
+          extensible_index_records.push(record)
+        }
+        patch_little_endian_uint(
+          output,
+          info.index_address_offset,
+          info.index_address_width,
+          file_offset_to_stored_address(
+            storage.block_start.to_uint64(),
+            self.superblock.base_address,
+          ),
+          "extensible array index address",
+        )
+        if effective_maximum_set > info.maximum_set {
+          patch_little_endian_uint(
+            output,
+            info.maximum_set_offset,
+            self.superblock.length_size,
+            effective_maximum_set,
+            "extensible array maximum set",
+          )
+        }
+        new_realized_elements = config.index_elements.to_int64()
+        next_extensible_start = (
+            storage.block_start + storage.image.length() + 7
+          ) /
+          8 *
+          8
+        let mut level_start = 0L
+        let mut direct_index = 0
+        for level in 0..<storage.levels {
+          if config.index_elements.to_int64() + level_start >= limit {
+            break
+          }
+          let blocks = 1L << (level / 2)
+          let count = config.min_elements.to_int64() << ((level + 1) / 2)
+          if level < storage.first_super {
+            for block_index in 0..<blocks.to_int() {
+              let descriptor : MissingExtensibleDataBlock = {
+                count,
+                start: config.index_elements.to_int64() +
+                level_start +
+                block_index.to_int64() * count,
+                limit,
+                block_offset: level_start +
+                (direct_index.to_int64() + block_index.to_int64()) * count,
+                order: slot_order,
+                grid: slot_grid,
+                pointer_offset: storage.block_start +
+                storage.direct_start +
+                (direct_index + block_index) * self.superblock.offset_size,
+                pointer_width: self.superblock.offset_size,
+                pointer_metadata_start: storage.block_start,
+                pointer_checksum_offset: storage.block_start +
+                storage.index_content,
+                bitmap_start: 0L,
+                bitmap_offset: -1,
+                bitmap_metadata_start: -1,
+                bitmap_checksum_offset: -1,
+                client: info.client,
+                entry_size: info.entry_size,
+              }
+              if missing_extensible_block_used(
+                  descriptor,
+                  layout,
+                  metadata.dataspace,
+                  chunk_widths,
+                  grid,
+                  strides,
+                  chunk_elements,
+                  metadata.datatype.size,
+                  payload,
+                  fill,
+                ) {
+                let child = prepare_missing_extensible_data_block(
+                  self.bytes,
+                  layout,
+                  metadata.dataspace,
+                  metadata.datatype,
+                  self.superblock.offset_size,
+                  self.superblock.base_address,
+                  config,
+                  filters,
+                  undefined,
+                  descriptor,
+                  missing_extensible_storage.length(),
+                  next_extensible_start,
+                  index_output,
+                  index_start,
+                )
+                missing_extensible_storage.push(child)
+                appended_metadata_images.push(child.image)
+                appended_metadata_starts.push(child.block_start)
+                next_extensible_start = (
+                    child.block_start + child.image.length() + 7
+                  ) /
+                  8 *
+                  8
+                new_data_block_count = new_data_block_count + 1L
+                new_data_block_size = new_data_block_size +
+                  child.image.length().to_int64()
+                new_realized_elements = new_realized_elements + count
+              }
+            }
+            direct_index = direct_index + blocks.to_int()
+          } else {
+            let page_size = 1L << config.page_bits
+            let pages = if count > page_size { count / page_size } else { 0L }
+            let bitmap_size = blocks * ((pages + 7L) / 8L)
+            let super_content = 6L +
+              self.superblock.offset_size.to_int64() +
+              ((config.max_bits + 7) / 8).to_int64() +
+              bitmap_size +
+              blocks * self.superblock.offset_size.to_int64()
+            let candidate : MissingExtensibleSuperBlock = {
+              level_start,
+              count,
+              blocks,
+              pages,
+              bitmap_size,
+              super_content,
+              pointer_offset: storage.block_start +
+              storage.super_start +
+              (level - storage.first_super) * self.superblock.offset_size,
+              pointer_width: self.superblock.offset_size,
+              pointer_metadata_start: storage.block_start,
+              pointer_checksum_offset: storage.block_start +
+              storage.index_content,
+              order: slot_order,
+              grid: slot_grid,
+              client: info.client,
+              entry_size: info.entry_size,
+              limit,
+            }
+            let used_blocks : Array[Int32] = []
+            for block_index in 0..<blocks.to_int() {
+              if missing_extensible_range_used(
+                  config.index_elements.to_int64() +
+                  level_start +
+                  block_index.to_int64() * count,
+                  count,
+                  limit,
+                  slot_order,
+                  slot_grid,
+                  layout,
+                  metadata.dataspace,
+                  chunk_widths,
+                  grid,
+                  strides,
+                  chunk_elements,
+                  metadata.datatype.size,
+                  payload,
+                  fill,
+                ) {
+                used_blocks.push(block_index)
+              }
+            }
+            if used_blocks.length() > 0 {
+              let super_storage = prepare_missing_extensible_super_block(
+                layout,
+                self.superblock.offset_size,
+                config,
+                candidate,
+                next_extensible_start,
+              )
+              appended_metadata_images.push(super_storage.image)
+              appended_metadata_starts.push(super_storage.block_start)
+              next_extensible_start = (
+                  super_storage.block_start + super_storage.image.length() + 7
+                ) /
+                8 *
+                8
+              patch_extensible_pointer_in_image(
+                index_output,
+                index_start,
+                candidate.pointer_offset,
+                candidate.pointer_width,
+                file_offset_to_stored_address(
+                  super_storage.block_start.to_uint64(),
+                  self.superblock.base_address,
+                ),
+                candidate.pointer_metadata_start,
+                candidate.pointer_checksum_offset,
+              )
+              new_secondary_block_count = new_secondary_block_count + 1L
+              new_secondary_block_size = new_secondary_block_size +
+                super_storage.image.length().to_int64()
+              for block_index in used_blocks {
+                let descriptor : MissingExtensibleDataBlock = {
+                  count,
+                  start: config.index_elements.to_int64() +
+                  level_start +
+                  block_index.to_int64() * count,
+                  limit,
+                  block_offset: level_start + block_index.to_int64() * count,
+                  order: slot_order,
+                  grid: slot_grid,
+                  pointer_offset: super_storage.block_pointer_offsets[block_index],
+                  pointer_width: self.superblock.offset_size,
+                  pointer_metadata_start: super_storage.block_start,
+                  pointer_checksum_offset: super_storage.bitmap_checksum_offset,
+                  bitmap_start: block_index.to_int64() * pages,
+                  bitmap_offset: super_storage.bitmap_offset,
+                  bitmap_metadata_start: super_storage.bitmap_metadata_start,
+                  bitmap_checksum_offset: super_storage.bitmap_checksum_offset,
+                  client: info.client,
+                  entry_size: info.entry_size,
+                }
+                let child = prepare_missing_extensible_data_block(
+                  self.bytes,
+                  layout,
+                  metadata.dataspace,
+                  metadata.datatype,
+                  self.superblock.offset_size,
+                  self.superblock.base_address,
+                  config,
+                  filters,
+                  undefined,
+                  descriptor,
+                  missing_extensible_storage.length(),
+                  next_extensible_start,
+                  super_storage.image,
+                  super_storage.block_start,
+                )
+                missing_extensible_storage.push(child)
+                appended_metadata_images.push(child.image)
+                appended_metadata_starts.push(child.block_start)
+                next_extensible_start = (
+                    child.block_start + child.image.length() + 7
+                  ) /
+                  8 *
+                  8
+                new_data_block_count = new_data_block_count + 1L
+                new_data_block_size = new_data_block_size +
+                  child.image.length().to_int64()
+                new_realized_elements = new_realized_elements + count
+              }
+            }
+          }
+          level_start = level_start + blocks * count
+        }
+      }
+      for descriptor in missing_extensible_supers {
+        let used_blocks : Array[Int32] = []
+        for block_index in 0..<descriptor.blocks.to_int() {
+          if missing_extensible_range_used(
+              config.index_elements.to_int64() +
+              descriptor.level_start +
+              block_index.to_int64() * descriptor.count,
+              descriptor.count,
+              descriptor.limit,
+              descriptor.order,
+              descriptor.grid,
+              layout,
+              metadata.dataspace,
+              chunk_widths,
+              grid,
+              strides,
+              chunk_elements,
+              metadata.datatype.size,
+              payload,
+              fill,
+            ) {
+            used_blocks.push(block_index)
+          }
+        }
+        if used_blocks.length() > 0 {
+          let super_storage = prepare_missing_extensible_super_block(
+            layout,
+            self.superblock.offset_size,
+            config,
+            descriptor,
+            next_extensible_start,
+          )
+          appended_metadata_images.push(super_storage.image)
+          appended_metadata_starts.push(super_storage.block_start)
+          next_extensible_start = (
+              super_storage.block_start + super_storage.image.length() + 7
+            ) /
+            8 *
+            8
+          patch_extensible_pointer_in_image(
+            index_output,
+            index_start,
+            descriptor.pointer_offset,
+            descriptor.pointer_width,
+            file_offset_to_stored_address(
+              super_storage.block_start.to_uint64(),
+              self.superblock.base_address,
+            ),
+            descriptor.pointer_metadata_start,
+            descriptor.pointer_checksum_offset,
+          )
+          new_secondary_block_count = new_secondary_block_count + 1L
+          new_secondary_block_size = new_secondary_block_size +
+            super_storage.image.length().to_int64()
+          for block_index in used_blocks {
+            let child_descriptor : MissingExtensibleDataBlock = {
+              count: descriptor.count,
+              start: config.index_elements.to_int64() +
+              descriptor.level_start +
+              block_index.to_int64() * descriptor.count,
+              limit: descriptor.limit,
+              block_offset: descriptor.level_start +
+              block_index.to_int64() * descriptor.count,
+              order: descriptor.order,
+              grid: descriptor.grid,
+              pointer_offset: super_storage.block_pointer_offsets[block_index],
+              pointer_width: self.superblock.offset_size,
+              pointer_metadata_start: super_storage.block_start,
+              pointer_checksum_offset: super_storage.bitmap_checksum_offset,
+              bitmap_start: block_index.to_int64() * descriptor.pages,
+              bitmap_offset: super_storage.bitmap_offset,
+              bitmap_metadata_start: super_storage.bitmap_metadata_start,
+              bitmap_checksum_offset: super_storage.bitmap_checksum_offset,
+              client: descriptor.client,
+              entry_size: descriptor.entry_size,
+            }
+            let child = prepare_missing_extensible_data_block(
+              self.bytes,
+              layout,
+              metadata.dataspace,
+              metadata.datatype,
+              self.superblock.offset_size,
+              self.superblock.base_address,
+              config,
+              filters,
+              undefined,
+              child_descriptor,
+              missing_extensible_storage.length(),
+              next_extensible_start,
+              super_storage.image,
+              super_storage.block_start,
+            )
+            missing_extensible_storage.push(child)
+            appended_metadata_images.push(child.image)
+            appended_metadata_starts.push(child.block_start)
+            next_extensible_start = (
+                child.block_start + child.image.length() + 7
+              ) /
+              8 *
+              8
+            new_data_block_count = new_data_block_count + 1L
+            new_data_block_size = new_data_block_size +
+              child.image.length().to_int64()
+            new_realized_elements = new_realized_elements + descriptor.count
+          }
+        }
+      }
       for descriptor in missing_extensible_blocks {
         if missing_extensible_block_used(
             descriptor,
@@ -1243,18 +1810,75 @@ fn Hdf5File::patch_chunked_dataset_data(
             undefined,
             descriptor,
             missing_extensible_storage.length(),
-            next_start,
+            next_extensible_start,
+            index_output,
+            index_start,
           )
           missing_extensible_storage.push(storage)
-          extensible_storage_end = next_start + storage.image.length()
-          next_start = (next_start + storage.image.length() + 7) / 8 * 8
+          appended_metadata_images.push(storage.image)
+          appended_metadata_starts.push(storage.block_start)
+          next_extensible_start = (
+              storage.block_start + storage.image.length() + 7
+            ) /
+            8 *
+            8
+          new_data_block_count = new_data_block_count + 1L
+          new_data_block_size = new_data_block_size +
+            storage.image.length().to_int64()
+          new_realized_elements = new_realized_elements + descriptor.count
         }
+      }
+      if created_index ||
+        new_secondary_block_count > 0L ||
+        new_data_block_count > 0L {
+        patch_little_endian_uint(
+          output,
+          info.secondary_block_count_offset,
+          self.superblock.length_size,
+          info.secondary_block_count +
+          new_secondary_block_count.reinterpret_as_uint64(),
+          "extensible array secondary block count",
+        )
+        patch_little_endian_uint(
+          output,
+          info.secondary_block_size_offset,
+          self.superblock.length_size,
+          info.secondary_block_size +
+          new_secondary_block_size.reinterpret_as_uint64(),
+          "extensible array secondary block size",
+        )
+        patch_little_endian_uint(
+          output,
+          info.data_block_count_offset,
+          self.superblock.length_size,
+          info.data_block_count + new_data_block_count.reinterpret_as_uint64(),
+          "extensible array data block count",
+        )
+        patch_little_endian_uint(
+          output,
+          info.data_block_size_offset,
+          self.superblock.length_size,
+          info.data_block_size + new_data_block_size.reinterpret_as_uint64(),
+          "extensible array data block size",
+        )
+        patch_little_endian_uint(
+          output,
+          info.realized_elements_offset,
+          info.realized_elements_width,
+          info.realized_elements + new_realized_elements.reinterpret_as_uint64(),
+          "extensible array realized element count",
+        )
+        patch_metadata_checksum_in_place(
+          output,
+          address_to_offset(layout.data_address, self.superblock.base_address),
+          info.header_checksum_offset,
+        )
       }
     }
     None => ()
   }
-  if missing_extensible_storage.length() > 0 {
-    chunk_tail_base = extensible_storage_end
+  if appended_metadata_images.length() > 0 {
+    chunk_tail_base = next_extensible_start
   }
   let all_records : Array[RawChunkRecord] = []
   for record in records {
@@ -1264,6 +1888,9 @@ fn Hdf5File::patch_chunked_dataset_data(
     for record in storage.records {
       all_records.push(record)
     }
+  }
+  for record in extensible_index_records {
+    all_records.push(record)
   }
   let record_for_chunk : Array[RawChunkRecord?] = Array::make(
     total_chunks.to_int(),
@@ -1382,9 +2009,15 @@ fn Hdf5File::patch_chunked_dataset_data(
                     record_output,
                     page,
                     target_start=record_start,
-                    bitmap_target_start=index_start,
+                    bitmap_target_start=if record.missing_block_index >= 0 {
+                      missing_extensible_storage[record.missing_block_index].pointer_target_start
+                    } else {
+                      index_start
+                    },
                     bitmap_output=if record.missing_block_index >= 0 {
-                      Some(output)
+                      Some(
+                        missing_extensible_storage[record.missing_block_index].pointer_output,
+                      )
                     } else {
                       None
                     },
@@ -1470,18 +2103,15 @@ fn Hdf5File::patch_chunked_dataset_data(
                 record.metadata_start - record_start,
                 record.metadata_checksum_offset - record_start,
               )
-              patch_little_endian_uint(
-                output,
+              patch_extensible_pointer_in_image(
+                storage.pointer_output,
+                storage.pointer_target_start,
                 storage.pointer_offset,
                 storage.pointer_width,
                 file_offset_to_stored_address(
                   storage.block_start.to_uint64(),
                   self.superblock.base_address,
                 ),
-                "extensible array data block address",
-              )
-              patch_metadata_checksum_in_place(
-                output,
                 storage.pointer_metadata_start,
                 storage.pointer_checksum_offset,
               )
@@ -1711,20 +2341,25 @@ fn Hdf5File::patch_chunked_dataset_data(
         return self.finish_appended_image(output, combined)
       }
       None =>
-        if missing_extensible_storage.length() > 0 {
+        if appended_metadata_images.length() > 0 {
           let combined = @buffer.Buffer::Buffer()
-          for storage in missing_extensible_storage {
+          for index in 0..<appended_metadata_images.length() {
             let start = append_aligned_bytes_to_tail(
               combined,
               self.bytes.length(),
-              storage.image.unsafe_reinterpret_as_bytes(),
-              "create missing extensible array data block",
+              appended_metadata_images[index].unsafe_reinterpret_as_bytes(),
+              "create missing extensible array metadata",
             )
-            guard start.to_int() == storage.block_start else {
-              raise InvalidField(
-                "extensible array data block placement mismatch",
-              )
+            guard start.to_int() == appended_metadata_starts[index] else {
+              raise InvalidField("extensible array metadata placement mismatch")
             }
+          }
+          let tail_start = chunk_tail_base - self.bytes.length()
+          for _ in combined.length()..<tail_start {
+            combined.write_byte(b'\x00')
+          }
+          guard combined.length() == tail_start else {
+            raise InvalidField("extensible array chunk tail placement mismatch")
           }
           let chunk_bytes = tail.to_bytes()
           combined.write_bytes(chunk_bytes.get_view().unwrap())

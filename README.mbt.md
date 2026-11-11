@@ -20,10 +20,9 @@ moon-hdf5 implements a documented subset of HDF5. The
   contiguous and filtered or unfiltered chunked storage. Both return a new byte
   image. Allocation is limited to raw payloads that fit existing layout or
   chunk-index storage, including a missing fixed-array data block, a missing
-  extensible-array data block linked from an existing EAIB or EASB, or missing
-  fixed- or extensible-array pages in an existing data block. General metadata
-  editing, external storage and construction of missing extensible-array
-  index/super blocks or B-tree records remain unsupported.
+  extensible-array data or index/super block, or missing fixed- or
+  extensible-array pages in an existing data block. General metadata editing,
+  external storage and construction of v1/v2 B-tree records remain unsupported.
 
 ## Installation
 
@@ -61,8 +60,8 @@ instead, use the commands in [Quick Start](#quick-start).
 - Value replacement for fixed-size compact, allocated or unallocated contiguous
   and filtered or unfiltered chunked datasets in a bytes-backed file, including
   undefined slots in existing chunk indexes and creation of a missing
-  fixed-array data block under an existing FAHD and missing extensible-array
-  data blocks linked from an existing EAIB or EASB.
+  fixed-array data block under an existing FAHD, missing extensible-array data
+  blocks, and missing EAIB or EASB index structures.
 
 ## Quick Start
 
@@ -319,16 +318,21 @@ size and filter mask.
 When an EAIB direct pointer or an EASB block pointer is undefined, patching
 appends an EADB with undefined entries, installs the new block address in the
 owning EAIB or EASB, and refreshes that block's checksum. A paged EADB also
-sets its page bits in the existing EASB bitmap. Missing EAIB, EASB or other
-super/index blocks are not created.
+sets its page bits in the existing EASB bitmap. If the EAIB address is
+undefined, patching builds a new EAIB and any required direct EASB/EADB
+hierarchy. It derives `maximum_set` from the highest non-fill chunk when needed,
+then updates the EAHD index address, maximum set, secondary/data block counts
+and sizes, realized-element count and checksum. An undefined EASB pointer is
+repaired by appending an EASB, linking it into the EAIB and initializing its
+child EADBs, bitmap and checksums.
 An unallocated fixed-array page is first initialized to undefined entries, then
 its page checksum, bitmap bit and FADB checksum are written. An unallocated
 extensible-array page follows the same entry and page-checksum steps, but sets
 its EASB bitmap bit and refreshes the EASB checksum instead. Patching does not
-create an extensible-array super/index block or v1/v2 B-tree record. Attributes,
-links and other metadata are preserved; external, variable-length and reference
-storage is rejected, and the dataset shape and chunk grid are never changed.
-The operation returns a complete new byte image.
+create v1/v2 B-tree records or other metadata structures. Attributes, links and
+other metadata are preserved; external, variable-length and reference storage
+is rejected, and the dataset shape and chunk grid are never changed. The
+operation returns a complete new byte image.
 
 Run the larger example and verify it independently with h5py:
 
@@ -371,19 +375,20 @@ the items below summarize the main user-visible gaps.
 - **Value patching:** allocation is limited to an unallocated contiguous payload,
   an undefined slot already represented by the single-chunk layout or a
   fixed-/extensible-array entry, a missing fixed-array data block, a missing
-  extensible-array data block linked from an existing EAIB or EASB, or a
-  missing fixed- or extensible-array page inside an existing data block.
-  Patching does not create a missing EAIB or EASB, other extensible-array
-  super/index block or v1/v2 B-tree record. Filtered chunk growth is handled by
-  appending a relocated chunk at the aligned file end and updating the index,
-  stored size, checksum and superblock end-of-file address. Relocation and
-  allocation are append-only; unreferenced old chunk bytes are not reclaimed
-  because no free-space manager is written. Built-in Shuffle, deflate,
-  Fletcher32 and scale-offset pipelines can be re-encoded, including supported
-  big-endian numeric data; scale-offset requires a stored fill marker.
-  Registered caller-defined filters can be re-encoded when their implementation
-  provides `encode`. Missing chunks without a writable index slot accept fill
-  values only.
+  extensible-array data, EAIB or EASB block, or a missing fixed- or
+  extensible-array page inside an existing data block. Rebuilding a missing
+  EAIB may create the direct and super-block hierarchy and updates the EAHD
+  maximum set, block counts and sizes, realized-element count and checksum.
+  Patching does not create v1/v2 B-tree records or other index metadata.
+  Filtered chunk growth is handled by appending a relocated chunk at the aligned
+  file end and updating the index, stored size, checksum and superblock
+  end-of-file address. Relocation and allocation are append-only; unreferenced
+  old chunk bytes are not reclaimed because no free-space manager is written.
+  Built-in Shuffle, deflate, Fletcher32 and scale-offset pipelines can be
+  re-encoded, including supported big-endian numeric data; scale-offset
+  requires a stored fill marker. Registered caller-defined filters can be
+  re-encoded when their implementation provides `encode`. Missing chunks
+  without a writable index slot accept fill values only.
 - **Read coverage:** virtual datasets, SWMR and parallel HDF5 are outside the
   profile. Built-in chunk filters are decoded directly; other dataset chunk
   filter IDs can be supplied through `Hdf5CustomFilter`. Custom filters on

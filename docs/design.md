@@ -228,10 +228,18 @@ effective fill element. When an EAIB direct pointer or an EASB block pointer is
 undefined, patching appends an EADB containing undefined entries and initial
 page or block checksums, writes the new block address into the owning EAIB or
 EASB, and refreshes its checksum. Paged blocks also set their page bits in the
-existing EASB bitmap. Non-fill chunks whose EAIB, EASB or B-tree record does not
-exist are rejected; the patcher does not construct those index structures.
-Relocation and allocation are append-only and leave old chunk bytes
-unreferenced.
+existing EASB bitmap. If the EAIB address is undefined, patching creates an EAIB
+with undefined inline/direct/super slots, scans the requested payload for
+non-fill chunks, derives `maximum_set` when the header watermark is too small,
+and appends the required direct EASBs, EADBs and paged block content. It then
+updates the EAHD index address, maximum set, secondary/data block counts and
+sizes, realized-element count and checksum before normal slot linking. An
+undefined EASB pointer is repaired by appending an EASB with an empty bitmap and
+undefined child pointers, linking it into the EAIB, and creating only the child
+EADBs that contain non-fill data. Non-fill chunks whose v1/v2 B-tree record does
+not exist are rejected; the patcher does not construct those records or other
+unrelated metadata. Relocation and allocation are append-only and leave old
+chunk bytes unreferenced.
 `patch_dataset_values` accepts all three layouts, while
 `patch_contiguous_dataset` is the contiguous-only compatibility entry point.
 
