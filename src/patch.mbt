@@ -3,7 +3,7 @@ fn datatype_semantically_equal(left : Datatype, right : Datatype) -> Bool {
   if left.class != right.class ||
     left.size != right.size ||
     left.signed != right.signed ||
-    left.little_endian != right.little_endian ||
+    (left.class != 7 && left.little_endian != right.little_endian) ||
     left.vlen_is_string != right.vlen_is_string ||
     left.bit_offset != right.bit_offset ||
     left.bit_precision != right.bit_precision ||
@@ -135,11 +135,474 @@ fn patch_values_match_datatype(
       datatype.base_types[0].size == 8 &&
       datatype.base_types[0].little_endian &&
       is_ieee_float_layout(datatype.base_types[0])
+    ObjectReferenceValues(_) =>
+      datatype.class == 7 &&
+      (
+        (
+          datatype.version <= 3 &&
+          datatype.reference_kind == 0 &&
+          (datatype.size == 4 || datatype.size == 8)
+        ) ||
+        (
+          datatype.version == 4 &&
+          datatype.reference_kind == 2 &&
+          datatype.size == 18
+        )
+      )
     VariableStringValues(_) => datatype.class == 9 && datatype.vlen_is_string
     StructuredValues(write_datatype, _) =>
       datatype_semantically_equal(write_datatype, datatype)
-    _ => false
   }
+}
+
+///|
+fn patch_legacy_object_reference(
+  values : Hdf5WriteValues,
+  datatype : Datatype,
+  offset_size : Int32,
+) -> Bool {
+  values is ObjectReferenceValues(_) &&
+  datatype.class == 7 &&
+  datatype.version <= 3 &&
+  datatype.reference_kind == 0 &&
+  datatype.size == offset_size
+}
+
+///|
+fn Hdf5File::encode_patch_object_references(
+  self : Hdf5File,
+  values : Hdf5WriteValues,
+  datatype : Datatype,
+) -> Bytes raise Hdf5Error {
+  let items = match values {
+    ObjectReferenceValues(items) => items
+    _ => raise InvalidArgument("patched values must be object references")
+  }
+  let payload = @buffer.Buffer::Buffer(size_hint=items.length() * datatype.size)
+  for item in items {
+    match item {
+      None => writer_write_zeros(payload, datatype.size)
+      Some(path) => {
+        let node = self.resolve(path)
+        write_uint_width(payload, node.address, datatype.size)
+      }
+    }
+  }
+  let bytes = payload.to_bytes()
+  guard bytes.length() == items.length() * datatype.size else {
+    raise InvalidField("object reference payload size mismatch")
+  }
+  bytes
+}
+
+///|
+fn patch_legacy_region_reference(
+  values : Hdf5WriteValues,
+  datatype : Datatype,
+  offset_size : Int32,
+) -> Bool {
+  values is StructuredValues(_, _) &&
+  datatype.class == 7 &&
+  datatype.version <= 3 &&
+  datatype.reference_kind == 1 &&
+  datatype.size == offset_size + 4
+}
+
+///|
+fn Hdf5File::encode_patch_region_reference_payload(
+  self : Hdf5File,
+  path : String,
+  selection : Hdf5RegionSelection,
+  offset_size : Int32,
+) -> Bytes raise Hdf5Error {
+  let node = self.resolve(path)
+  guard node.kind == Dataset else {
+    raise InvalidArgument("region reference target is not a dataset: " + path)
+  }
+  let metadata = read_dataset_metadata(
+    self.object_header_at(node.address),
+    offset_size,
+    self.superblock.length_size,
+  )
+  guard metadata.dataspace.kind != Null else {
+    raise InvalidArgument("region reference target has a null dataspace")
+  }
+  let payload = @buffer.Buffer::Buffer()
+  write_uint_width(payload, node.address, offset_size)
+  writer_write_bytes(
+    payload,
+    encode_region_selection(metadata.dataspace, selection),
+  )
+  payload.to_bytes()
+}
+
+///|
+fn Hdf5File::encode_patch_region_references(
+  self : Hdf5File,
+  values : Hdf5WriteValues,
+  datatype : Datatype,
+  offset_size : Int32,
+  length_size : Int32,
+  base_address : UInt64,
+  file_length : Int32,
+  tail : @buffer.Buffer,
+  purpose : String,
+) -> Bytes raise Hdf5Error {
+  let items = match values {
+    StructuredValues(_, items) => items
+    _ => raise InvalidArgument("patched values must be region references")
+  }
+  let slot_size = offset_size + 4
+  guard datatype.size == slot_size else {
+    raise UnsupportedFeature("region reference datatype has the wrong size")
+  }
+  let payloads : Array[Bytes?] = []
+  let objects : Array[Bytes] = []
+  for item in items {
+    match item {
+      RegionReference(path, selection) =>
+        match path {
+          None => payloads.push(None)
+          Some(path) => {
+            let payload = self.encode_patch_region_reference_payload(
+              path, selection, offset_size,
+            )
+            payloads.push(Some(payload))
+            objects.push(payload)
+          }
+        }
+      _ => raise InvalidArgument("patched values must be region references")
+    }
+  }
+  let heap = encode_patch_heap(patch_unique_heap_objects(objects), length_size)
+  let heap_address = if heap.data.length() == 0 {
+    0UL
+  } else {
+    let start = append_aligned_bytes_to_tail(
+      tail,
+      file_length,
+      heap.data,
+      purpose,
+    )
+    file_offset_to_stored_address(start, base_address)
+  }
+  let payload = @buffer.Buffer::Buffer(size_hint=items.length() * slot_size)
+  for item in payloads {
+    match item {
+      None => writer_write_zeros(payload, slot_size)
+      Some(bytes) => {
+        let index = match heap.objects.search_by(object => object == bytes) {
+          Some(index) => index
+          None =>
+            raise InvalidField("region reference is missing from its heap")
+        }
+        write_uint_width(payload, heap_address, offset_size)
+        payload.write_uint_le((index + 1).reinterpret_as_uint())
+      }
+    }
+  }
+  guard payload.length() == items.length() * slot_size else {
+    raise InvalidField("region reference payload size mismatch")
+  }
+  payload.to_bytes()
+}
+
+///|
+fn patch_version4_object_reference(
+  values : Hdf5WriteValues,
+  datatype : Datatype,
+  offset_size : Int32,
+) -> Bool {
+  (values is ObjectReferenceValues(_) || values is StructuredValues(_, _)) &&
+  datatype.class == 7 &&
+  datatype.version == 4 &&
+  datatype.reference_kind == 2 &&
+  datatype.size == offset_size + 10
+}
+
+///|
+fn patch_version4_region_reference(
+  values : Hdf5WriteValues,
+  datatype : Datatype,
+  offset_size : Int32,
+) -> Bool {
+  values is StructuredValues(_, _) &&
+  datatype.class == 7 &&
+  datatype.version == 4 &&
+  datatype.reference_kind == 3 &&
+  datatype.size == offset_size + 10
+}
+
+///|
+fn patch_version4_attribute_reference(
+  values : Hdf5WriteValues,
+  datatype : Datatype,
+  offset_size : Int32,
+) -> Bool {
+  values is StructuredValues(_, _) &&
+  datatype.class == 7 &&
+  datatype.version == 4 &&
+  datatype.reference_kind == 4 &&
+  datatype.size == offset_size + 10
+}
+
+///|
+fn patch_version4_object_paths(
+  values : Hdf5WriteValues,
+) -> Array[String?] raise Hdf5Error {
+  match values {
+    ObjectReferenceValues(items) => items
+    StructuredValues(_, items) => {
+      let paths : Array[String?] = []
+      for item in items {
+        match item {
+          ObjectReference(path) => paths.push(path)
+          _ => raise InvalidArgument("patched values must be object references")
+        }
+      }
+      paths
+    }
+    _ => raise InvalidArgument("patched values must be object references")
+  }
+}
+
+///|
+fn Hdf5File::encode_patch_version4_object_references(
+  self : Hdf5File,
+  values : Hdf5WriteValues,
+  datatype : Datatype,
+  offset_size : Int32,
+) -> Bytes raise Hdf5Error {
+  let paths = patch_version4_object_paths(values)
+  let slot_size = offset_size + 10
+  guard datatype.size == slot_size else {
+    raise UnsupportedFeature("version-4 object reference has the wrong size")
+  }
+  let payload = @buffer.Buffer::Buffer(size_hint=paths.length() * slot_size)
+  for path in paths {
+    match path {
+      None => writer_write_zeros(payload, slot_size)
+      Some(path) => {
+        let node = self.resolve(path)
+        payload.write_byte(b'\x02')
+        payload.write_byte(b'\x00')
+        payload.write_byte(offset_size.to_byte())
+        write_uint_width(payload, node.address, offset_size)
+        writer_write_zeros(payload, slot_size - offset_size - 3)
+      }
+    }
+  }
+  let bytes = payload.to_bytes()
+  guard bytes.length() == paths.length() * slot_size else {
+    raise InvalidField("version-4 object reference payload size mismatch")
+  }
+  bytes
+}
+
+///|
+fn Hdf5File::encode_patch_version4_region_reference_payload(
+  self : Hdf5File,
+  path : String,
+  selection : Hdf5RegionSelection,
+  offset_size : Int32,
+) -> Bytes raise Hdf5Error {
+  let node = self.resolve(path)
+  guard node.kind == Dataset else {
+    raise InvalidArgument("region reference target is not a dataset: " + path)
+  }
+  let metadata = read_dataset_metadata(
+    self.object_header_at(node.address),
+    offset_size,
+    self.superblock.length_size,
+  )
+  guard metadata.dataspace.kind != Null else {
+    raise InvalidArgument("region reference target has a null dataspace")
+  }
+  let encoded_selection = encode_region_selection(metadata.dataspace, selection)
+  guard encoded_selection.length() <= 0x7FFFFFFF else {
+    raise UnsupportedFeature("version-4 region selection is too large")
+  }
+  let payload = @buffer.Buffer::Buffer()
+  payload.write_byte(offset_size.to_byte())
+  write_uint_width(payload, node.address, offset_size)
+  payload.write_uint_le(encoded_selection.length().reinterpret_as_uint())
+  payload.write_uint_le(
+    metadata.dataspace.dimensions.length().reinterpret_as_uint(),
+  )
+  writer_write_bytes(payload, encoded_selection)
+  payload.to_bytes()
+}
+
+///|
+fn Hdf5File::encode_patch_version4_attribute_reference_payload(
+  self : Hdf5File,
+  path : String,
+  name : String,
+  offset_size : Int32,
+) -> Bytes raise Hdf5Error {
+  let node = self.resolve(path)
+  let encoded_name = @utf8.encode(name)
+  guard encoded_name.length() > 0 && encoded_name.length() <= 65535 else {
+    raise InvalidArgument("attribute reference name is invalid")
+  }
+  guard self.attributes(path).search_by(attribute => attribute.name == name)
+    is Some(_) else {
+    raise InvalidArgument(
+      "attribute reference attribute does not exist: " + path + "." + name,
+    )
+  }
+  let payload = @buffer.Buffer::Buffer(
+    size_hint=offset_size + 3 + encoded_name.length(),
+  )
+  payload.write_byte(offset_size.to_byte())
+  write_uint_width(payload, node.address, offset_size)
+  payload.write_uint16_le(encoded_name.length().to_uint16())
+  writer_write_bytes(payload, encoded_name)
+  payload.to_bytes()
+}
+
+///|
+fn encode_patch_version4_heap_slots(
+  payloads : Array[Bytes?],
+  datatype : Datatype,
+  kind : Int32,
+  offset_size : Int32,
+  length_size : Int32,
+  base_address : UInt64,
+  file_length : Int32,
+  tail : @buffer.Buffer,
+  purpose : String,
+) -> Bytes raise Hdf5Error {
+  let slot_size = offset_size + 10
+  guard datatype.size == slot_size else {
+    raise UnsupportedFeature("version-4 reference has the wrong size")
+  }
+  let objects : Array[Bytes] = []
+  for payload in payloads {
+    match payload {
+      Some(bytes) => {
+        guard bytes.length() <= 0x7FFFFFFF else {
+          raise UnsupportedFeature("version-4 reference payload is too large")
+        }
+        objects.push(bytes)
+      }
+      None => ()
+    }
+  }
+  let heap = encode_patch_heap(patch_unique_heap_objects(objects), length_size)
+  let heap_address = if heap.data.length() == 0 {
+    0UL
+  } else {
+    let start = append_aligned_bytes_to_tail(
+      tail,
+      file_length,
+      heap.data,
+      purpose,
+    )
+    file_offset_to_stored_address(start, base_address)
+  }
+  let payload = @buffer.Buffer::Buffer(size_hint=payloads.length() * slot_size)
+  for item in payloads {
+    match item {
+      None => writer_write_zeros(payload, slot_size)
+      Some(bytes) => {
+        let index = match heap.objects.search_by(object => object == bytes) {
+          Some(index) => index
+          None =>
+            raise InvalidField("version-4 reference is missing from its heap")
+        }
+        payload.write_byte(kind.to_byte())
+        payload.write_byte(b'\x00')
+        payload.write_uint_le(bytes.length().reinterpret_as_uint())
+        write_uint_width(payload, heap_address, offset_size)
+        payload.write_uint_le((index + 1).reinterpret_as_uint())
+      }
+    }
+  }
+  guard payload.length() == payloads.length() * slot_size else {
+    raise InvalidField("version-4 reference payload size mismatch")
+  }
+  payload.to_bytes()
+}
+
+///|
+fn Hdf5File::encode_patch_version4_region_references(
+  self : Hdf5File,
+  values : Hdf5WriteValues,
+  datatype : Datatype,
+  offset_size : Int32,
+  length_size : Int32,
+  base_address : UInt64,
+  file_length : Int32,
+  tail : @buffer.Buffer,
+  purpose : String,
+) -> Bytes raise Hdf5Error {
+  let items = match values {
+    StructuredValues(_, items) => items
+    _ => raise InvalidArgument("patched values must be region references")
+  }
+  let payloads : Array[Bytes?] = []
+  for item in items {
+    match item {
+      RegionReference(path, selection) =>
+        match path {
+          None => payloads.push(None)
+          Some(path) =>
+            payloads.push(
+              Some(
+                self.encode_patch_version4_region_reference_payload(
+                  path, selection, offset_size,
+                ),
+              ),
+            )
+        }
+      _ => raise InvalidArgument("patched values must be region references")
+    }
+  }
+  encode_patch_version4_heap_slots(
+    payloads, datatype, 3, offset_size, length_size, base_address, file_length, tail,
+    purpose,
+  )
+}
+
+///|
+fn Hdf5File::encode_patch_version4_attribute_references(
+  self : Hdf5File,
+  values : Hdf5WriteValues,
+  datatype : Datatype,
+  offset_size : Int32,
+  length_size : Int32,
+  base_address : UInt64,
+  file_length : Int32,
+  tail : @buffer.Buffer,
+  purpose : String,
+) -> Bytes raise Hdf5Error {
+  let items = match values {
+    StructuredValues(_, items) => items
+    _ => raise InvalidArgument("patched values must be attribute references")
+  }
+  let payloads : Array[Bytes?] = []
+  for item in items {
+    match item {
+      AttributeReference(path, name) =>
+        match path {
+          None => payloads.push(None)
+          Some(path) =>
+            payloads.push(
+              Some(
+                self.encode_patch_version4_attribute_reference_payload(
+                  path, name, offset_size,
+                ),
+              ),
+            )
+        }
+      _ => raise InvalidArgument("patched values must be attribute references")
+    }
+  }
+  encode_patch_version4_heap_slots(
+    payloads, datatype, 4, offset_size, length_size, base_address, file_length, tail,
+    purpose,
+  )
 }
 
 ///|
@@ -2807,17 +3270,46 @@ fn Hdf5File::patch_dataset_values_impl(
     }
     raise UnsupportedFeature("only contiguous storage can be patched")
   }
-  let variable_string = metadata.datatype.class == 9 &&
-    metadata.datatype.vlen_is_string
-  guard !datatype_contains_reference(metadata.datatype) else {
+  let variable_length = metadata.datatype.class == 9
+  let legacy_object_reference = patch_legacy_object_reference(
+    values,
+    metadata.datatype,
+    self.superblock.offset_size,
+  )
+  let legacy_region_reference = patch_legacy_region_reference(
+    values,
+    metadata.datatype,
+    self.superblock.offset_size,
+  )
+  let version4_object_reference = patch_version4_object_reference(
+    values,
+    metadata.datatype,
+    self.superblock.offset_size,
+  )
+  let version4_region_reference = patch_version4_region_reference(
+    values,
+    metadata.datatype,
+    self.superblock.offset_size,
+  )
+  let version4_attribute_reference = patch_version4_attribute_reference(
+    values,
+    metadata.datatype,
+    self.superblock.offset_size,
+  )
+  guard !datatype_contains_reference(metadata.datatype) ||
+    legacy_object_reference ||
+    legacy_region_reference ||
+    version4_object_reference ||
+    version4_region_reference ||
+    version4_attribute_reference else {
     raise UnsupportedFeature("reference datatypes cannot be patched")
   }
-  guard variable_string || !datatype_contains_vlen(metadata.datatype) else {
+  guard variable_length || !datatype_contains_vlen(metadata.datatype) else {
     raise UnsupportedFeature(
-      "only variable-length string datatypes can be patched",
+      "only variable-length string or sequence datatypes can be patched",
     )
   }
-  if variable_string && chunked {
+  if variable_length && chunked {
     let filters = match header.first(msg_filter_pipeline) {
       Some(message) =>
         parse_filters(message, custom_filters=self.custom_filters)
@@ -2832,15 +3324,19 @@ fn Hdf5File::patch_dataset_values_impl(
   guard patch_values_match_datatype(values, metadata.datatype) else {
     raise InvalidArgument("patched values must match the dataset datatype")
   }
-  validate_write_values(metadata.dataspace.dimensions, values)
+  validate_write_values(
+    metadata.dataspace.dimensions,
+    values,
+    legacy_reference_address_size=Some(self.superblock.offset_size),
+  )
   let count = metadata.dataspace.element_count()
   guard count >= 0 && count <= 0x7FFFFFFFL / metadata.datatype.size.to_int64() else {
     raise InvalidField("dataset byte size is too large")
   }
   let full_size = count.to_int() * metadata.datatype.size
   let prefix_tail = @buffer.Buffer::Buffer()
-  let payload = if variable_string {
-    encode_patch_vlen_string_values(
+  let payload = if variable_length {
+    encode_patch_vlen_values(
       values,
       metadata.datatype,
       self.superblock.offset_size,
@@ -2849,6 +3345,47 @@ fn Hdf5File::patch_dataset_values_impl(
       self.bytes.length(),
       prefix_tail,
       "append a variable-length dataset heap",
+    )
+  } else if legacy_object_reference {
+    self.encode_patch_object_references(values, metadata.datatype)
+  } else if legacy_region_reference {
+    self.encode_patch_region_references(
+      values,
+      metadata.datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append a region-reference dataset heap",
+    )
+  } else if version4_object_reference {
+    self.encode_patch_version4_object_references(
+      values,
+      metadata.datatype,
+      self.superblock.offset_size,
+    )
+  } else if version4_region_reference {
+    self.encode_patch_version4_region_references(
+      values,
+      metadata.datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append a version-4 region-reference dataset heap",
+    )
+  } else if version4_attribute_reference {
+    self.encode_patch_version4_attribute_references(
+      values,
+      metadata.datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append a version-4 attribute-reference dataset heap",
     )
   } else {
     let encoded = encode_write_values(values)
@@ -2883,12 +3420,21 @@ fn Hdf5File::patch_dataset_values_impl(
 ///|
 /// Replaces the values of an allocated contiguous dataset and returns a new
 /// byte image. The shape and datatype must match exactly. Fixed-size values and
-/// variable-length UTF-8 strings are supported.
+/// variable-length UTF-8 strings or fixed-base sequences are supported, as are
+/// legacy object and region references in their matching address-width slots.
 ///
-/// Attributes and links are preserved. Variable-length strings append an aligned
-/// global heap and update the superblock EOF/checksum. Chunked, compact, external,
-/// filtered, reference and non-string variable-length storage is rejected. Use
-/// `patch_dataset_values` to patch compact or unallocated storage as well.
+/// Attributes and links are preserved. Variable-length values append an aligned
+/// global heap and update the superblock EOF/checksum. Legacy same-file object
+/// references are rewritten in their existing address-width slots. Legacy
+/// region references append target-address plus selection payloads to an
+/// aligned global heap and rewrite their existing heap-address/index slots.
+/// Same-file version-4 object references rewrite direct address tokens; version-4
+/// region and attribute references append indirect global-heap payloads and
+/// rewrite their kind, length, heap-address and index fields. Chunked, compact,
+/// external and filtered storage, external-file version-4 references,
+/// reference-bearing compound/array/sequence datatypes and nested
+/// variable-length storage are rejected. Use `patch_dataset_values` to patch
+/// compact or unallocated storage as well.
 pub fn Hdf5File::patch_contiguous_dataset(
   self : Hdf5File,
   path : String,
@@ -2919,12 +3465,23 @@ pub fn Hdf5File::patch_contiguous_dataset(
 /// datatype-sized termination keys; v2 rebuilds preserve the node size and
 /// split/merge thresholds. Missing fixed- or extensible-array pages inside an
 /// existing data block are initialized and marked allocated; other data blocks,
-/// super blocks and index blocks are not created. Fixed-size values and
-/// variable-length UTF-8 strings are supported. Variable-length strings use one
-/// appended global heap; chunked values accept unfiltered storage, Shuffle or deflate,
-/// and cannot create a missing fixed-array data block or extensible-array
-/// metadata. External storage, reference datatypes and non-string variable-length
-/// datatypes are rejected. The dataset shape and chunk grid are never changed.
+/// super blocks and index blocks are not created. Fixed-size values,
+/// variable-length UTF-8 strings, fixed-base sequences and legacy same-file
+/// object or region references are supported, as are same-file 18-byte
+/// version-4 object, region and attribute references. Variable-length values use
+/// one appended global heap; legacy region references append deduplicated
+/// target-address plus selection payloads to a global heap. Version-4 object
+/// references write direct address tokens, while version-4 region and attribute
+/// references append indirect heap payloads. Chunked values accept unfiltered
+/// storage, Shuffle or deflate, and cannot create a missing fixed-array data
+/// block or extensible-array metadata. External storage, external-file
+/// version-4 references, reference-bearing compound/array/sequence datatypes
+/// and nested variable-length datatypes are rejected. Legacy object references
+/// require a slot width equal to the file address size; legacy region
+/// references require four additional bytes and existing dataset targets with
+/// non-null dataspaces. Version-4 region and attribute targets are same-file
+/// dataset or existing-attribute targets. The dataset shape and chunk grid are
+/// never changed.
 pub fn Hdf5File::patch_dataset_values(
   self : Hdf5File,
   path : String,

@@ -274,37 +274,12 @@ test "attribute patching rejects missing incompatible source and reference value
 
   let writer = Hdf5Writer::new()
   writer.add_dataset("/dataset", [1UL], Int64Values([1L]))
-  writer.add_attribute(
-    "/dataset",
-    "reference",
-    [],
-    ObjectReferenceValues([Some("/dataset")]),
-  )
+  writer.add_attribute("/dataset", "value", [], Int64Values([1L]))
   let encoded = writer.encode()
-  let reference_file = Hdf5File::parse(encoded)
-  let reference = try {
-    reference_file.patch_attribute_values(
-      "/dataset",
-      "reference",
-      ObjectReferenceValues([Some("/dataset")]),
-    )
-    |> ignore
-    None
-  } catch {
-    error => Some(error)
-  }
-  assert_eq(
-    reference,
-    Some(UnsupportedFeature("reference attributes cannot be patched")),
-  )
   let sources : Array[&Hdf5Source] = [encoded]
   let sourced = Hdf5File::parse_source(sources[0])
   let source_error = try {
-    sourced.patch_attribute_values(
-      "/dataset",
-      "reference",
-      ObjectReferenceValues([Some("/dataset")]),
-    )
+    sourced.patch_attribute_values("/dataset", "value", Int64Values([2L]))
     |> ignore
     None
   } catch {

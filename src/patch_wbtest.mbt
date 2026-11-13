@@ -311,7 +311,9 @@ test "patching rejects nested variable-length and reference datatypes" {
   assert_eq(
     sequence_error,
     Some(
-      UnsupportedFeature("only variable-length string datatypes can be patched"),
+      UnsupportedFeature(
+        "only variable-length string or sequence datatypes can be patched",
+      ),
     ),
   )
 }

@@ -164,13 +164,24 @@ fn Hdf5File::find_patchable_attribute(
 
 ///|
 /// Replaces the values of an existing fixed-size attribute and returns a new
-/// byte image. Existing variable-length UTF-8 string attributes are also
-/// supported; their new values are placed in an appended global heap. The
-/// attribute datatype, dataspace, name and creation order are preserved. Inline
-/// messages are updated in their object-header chunk; dense attributes are
-/// updated through their fractal-heap record. Shared attribute messages,
-/// references and non-string variable-length datatypes are rejected. Adding,
-/// removing or renaming attributes is not supported.
+/// byte image. Variable-length UTF-8 strings and fixed-base variable-length
+/// sequences are also supported; their new values are placed in an appended
+/// global heap. The attribute datatype, dataspace, name and creation order are
+/// preserved. Inline messages are updated in their object-header chunk; dense
+/// attributes are updated through their fractal-heap record. Legacy same-file
+/// object references are rewritten in their existing address-width slots;
+/// region references append deduplicated target-address plus selection payloads
+/// to a global heap and rewrite their existing heap-address/index slots.
+/// Same-file version-4 object references rewrite direct address tokens; version-4
+/// region and attribute references append indirect global-heap payloads and
+/// rewrite their kind, length, heap-address and index fields. External-file
+/// version-4 references, compound/array/sequence reference datatypes, shared
+/// attribute messages and nested variable-length datatypes are rejected. Legacy
+/// object-reference slots must match the file address size; legacy
+/// region-reference slots must be four bytes wider and target existing datasets
+/// with non-null dataspaces. Version-4 region and attribute targets follow the
+/// same dataset and existing-attribute rules. Adding, removing or renaming
+/// attributes is not supported.
 pub fn Hdf5File::patch_attribute_values(
   self : Hdf5File,
   path : String,
@@ -184,20 +195,54 @@ pub fn Hdf5File::patch_attribute_values(
   let header = self.object_header_at(node.address)
   let slot = self.find_patchable_attribute(header, name)
   let datatype = slot.attribute.datatype
-  let variable_string = datatype.class == 9 && datatype.vlen_is_string
-  guard !datatype_contains_reference(datatype) else {
+  let variable_length = datatype.class == 9
+  let legacy_object_reference = patch_legacy_object_reference(
+    values,
+    datatype,
+    self.superblock.offset_size,
+  )
+  let legacy_region_reference = patch_legacy_region_reference(
+    values,
+    datatype,
+    self.superblock.offset_size,
+  )
+  let version4_object_reference = patch_version4_object_reference(
+    values,
+    datatype,
+    self.superblock.offset_size,
+  )
+  let version4_region_reference = patch_version4_region_reference(
+    values,
+    datatype,
+    self.superblock.offset_size,
+  )
+  let version4_attribute_reference = patch_version4_attribute_reference(
+    values,
+    datatype,
+    self.superblock.offset_size,
+  )
+  guard !datatype_contains_reference(datatype) ||
+    legacy_object_reference ||
+    legacy_region_reference ||
+    version4_object_reference ||
+    version4_region_reference ||
+    version4_attribute_reference else {
     raise UnsupportedFeature("reference attributes cannot be patched")
   }
-  guard variable_string || !datatype_contains_vlen(datatype) else {
+  guard variable_length || !datatype_contains_vlen(datatype) else {
     raise UnsupportedFeature(
-      "only variable-length string attributes can be patched",
+      "only variable-length string or sequence attributes can be patched",
     )
   }
   guard patch_values_match_datatype(values, datatype) else {
     raise InvalidArgument("patched values must match the attribute datatype")
   }
   let dimensions = slot.attribute.dataspace.dimensions
-  validate_write_values(dimensions, values)
+  validate_write_values(
+    dimensions,
+    values,
+    legacy_reference_address_size=Some(self.superblock.offset_size),
+  )
   let count = slot.attribute.dataspace.element_count()
   guard count >= 0 && count <= 0x7FFFFFFFL / datatype.size.to_int64() else {
     raise InvalidField("attribute byte size is too large")
@@ -205,8 +250,8 @@ pub fn Hdf5File::patch_attribute_values(
   let full_size = count.to_int() * datatype.size
   let output = self.bytes.to_fixedarray()
   let tail = @buffer.Buffer::Buffer()
-  let payload = if variable_string {
-    encode_patch_vlen_string_values(
+  let payload = if variable_length {
+    encode_patch_vlen_values(
       values,
       datatype,
       self.superblock.offset_size,
@@ -215,6 +260,47 @@ pub fn Hdf5File::patch_attribute_values(
       self.bytes.length(),
       tail,
       "append a variable-length attribute heap",
+    )
+  } else if legacy_object_reference {
+    self.encode_patch_object_references(values, datatype)
+  } else if legacy_region_reference {
+    self.encode_patch_region_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      tail,
+      "append a region-reference attribute heap",
+    )
+  } else if version4_object_reference {
+    self.encode_patch_version4_object_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+    )
+  } else if version4_region_reference {
+    self.encode_patch_version4_region_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      tail,
+      "append a version-4 region-reference attribute heap",
+    )
+  } else if version4_attribute_reference {
+    self.encode_patch_version4_attribute_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      tail,
+      "append a version-4 attribute-reference attribute heap",
     )
   } else {
     let encoded = encode_write_values(values)

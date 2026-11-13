@@ -210,6 +210,111 @@ test "filtered chunked variable-length string datasets can be patched" {
 }
 
 ///|
+test "contiguous variable-length sequence datasets and attributes are patched" {
+  let sequence = Datatype::write_vlen_sequence(Datatype::write_integer(true, 4))
+  let writer = Hdf5Writer::new()
+  writer.add_dataset(
+    "/sequences",
+    [3UL],
+    StructuredValues(sequence, [
+      Sequence([]),
+      Sequence([SignedInteger(1L), SignedInteger(2L)]),
+      Sequence([SignedInteger(3L)]),
+    ]),
+  )
+  writer.add_attribute(
+    "/sequences",
+    "template",
+    [2UL],
+    StructuredValues(sequence, [Sequence([SignedInteger(9L)]), Sequence([])]),
+  )
+  let file = Hdf5File::parse(writer.encode())
+  let patched = file.patch_dataset_values(
+    "/sequences",
+    StructuredValues(sequence, [
+      Sequence([SignedInteger(4L), SignedInteger(5L), SignedInteger(6L)]),
+      Sequence([]),
+      Sequence([SignedInteger(7L), SignedInteger(8L)]),
+    ]),
+  )
+  let patched_file = Hdf5File::parse(patched)
+  assert_eq(structured_values(patched_file.read_dataset("/sequences")), [
+    Sequence([SignedInteger(4L), SignedInteger(5L), SignedInteger(6L)]),
+    Sequence([]),
+    Sequence([SignedInteger(7L), SignedInteger(8L)]),
+  ])
+
+  let attribute_patched = patched_file.patch_attribute_values(
+    "/sequences",
+    "template",
+    StructuredValues(sequence, [
+      Sequence([SignedInteger(10L), SignedInteger(11L)]),
+      Sequence([SignedInteger(12L)]),
+    ]),
+  )
+  let attribute_file = Hdf5File::parse(attribute_patched)
+  match
+    find_attribute(attribute_file.attributes("/sequences"), "template").values {
+    Some(Structured(values)) =>
+      assert_eq(values, [
+        Sequence([SignedInteger(10L), SignedInteger(11L)]),
+        Sequence([SignedInteger(12L)]),
+      ])
+    _ => fail("expected a patched variable-length sequence attribute")
+  }
+
+  let empty = attribute_file.patch_dataset_values(
+    "/sequences",
+    StructuredValues(sequence, [Sequence([]), Sequence([]), Sequence([])]),
+  )
+  assert_eq(empty.length(), attribute_patched.length())
+  assert_eq(
+    structured_values(Hdf5File::parse(empty).read_dataset("/sequences")),
+    [Sequence([]), Sequence([]), Sequence([])],
+  )
+}
+
+///|
+test "filtered chunked variable-length sequence datasets are patched" {
+  let sequence = Datatype::write_vlen_sequence(Datatype::write_integer(true, 4))
+  let writer = Hdf5Writer::new()
+  writer.add_chunked_dataset(
+    "/sequences",
+    [5UL],
+    [2U],
+    StructuredValues(sequence, [
+      Sequence([SignedInteger(1L)]),
+      Sequence([]),
+      Sequence([SignedInteger(2L), SignedInteger(3L)]),
+      Sequence([SignedInteger(4L)]),
+      Sequence([]),
+    ]),
+    filters=[Shuffle, Deflate(6)],
+  )
+  let file = Hdf5File::parse(writer.encode())
+  let patched = file.patch_dataset_values(
+    "/sequences",
+    StructuredValues(sequence, [
+      Sequence([SignedInteger(5L), SignedInteger(6L)]),
+      Sequence([SignedInteger(7L)]),
+      Sequence([]),
+      Sequence([SignedInteger(8L), SignedInteger(9L), SignedInteger(10L)]),
+      Sequence([SignedInteger(11L)]),
+    ]),
+  )
+  assert_eq(
+    structured_values(Hdf5File::parse(patched).read_dataset("/sequences")),
+    [
+      Sequence([SignedInteger(5L), SignedInteger(6L)]),
+      Sequence([SignedInteger(7L)]),
+      Sequence([]),
+      Sequence([SignedInteger(8L), SignedInteger(9L), SignedInteger(10L)]),
+      Sequence([SignedInteger(11L)]),
+    ],
+  )
+}
+
+///|
 test "shuffle filter parameters may be omitted as HDF5 writes them" {
   let datatype = Datatype::write_integer(true, 4)
   let filters = patch_write_filters(
@@ -238,13 +343,10 @@ test "variable-length dataset patching rejects incompatible datatypes" {
   )
   writer.add_dataset("/strings", [2UL], VariableStringValues(["a", "b"]))
   let file = Hdf5File::parse(writer.encode())
-  let sequence_error = try {
+  let sequence_type_error = try {
     file.patch_dataset_values(
       "/sequences",
-      StructuredValues(sequence, [
-        Sequence([SignedInteger(3L)]),
-        Sequence([SignedInteger(4L)]),
-      ]),
+      VariableStringValues(["not", "sequences"]),
     )
     |> ignore
     None
@@ -252,10 +354,8 @@ test "variable-length dataset patching rejects incompatible datatypes" {
     error => Some(error)
   }
   assert_eq(
-    sequence_error,
-    Some(
-      UnsupportedFeature("only variable-length string datatypes can be patched"),
-    ),
+    sequence_type_error,
+    Some(InvalidArgument("patched values must match the dataset datatype")),
   )
   let mismatch_error = try {
     file.patch_dataset_values("/strings", FixedStringValues(["a", "b"], 2))
@@ -267,26 +367,5 @@ test "variable-length dataset patching rejects incompatible datatypes" {
   assert_eq(
     mismatch_error,
     Some(InvalidArgument("patched values must match the dataset datatype")),
-  )
-  let reference_writer = Hdf5Writer::new()
-  reference_writer.add_dataset(
-    "/reference",
-    [1UL],
-    ObjectReferenceValues([None]),
-  )
-  let reference_file = Hdf5File::parse(reference_writer.encode())
-  let reference_error = try {
-    reference_file.patch_dataset_values(
-      "/reference",
-      ObjectReferenceValues([None]),
-    )
-    |> ignore
-    None
-  } catch {
-    error => Some(error)
-  }
-  assert_eq(
-    reference_error,
-    Some(UnsupportedFeature("reference datatypes cannot be patched")),
   )
 }

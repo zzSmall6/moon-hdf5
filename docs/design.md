@@ -206,20 +206,49 @@ results are collected in the tail buffer, appended at aligned file offsets, then
 linked by updating the chunk address and size fields, covering checksums and the
 superblock EOF address and checksum.
 
-Variable-length UTF-8 string datasets use the same three layouts. Patching first
-deduplicates all new strings into one global heap collection whose size is a
-multiple of 4096 bytes. Unless every value is empty, that collection is appended
-at an 8-byte-aligned file offset before any relocated chunk or rebuilt index
-payload, so later addresses are computed from the complete tail. Dataset elements are rewritten as fixed-size references
-containing the string length, collection address and one-based object index;
-empty strings use a null collection address and index. Compact values keep their
-inline references, contiguous values stay at their address or are allocated with
-the payload after the heap, and chunked values are encoded through the normal
-chunk path. Chunked variable-length data accepts unfiltered storage, Shuffle or
-deflate.
+Variable-length UTF-8 string and fixed-base sequence datasets use the same three
+layouts. Patching first deduplicates all new object payloads into one global heap
+collection whose size is a multiple of 4096 bytes. Unless every value is empty,
+that collection is appended at an 8-byte-aligned file offset before any
+relocated chunk or rebuilt index payload, so later addresses are computed from
+the complete tail. Dataset elements are rewritten as fixed-size references
+containing a string byte length or sequence element count, the collection
+address and a one-based object index; empty values use a null collection address
+and index. Compact values keep their inline references, contiguous values stay
+at their address or are allocated with the payload after the heap, and chunked
+values are encoded through the normal chunk path. Chunked variable-length data
+accepts unfiltered storage, Shuffle or deflate.
 The patcher rejects Fletcher32, scale-offset and attempts that would require
 creating a missing fixed-array data block or extensible-array metadata. Old heap
 collections are not reclaimed.
+
+Legacy object-reference values keep their fixed-width slots. Patching resolves
+each non-null path against the file's existing object graph and writes the
+target object-header address in file address-width bytes; null values are
+zero-filled. Groups, datasets and committed datatypes can be targets. This path
+is limited to version-3-or-earlier object references whose slot width equals the
+file address size.
+
+Legacy region references use a slot containing a global-heap address and a
+one-based object index. Patching first resolves each non-null target to an
+existing dataset with a non-null dataspace, then encodes the target object
+header address followed by its empty, all, point, hyperslab or block selection.
+Equal payloads share one heap object, and the collection is appended before the
+dataset payload or relocated chunk data. The fixed slots are then rewritten with
+the heap address and object index; null references are zero-filled. The path is
+limited to version-3-or-earlier region references whose slot width is the file
+address size plus four bytes.
+
+Same-file version-4 references keep their 18-byte slots. Object references write
+the reference kind, zero flags, address-token size and target address directly.
+Region and attribute references append an indirect payload to the same global
+heap mechanism used for variable-length data: a region payload contains the
+token size, target-dataset address, selection length, rank and encoded
+selection, while an attribute payload contains the token size, target-object
+address and UTF-8 attribute name. Attribute-reference targets are checked
+against the target object's existing attributes. Null slots are zero-filled and
+external-file flags are not emitted. References nested inside compound, array
+or sequence datatypes remain rejected.
 
 An undefined chunk slot represented by the active index is handled similarly:
 the patch constructs a fill-initialized chunk, overlays the requested values,
@@ -273,14 +302,27 @@ checksum is refreshed. Dense values are written through the managed fractal-heap
 object identified by the dense attribute record; the direct block's checksum is
 recomputed with the checksum field treated as zero, matching the HDF5 direct
 block layout. The attribute message, name, creation order, datatype, dataspace
-and index records are not changed. For variable-length UTF-8 strings, patching
-deduplicates the new values in a global heap collection whose size is a multiple
-of 4096 bytes, appends it at an 8-byte-aligned file offset and rewrites only the
-fixed-size global heap references in the value area. The superblock EOF and checksum are updated;
-all-empty values skip the append. Shared attribute messages, filtered heap
-storage, references and non-string variable-length values are rejected. Old
-global heaps remain unreferenced because no free-space reclamation is written.
-Adding, deleting or renaming attributes remains outside the patching API.
+and index records are not changed. For variable-length UTF-8 strings and
+fixed-base sequences, patching deduplicates the new object payloads in a global
+heap collection whose size is a multiple of 4096 bytes, appends it at an
+8-byte-aligned file offset and rewrites only the fixed-size global heap
+references in the value area. String references store byte lengths, while
+sequence references store element counts; the fixed-size payload of each
+non-empty sequence is encoded from its base datatype. Legacy object references
+resolve paths against the existing object graph and overwrite their
+address-width slots, with zero-filled nulls. Legacy region references resolve to
+existing non-null datasets and append deduplicated target-address plus selection
+payloads to the same heap before rewriting their heap-address/index slots.
+Same-file version-4 object references write direct address tokens; version-4
+region and attribute references append their indirect payloads to the heap,
+validate region dataspaces and existing attribute names, and rewrite kind,
+payload length, heap address and object index. The superblock EOF and checksum
+are updated; all-empty variable-length, null-only region-reference and
+all-null version-4 values skip the append. Shared attribute messages, filtered
+heap storage, external-file version-4 flags, compound/array/sequence reference
+datatypes and nested variable-length values are rejected. Old global heaps
+remain unreferenced because no free-space reclamation is written. Adding,
+deleting or renaming attributes remains outside the patching API.
 
 ## Errors and verification
 

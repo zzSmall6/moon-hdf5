@@ -873,6 +873,7 @@ fn datatype_contains_region_reference(datatype : Datatype) -> Bool {
 fn validate_writer_datatype(
   datatype : Datatype,
   depth : Int32,
+  legacy_reference_address_size~ : Int32? = None,
 ) -> Unit raise Hdf5Error {
   guard depth < 16 && datatype.size > 0 else {
     raise InvalidArgument("writer datatype is invalid or too deeply nested")
@@ -945,7 +946,11 @@ fn validate_writer_datatype(
       for index in 0..<datatype.compound_members.length() {
         let field = datatype.compound_members[index]
         validate_writer_datatype_name(field.name, "compound member name")
-        validate_writer_datatype(field.datatype, depth + 1)
+        validate_writer_datatype(
+          field.datatype,
+          depth + 1,
+          legacy_reference_address_size~,
+        )
         guard field.offset >= 0 &&
           field.offset <= datatype.size - field.datatype.size else {
           raise InvalidArgument("compound member extends beyond datatype size")
@@ -963,13 +968,21 @@ fn validate_writer_datatype(
       }
     }
     7 => {
-      guard (
+      let legacy_layout_supported = match legacy_reference_address_size {
+        Some(address_size) =>
+          datatype.version <= 3 &&
+          (
+            (datatype.reference_kind == 0 && datatype.size == address_size) ||
+            (datatype.reference_kind == 1 && datatype.size == address_size + 4)
+          )
+        None =>
           datatype.version == 3 &&
           (
             (datatype.reference_kind == 0 && datatype.size == 8) ||
             (datatype.reference_kind == 1 && datatype.size == 12)
           )
-        ) ||
+      }
+      guard legacy_layout_supported ||
         (
           datatype.version == 4 &&
           datatype.size == 18 &&
@@ -989,7 +1002,7 @@ fn validate_writer_datatype(
         raise InvalidArgument("writer enum datatype is invalid")
       }
       let base = datatype.base_types[0]
-      validate_writer_datatype(base, depth + 1)
+      validate_writer_datatype(base, depth + 1, legacy_reference_address_size~)
       guard base.class == 0 && base.size == datatype.size else {
         raise InvalidArgument("writer enum base datatype is invalid")
       }
@@ -1034,7 +1047,7 @@ fn validate_writer_datatype(
           "writer variable-length sequence base cannot contain region references",
         )
       }
-      validate_writer_datatype(base, depth + 1)
+      validate_writer_datatype(base, depth + 1, legacy_reference_address_size~)
     }
     10 => {
       guard datatype.base_types.length() == 1 &&
@@ -1043,7 +1056,7 @@ fn validate_writer_datatype(
         raise InvalidArgument("writer array datatype is invalid")
       }
       let base = datatype.base_types[0]
-      validate_writer_datatype(base, depth + 1)
+      validate_writer_datatype(base, depth + 1, legacy_reference_address_size~)
       guard datatype_array_size(datatype.array_dimensions, base.size) ==
         datatype.size else {
         raise InvalidArgument(
@@ -1232,6 +1245,7 @@ fn validate_structured_value(
 fn validate_write_values(
   dimensions : Array[UInt64],
   values : Hdf5WriteValues,
+  legacy_reference_address_size~ : Int32? = None,
 ) -> Unit raise Hdf5Error {
   guard dimensions.length() <= 32 else {
     raise InvalidArgument("writer dataspace rank exceeds 32")
@@ -1310,7 +1324,7 @@ fn validate_write_values(
     UInt32Values(items) => validate_writer_byte_size(items.length(), 4)
     Float32Values(items) => validate_writer_byte_size(items.length(), 4)
     StructuredValues(datatype, items) => {
-      validate_writer_datatype(datatype, 0)
+      validate_writer_datatype(datatype, 0, legacy_reference_address_size~)
       validate_writer_byte_size(items.length(), datatype.size)
       for item in items {
         validate_structured_value(item, datatype, 0)
