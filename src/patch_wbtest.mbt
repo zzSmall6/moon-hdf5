@@ -169,7 +169,7 @@ test "patching rejects noncontiguous unallocated and incompatible storage" {
   }
   assert_eq(
     wrong_shape,
-    Some(InvalidArgument("writer value count does not match dataspace")),
+    Some(InvalidArgument("patched value count does not match dataspace")),
   )
   let compact = Hdf5File::parse(
     @fs.read_file_to_bytes("testdata/interop_earliest.h5"),
@@ -250,8 +250,9 @@ test "patching supports big-endian numeric datasets and rejects external sources
 }
 
 ///|
-test "patching rejects nested variable-length and reference datatypes" {
+test "patching supports nested references but rejects nested variable lengths" {
   let writer = Hdf5Writer::new()
+  writer.add_dataset("/target", [1UL], Int64Values([42L]))
   let reference_record = Datatype::write_compound([
     ("target", Datatype::write_object_reference()),
     ("id", Datatype::write_integer(true, 4)),
@@ -277,20 +278,32 @@ test "patching rejects nested variable-length and reference datatypes" {
     ]),
   )
   let file = Hdf5File::parse(writer.encode())
-  let reference_error = try {
+  let reference_patched = Hdf5File::parse(
     file.patch_contiguous_dataset(
       "/reference_record",
       StructuredValues(reference_record, [
         Compound([
-          { name: "target", value: ObjectReference(None), },
+          { name: "target", value: ObjectReference(Some("/target")), },
           { name: "id", value: SignedInteger(2L), },
         ]),
       ]),
-    )
-    |> ignore
-    None
-  } catch {
-    error => Some(error)
+    ),
+  )
+  match reference_patched.read_dataset("/reference_record").values {
+    Structured([Compound([target, id])]) => {
+      assert_eq(id.value, SignedInteger(2L))
+      match target.value {
+        Reference(bytes) =>
+          assert_eq(
+            reference_patched
+            .resolve_object_reference(bytes)
+            .map(value => value.path),
+            Some(Some("/target")),
+          )
+        _ => fail("expected a patched nested object reference")
+      }
+    }
+    _ => fail("expected patched reference record values")
   }
   let sequence_error = try {
     file.patch_contiguous_dataset(
@@ -304,10 +317,6 @@ test "patching rejects nested variable-length and reference datatypes" {
   } catch {
     error => Some(error)
   }
-  assert_eq(
-    reference_error,
-    Some(UnsupportedFeature("reference datatypes cannot be patched")),
-  )
   assert_eq(
     sequence_error,
     Some(
@@ -1658,4 +1667,16 @@ test "missing extensible-array super blocks are recreated" {
       clear_extensible_super_pointer(bytes, "/data", super_slot)
     })
   }
+}
+
+///|
+test "patch datatype equality tracks numeric and bitfield byte order" {
+  let little_bitfield = Datatype::write_bitfield(2, 12)
+  let big_bitfield = Datatype::write_bitfield(2, 12, little_endian=false)
+  assert_false(datatype_semantically_equal(little_bitfield, big_bitfield))
+  assert_true(datatype_semantically_equal(little_bitfield, little_bitfield))
+
+  let little_string = Datatype::write_fixed_string(4)
+  let big_string = { ..little_string, little_endian: false, }
+  assert_true(datatype_semantically_equal(little_string, big_string))
 }

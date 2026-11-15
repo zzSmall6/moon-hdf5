@@ -3111,7 +3111,17 @@ fn encode_structured_value(
         Text(text) => {
           let encoded = @utf8.encode(text)
           writer_write_bytes(buffer, encoded)
-          writer_write_zeros(buffer, datatype.size - encoded.length())
+          let remaining = datatype.size - encoded.length()
+          if datatype.string_padding == 0 && remaining > 0 {
+            buffer.write_byte(b'\x00')
+            writer_write_zeros(buffer, remaining - 1)
+          } else if datatype.string_padding == 2 {
+            for _ in 0..<remaining {
+              buffer.write_byte(b' ')
+            }
+          } else {
+            writer_write_zeros(buffer, remaining)
+          }
         }
         _ => ()
       }

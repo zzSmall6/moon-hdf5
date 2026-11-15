@@ -3,7 +3,10 @@ fn datatype_semantically_equal(left : Datatype, right : Datatype) -> Bool {
   if left.class != right.class ||
     left.size != right.size ||
     left.signed != right.signed ||
-    (left.class != 7 && left.little_endian != right.little_endian) ||
+    (
+      (left.class <= 2 || left.class == 4) &&
+      left.little_endian != right.little_endian
+    ) ||
     left.vlen_is_string != right.vlen_is_string ||
     left.bit_offset != right.bit_offset ||
     left.bit_precision != right.bit_precision ||
@@ -152,6 +155,28 @@ fn patch_values_match_datatype(
     VariableStringValues(_) => datatype.class == 9 && datatype.vlen_is_string
     StructuredValues(write_datatype, _) =>
       datatype_semantically_equal(write_datatype, datatype)
+  }
+}
+
+///|
+fn validate_patch_write_values(
+  dimensions : Array[UInt64],
+  values : Hdf5WriteValues,
+) -> Unit raise Hdf5Error {
+  guard dimensions.length() <= 32 else {
+    raise InvalidArgument("patched dataspace rank exceeds 32")
+  }
+  guard writer_shape_count(dimensions) == writer_value_count(values) else {
+    raise InvalidArgument("patched value count does not match dataspace")
+  }
+  match values {
+    StructuredValues(datatype, items) => {
+      validate_writer_byte_size(items.length(), datatype.size)
+      for item in items {
+        validate_structured_value(item, datatype, 0)
+      }
+    }
+    _ => validate_write_values(dimensions, values)
   }
 }
 
@@ -3296,12 +3321,16 @@ fn Hdf5File::patch_dataset_values_impl(
     metadata.datatype,
     self.superblock.offset_size,
   )
+  let nested_reference = patch_nested_reference_datatype(metadata.datatype)
+  let vlen_reference = patch_vlen_reference_datatype(metadata.datatype)
   guard !datatype_contains_reference(metadata.datatype) ||
     legacy_object_reference ||
     legacy_region_reference ||
     version4_object_reference ||
     version4_region_reference ||
-    version4_attribute_reference else {
+    version4_attribute_reference ||
+    nested_reference ||
+    vlen_reference else {
     raise UnsupportedFeature("reference datatypes cannot be patched")
   }
   guard variable_length || !datatype_contains_vlen(metadata.datatype) else {
@@ -3324,11 +3353,7 @@ fn Hdf5File::patch_dataset_values_impl(
   guard patch_values_match_datatype(values, metadata.datatype) else {
     raise InvalidArgument("patched values must match the dataset datatype")
   }
-  validate_write_values(
-    metadata.dataspace.dimensions,
-    values,
-    legacy_reference_address_size=Some(self.superblock.offset_size),
-  )
+  validate_patch_write_values(metadata.dataspace.dimensions, values)
   let count = metadata.dataspace.element_count()
   guard count >= 0 && count <= 0x7FFFFFFFL / metadata.datatype.size.to_int64() else {
     raise InvalidField("dataset byte size is too large")
@@ -3336,7 +3361,7 @@ fn Hdf5File::patch_dataset_values_impl(
   let full_size = count.to_int() * metadata.datatype.size
   let prefix_tail = @buffer.Buffer::Buffer()
   let payload = if variable_length {
-    encode_patch_vlen_values(
+    self.encode_patch_vlen_values(
       values,
       metadata.datatype,
       self.superblock.offset_size,
@@ -3386,6 +3411,17 @@ fn Hdf5File::patch_dataset_values_impl(
       self.bytes.length(),
       prefix_tail,
       "append a version-4 attribute-reference dataset heap",
+    )
+  } else if nested_reference {
+    self.encode_patch_nested_references(
+      values,
+      metadata.datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append a nested-reference dataset heap",
     )
   } else {
     let encoded = encode_write_values(values)

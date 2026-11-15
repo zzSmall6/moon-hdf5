@@ -323,11 +323,13 @@ collection whose size is a multiple of 4096 bytes; it is appended at an
 only the fixed-size global-heap references in the dataset values are rewritten.
 Empty strings and empty sequences use null heap references and all-empty patches
 append no collection. Sequence bases must be fixed-size and cannot contain
-references or nested variable-length datatypes. Chunked variable-length data
-supports unfiltered storage, Shuffle or deflate; Fletcher32 and scale-offset are
-rejected. The patcher does not create a missing fixed-array data block or
-extensible-array metadata for a variable-length dataset, and old global heaps
-remain unreferenced because reclamation is append-only.
+nested variable-length datatypes; reference-bearing bases are encoded
+recursively with the same same-file rules as other nested references. Chunked
+variable-length data supports unfiltered storage, Shuffle or deflate;
+Fletcher32 and scale-offset are rejected. The patcher does not create a missing
+fixed-array data block or extensible-array metadata for a variable-length
+dataset, and old global heaps remain unreferenced because reclamation is
+append-only.
 
 Legacy object references are patched by resolving every non-null path against
 the objects already present in the file and writing the target object-header
@@ -346,9 +348,9 @@ Version-4 region references append a token-size byte, target-dataset address,
 selection length and rank, and encoded selection to a global heap. Version-4
 attribute references append the target object address and UTF-8 attribute name,
 and the target attribute must already exist. All three forms use zero-filled
-null slots and reject external-file flags. Compound, array and sequence
-reference datatypes remain unsupported, as do references whose slot width does
-not match the file address layout.
+null slots and reject external-file flags. Compound, array and fixed-size
+sequence values are traversed recursively; references whose slot width does not
+match the file address layout remain unsupported.
 
 Filtered chunks are decoded with their existing filter mask and re-encoded with
 the built-in pipeline, including big-endian scale-offset values. Encodings that
@@ -388,10 +390,11 @@ regenerate sibling links and emit termination keys with the datatype storage
 size. V2 trees preserve their node size and split/merge thresholds. The rebuild
 updates the layout address, object-header checksum and superblock EOF.
 Attributes, links and other metadata are preserved; external storage,
-external-file version-4 references, compound/array/sequence reference datatypes
-and nested variable-length datatypes are rejected. Fixed-base vlen sequences,
-legacy same-file object and region references, and same-file version-4 object,
-region and attribute references are accepted, and the dataset shape and chunk
+external-file version-4 references and nested variable-length datatypes are
+rejected. Fixed-base vlen sequences, including sequences whose base contains
+supported references, legacy same-file object and region references, same-file
+version-4 object, region and attribute references, and references nested in
+compound and fixed-array members are accepted, and the dataset shape and chunk
 grid are never changed. The operation returns a complete new byte image.
 
 `patch_attribute_values` targets an existing attribute on any resolvable object.
@@ -406,14 +409,15 @@ attribute-reference attributes are supported. Variable-length, region-reference
 and indirect version-4 values append an aligned global heap collection, rewrite
 the fixed-size global-heap references in the attribute message and update the
 superblock EOF; all-empty values need no global heap. Shared attribute messages,
-filtered fractal-heap storage, external-file version-4 references,
-compound/array/sequence reference datatypes and nested variable-length datatypes
-are rejected. Legacy same-file object references are accepted when their slot
-width matches the file address size; legacy region references are accepted when
-their slot width is the address size plus four bytes and every target is an
-existing dataset with a non-null dataspace. Version-4 references use the same
-same-file target rules and validate referenced attributes before writing.
-Adding, deleting or renaming attributes is not supported.
+filtered fractal-heap storage, external-file version-4 references and nested
+variable-length datatypes are rejected. Compound, fixed-array and fixed-base
+sequence members are traversed recursively. Legacy same-file object references
+are accepted when their slot width matches the file address size; legacy region
+references are accepted when their slot width is the address size plus four
+bytes and every target is an existing dataset with a non-null dataspace.
+Version-4 references use the same same-file target rules and validate
+referenced attributes before writing. Adding, deleting or renaming attributes
+is not supported.
 
 Run the larger example and verify it independently with h5py:
 
@@ -482,24 +486,28 @@ the items below summarize the main user-visible gaps.
   global heap collection; only chunked Shuffle and deflate pipelines are
   supported, and creating a missing fixed-array data block or extensible-array
   metadata is rejected for these datatypes. Nested variable-length and
-  reference-bearing sequence bases are rejected. Legacy object-reference
-  datasets can be patched when their fixed-width slots match the file address
-  size. Legacy region-reference datasets can be patched when their slots are
-  four bytes wider and every target is an existing dataset with a non-null
-  dataspace. Same-file 18-byte version-4 object, region and attribute
-  references can also be patched; region targets follow the legacy rules,
-  attribute names must already exist, and external-file flags are rejected.
-  Compound/array/sequence-nested reference datatypes are rejected. Old global
-  heaps are not reclaimed.
+  sequence bases with references are supported, while nested variable-length
+  values remain read-only. Legacy object-reference datasets can be patched when
+  their fixed-width slots match the file address size. Legacy region-reference
+  datasets can be patched when their slots are four bytes wider and every
+  target is an existing dataset with a non-null dataspace. Same-file 18-byte
+  version-4 object, region and attribute references can also be patched;
+  region targets follow the legacy rules, attribute names must already exist,
+  and external-file flags are rejected. References nested in compound,
+  fixed-array and fixed-base sequence datatypes are patched recursively,
+  including legacy and same-file version-4 forms. Old global heaps are not
+  reclaimed.
 - **Attribute patching:** `patch_attribute_values` updates only an existing
   fixed-size, variable-length UTF-8 string, fixed-base variable-length sequence,
   legacy same-file object-reference or legacy same-file region-reference
   attribute, or same-file version-4 object-, region- or attribute-reference
-  attribute, and never a nested variable-length datatype. The attribute must
-  remain the same shape and datatype, and its name, creation order and
-  inline/dense storage are preserved. Variable-length, region-reference and
-  indirect version-4 values are appended as a new global heap collection and
-  the superblock EOF is updated; old heap collections are not reclaimed. Shared
+  attribute, including references nested in compound, fixed-array and
+  fixed-base sequence members. Nested variable-length values are rejected. The
+  attribute must remain the same shape and datatype, and its name, creation
+  order and inline/dense storage are preserved. Variable-length,
+  region-reference and indirect version-4 values are appended as a new global
+  heap collection and the superblock EOF is updated; old heap collections are
+  not reclaimed. Shared
   attribute messages and filtered fractal-heap storage are rejected. Attributes
   cannot be added, deleted, renamed or moved to a different storage form.
 - **Read coverage:** virtual datasets, SWMR and parallel HDF5 are outside the
@@ -546,7 +554,8 @@ the items below summarize the main user-visible gaps.
   with a non-null dataspace. Same-file version-4 object, region and attribute
   references can be rewritten in their 18-byte slots; attribute targets must
   already exist and external-file flags are unsupported. References nested
-  inside compound, array or sequence datatypes remain read-only.
+  inside compound, fixed-array and fixed-base sequence datatypes can be patched
+  recursively; nested variable-length values remain read-only.
 - **Unlimited dimensions:** `append_dataset` writes only at the trailing edge of
   every unlimited axis. Use `write_dataset_slab` for interior writes and
   arbitrary rectangular placement; unlimited axes grow to the slab's trailing

@@ -308,7 +308,8 @@ heap collection whose size is a multiple of 4096 bytes, appends it at an
 8-byte-aligned file offset and rewrites only the fixed-size global heap
 references in the value area. String references store byte lengths, while
 sequence references store element counts; the fixed-size payload of each
-non-empty sequence is encoded from its base datatype. Legacy object references
+non-empty sequence is encoded from its base datatype, recursively applying the
+reference rules when the base contains references. Legacy object references
 resolve paths against the existing object graph and overwrite their
 address-width slots, with zero-filled nulls. Legacy region references resolve to
 existing non-null datasets and append deduplicated target-address plus selection
@@ -318,10 +319,12 @@ region and attribute references append their indirect payloads to the heap,
 validate region dataspaces and existing attribute names, and rewrite kind,
 payload length, heap address and object index. The superblock EOF and checksum
 are updated; all-empty variable-length, null-only region-reference and
-all-null version-4 values skip the append. Shared attribute messages, filtered
-heap storage, external-file version-4 flags, compound/array/sequence reference
-datatypes and nested variable-length values are rejected. Old global heaps
-remain unreferenced because no free-space reclamation is written. Adding,
+all-null version-4 values skip the append. Compound and fixed-array values are
+traversed recursively, so references in members, nested members and array
+elements and fixed-base sequence elements use the same address-width and heap
+rules. Shared attribute messages, filtered heap storage, external-file
+version-4 flags and nested variable-length values are rejected. Old global
+heaps remain unreferenced because no free-space reclamation is written. Adding,
 deleting or renaming attributes remains outside the patching API.
 
 ## Errors and verification

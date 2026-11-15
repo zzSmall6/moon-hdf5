@@ -221,12 +221,16 @@ pub fn Hdf5File::patch_attribute_values(
     datatype,
     self.superblock.offset_size,
   )
+  let nested_reference = patch_nested_reference_datatype(datatype)
+  let vlen_reference = patch_vlen_reference_datatype(datatype)
   guard !datatype_contains_reference(datatype) ||
     legacy_object_reference ||
     legacy_region_reference ||
     version4_object_reference ||
     version4_region_reference ||
-    version4_attribute_reference else {
+    version4_attribute_reference ||
+    nested_reference ||
+    vlen_reference else {
     raise UnsupportedFeature("reference attributes cannot be patched")
   }
   guard variable_length || !datatype_contains_vlen(datatype) else {
@@ -238,11 +242,7 @@ pub fn Hdf5File::patch_attribute_values(
     raise InvalidArgument("patched values must match the attribute datatype")
   }
   let dimensions = slot.attribute.dataspace.dimensions
-  validate_write_values(
-    dimensions,
-    values,
-    legacy_reference_address_size=Some(self.superblock.offset_size),
-  )
+  validate_patch_write_values(dimensions, values)
   let count = slot.attribute.dataspace.element_count()
   guard count >= 0 && count <= 0x7FFFFFFFL / datatype.size.to_int64() else {
     raise InvalidField("attribute byte size is too large")
@@ -251,7 +251,7 @@ pub fn Hdf5File::patch_attribute_values(
   let output = self.bytes.to_fixedarray()
   let tail = @buffer.Buffer::Buffer()
   let payload = if variable_length {
-    encode_patch_vlen_values(
+    self.encode_patch_vlen_values(
       values,
       datatype,
       self.superblock.offset_size,
@@ -301,6 +301,17 @@ pub fn Hdf5File::patch_attribute_values(
       self.bytes.length(),
       tail,
       "append a version-4 attribute-reference attribute heap",
+    )
+  } else if nested_reference {
+    self.encode_patch_nested_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      tail,
+      "append a nested-reference attribute heap",
     )
   } else {
     let encoded = encode_write_values(values)
