@@ -4,6 +4,7 @@
 priv struct MetadataBTreeRecord {
   heap_id : Bytes
   flags : Byte
+  creation_order : UInt64
 }
 
 ///|
@@ -34,14 +35,22 @@ fn parse_metadata_btree_record(
         raise InvalidField("group-name B-tree record is too small")
       }
       reader.skip(4)
-      { heap_id: reader.read_bytes(record_size - 4), flags: b'\x00', }
+      {
+        heap_id: reader.read_bytes(record_size - 4),
+        flags: b'\x00',
+        creation_order: 0UL,
+      }
     }
     6 => {
       guard record_size >= 9 else {
         raise InvalidField("group-order B-tree record is too small")
       }
       reader.skip(8)
-      { heap_id: reader.read_bytes(record_size - 8), flags: b'\x00', }
+      {
+        heap_id: reader.read_bytes(record_size - 8),
+        flags: b'\x00',
+        creation_order: 0UL,
+      }
     }
     8 | 9 => {
       guard record_size >= 9 else {
@@ -49,7 +58,12 @@ fn parse_metadata_btree_record(
       }
       let heap_id = reader.read_bytes(8)
       let flags = reader.read_u8()
-      { heap_id, flags, }
+      let creation_order = if reader.remaining() >= 4 {
+        reader.read_u32_le().to_uint64()
+      } else {
+        0UL
+      }
+      { heap_id, flags, creation_order, }
     }
     _ => raise UnsupportedFeature("unsupported metadata B-tree record type")
   }

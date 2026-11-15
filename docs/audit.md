@@ -9,8 +9,8 @@ The MoonBit release checks pass on the current worktree with the stable
 MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
 `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 327 tests passed;
-- native: 327 tests passed;
+- wasm: 344 tests passed;
+- native: 344 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output remain
   covered by prior h5py 3.13.0/HDF5 1.14.6 verification, and the new v1 B-tree
@@ -23,6 +23,13 @@ MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
   fixed-base sequence attribute patching is covered by MoonBit round-trip tests;
   compact, dense, ordered, 7000-element and vlen-string output, including empty
   strings, was independently re-read by h5py/HDF5;
+- attribute addition, renaming and deletion are covered by MoonBit round-trip
+  tests for compact, dense, ordered-dense and v1/v2 object headers, including
+  compact-to-dense and dense-to-compact conversion, variable-length strings,
+  variable-length sequences, committed datatypes, shared compact/dense
+  attributes, 4-byte-address dense rebuilding, duplicate/missing/invalid names
+  and source-backed rejection; edited v1, 4-byte dense and shared outputs were
+  independently re-read by h5py 3.13.0/HDF5 1.14.6;
 - variable-length UTF-8 string and fixed-base sequence dataset patching is
   covered for compact, contiguous, unallocated contiguous, chunked, Shuffle and
   deflate storage, including empty and repeated values and back-to-back patches;
@@ -81,6 +88,7 @@ structures raise errors; detection is not exhaustive.
 | Writer | Superblock v3, OHDR/OCHK, dense metadata, chunk indexes, SOHM, references and external slots |
 | In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including fixed-size, variable-length UTF-8 string, fixed-base sequence, legacy object-reference, legacy region-reference and same-file version-4 object/region/attribute-reference values, plus references nested in compound, fixed-array and fixed-base sequence members, sparse fill-only chunks, undefined slots in existing indexes, missing fixed-array data blocks, missing extensible-array data/index/super blocks, unallocated fixed- and extensible-array pages, missing v1/v2 B-tree chunk records and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout, slot, page-bitmap, FADB/FAHD, EAHD/EAIB/EASB/EADB and B-tree fields, affected checksums and superblock EOF updated; v1 tree rebuilds honor the superblock K, sibling links and datatype-sized termination keys; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved; variable-length values use one appended global heap collection and null references for empty values; object references rewrite address-width slots from existing target paths; region references append deduplicated target-address plus selection payloads to a global heap and rewrite heap-address/index slots; version-4 object references write direct address tokens, while version-4 region and attribute references append indirect heap payloads and rewrite kind, length, heap address and index fields |
 | Attribute patching | Existing fixed-size inline, dense and creation-order-tracked attributes on objects, including compact attributes, big-endian numeric values, large dense values, variable-length UTF-8 strings, fixed-base sequences, legacy object references, legacy region references and same-file version-4 object/region/attribute references, plus references nested in compound, fixed-array and fixed-base sequence members; object-header/OCHK and fractal-heap direct-block checksums are refreshed, variable-length, region-reference and indirect version-4 values append a global heap and update the superblock EOF, while attribute message metadata and indexes remain unchanged |
+| Attribute editing | Add, rename and delete on v1/v2 object headers, including compact-to-dense and dense-to-compact conversion, ordered-dense creation-order preservation, variable-length string and sequence addition, committed datatypes, shared compact/dense attributes, 4-byte-address dense heaps/B-trees, aligned continuation chunks, OCHK/OHDR checksum refresh, dense heap/name/order index rebuilding and superblock EOF repair; v1, 4-byte and shared fixture edits are independently readable by h5py 3.13.0/HDF5 1.14.6 |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
 
 ## Reader findings
@@ -262,9 +270,13 @@ heaps and heap extension across multiple blocks are not emitted.
   region-reference slots must be four bytes wider and target existing non-null
   datasets. Version-4 attribute targets must already exist, and external-file
   flags and nested variable-length datatypes are rejected, as are shared
-  attribute messages and filtered fractal-heap storage. Attributes cannot be
-  added, deleted, renamed or moved between inline and dense storage, and old
-  global heaps are not reclaimed.
+  attribute messages and filtered fractal-heap storage. Attribute addition,
+  deletion and renaming use a rebuild path that supports v1/v2 object headers,
+  compact/dense conversion, ordered-dense creation order, shared compact/dense
+  attribute messages (rebuilt as local messages), 4-byte-address dense heaps and
+  reference-free additions; reference-valued additions are rejected. Custom
+  metadata-heap filters are outside the editing boundary, and old attribute
+  metadata and global heaps are not reclaimed.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB
@@ -400,3 +412,12 @@ heaps and heap extension across multiple blocks are not emitted.
   heap payloads and 4-byte legacy layouts. Nested variable-length values remain
   rejected. Parsed fixed-string padding is now honored when patch values are
   encoded.
+- 2026-11-15: attribute addition, deletion and renaming on bytes-backed files,
+  including compact/dense storage conversion, ordered-dense creation-order
+  preservation, v1 and v2 object-header continuation rewrites, variable-length
+  string attributes, dense index rebuilding and superblock EOF repair. Dense
+  rebuilding now uses the file's address/length widths, including 4-byte-address
+  files, and resolves compact and dense shared attributes into local messages.
+  MoonBit coverage includes v1, 4-byte-address and shared-message fixtures plus
+  invalid-name and missing-target errors; edited v1, 4-byte dense and shared
+  outputs were independently re-read by h5py 3.13.0/HDF5 1.14.6.

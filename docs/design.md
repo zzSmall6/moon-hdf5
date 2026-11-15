@@ -324,8 +324,33 @@ traversed recursively, so references in members, nested members and array
 elements and fixed-base sequence elements use the same address-width and heap
 rules. Shared attribute messages, filtered heap storage, external-file
 version-4 flags and nested variable-length values are rejected. Old global
-heaps remain unreferenced because no free-space reclamation is written. Adding,
-deleting or renaming attributes remains outside the patching API.
+heaps remain unreferenced because no free-space reclamation is written.
+
+`add_attribute`, `rename_attribute` and `delete_attribute` use a separate
+metadata-rebuild path. The reader collects compact and dense attribute messages,
+their creation order and their original encoded payloads, then writes a new
+complete attribute collection. Up to eight attributes use compact storage; a
+larger collection is rebuilt as dense storage when every encoded attribute
+message is at most 65,535 bytes. Dense heap and B-tree headers use the file's
+address and length widths, so rebuilding works for 4- and 8-byte-address
+layouts. Compact and dense shared attribute messages are resolved through SOHM
+and emitted as local attribute messages; editing does not mutate the existing
+shared-message table or heaps. Added variable-length strings and fixed-base
+sequences receive a newly appended global heap before their descriptors are
+encoded. Reference-valued additions remain unsupported.
+
+The object's initial header chunk is replaced by an object-continuation message
+followed by NIL padding. Every non-attribute message from the original header and
+its continuations is copied into a new continuation chunk appended at an aligned
+EOF. Version-2 continuation chunks carry an OCHK checksum and refresh the OHDR
+checksum; version-1 chunks use the original message-block layout and update the
+header message count. Dense rebuilds append a new fractal heap plus name and
+creation-order indexes; compact rebuilds emit an attribute-info message followed
+by the attribute messages. Existing creation order is retained, including when a
+dense ordered attribute is renamed. The superblock EOF and checksum are updated
+after the tail is placed. This path is append-only: old attribute messages,
+dense heaps and B-trees remain unreferenced because no free-space manager is
+written.
 
 ## Errors and verification
 

@@ -33,8 +33,12 @@ moon-hdf5 implements a documented subset of HDF5. The
   name, creation order, datatype and storage location. Variable-length,
   region-reference and indirect version-4 values receive a newly appended
   global heap.
-- Adding, deleting or renaming attributes, other general metadata editing and
-  external storage remain unsupported.
+- `add_attribute`, `rename_attribute` and `delete_attribute` update the
+  attributes of an existing bytes-backed file, preserving creation order and
+  switching between compact and dense attribute storage as the collection
+  crosses the writer threshold.
+- Other general metadata editing and adding reference-valued attributes remain
+  unsupported.
 
 ## Installation
 
@@ -74,6 +78,9 @@ instead, use the commands in [Quick Start](#quick-start).
   undefined slots in existing chunk indexes and creation of a missing
   fixed-array data block under an existing FAHD, missing extensible-array data
   blocks, and missing EAIB or EASB index structures.
+- Attribute addition, deletion and renaming for v1 and v2 object headers, with
+  automatic compact/dense rebuilding, retained creation order and appended
+  metadata in a bytes-backed file.
 
 ## Quick Start
 
@@ -416,8 +423,41 @@ are accepted when their slot width matches the file address size; legacy region
 references are accepted when their slot width is the address size plus four
 bytes and every target is an existing dataset with a non-null dataspace.
 Version-4 references use the same same-file target rules and validate
-referenced attributes before writing. Adding, deleting or renaming attributes
-is not supported.
+referenced attributes before writing.
+
+### Adding, renaming and deleting attributes
+
+```moonbit nocheck
+///|
+let original = @fs.read_file_to_bytes("data.h5")
+let file = @lib.Hdf5File::parse(original)
+let added = file.add_attribute(
+  "/group/values",
+  "units",
+  [],
+  @lib.FixedStringValues(["items"], 8),
+)
+let renamed = @lib.Hdf5File::parse(added).rename_attribute(
+  "/group/values", "units", "label",
+)
+let deleted = @lib.Hdf5File::parse(renamed).delete_attribute(
+  "/group/values", "label",
+)
+@fs.write_bytes_to_file("edited.h5", deleted)
+```
+
+These APIs accept groups, datasets and committed datatypes in bytes-backed
+`Hdf5File` images and return a complete new image. Compact storage is used for
+up to eight attributes; larger collections are rebuilt as dense storage when
+every encoded attribute message is at most 65,535 bytes. Existing creation order
+is retained. Adding fixed-size values and variable-length UTF-8 strings or
+sequences is supported; reference-valued additions remain unsupported. Shared
+attribute messages are resolved and written back as local messages, leaving the
+other shared-message objects in the file untouched. Dense rebuilding uses the
+file's address and length widths, including 4-byte-address files. The object's
+initial header chunk is replaced by a continuation message and the rebuilt
+messages are appended at an aligned EOF. Old attribute metadata remains
+unreferenced because no free-space reclamation is performed.
 
 Run the larger example and verify it independently with h5py:
 
@@ -457,10 +497,16 @@ the items below summarize the main user-visible gaps.
   return another complete byte image. `patch_attribute_values` updates existing
   fixed-size inline or dense attributes, variable-length UTF-8 strings and
   fixed-base variable-length sequences, plus legacy and version-4 references,
-  but
-  streaming output and general in-place metadata editing are unsupported.
-  Multi-unlimited resizing and v2 B-tree output are rebuilt for the current
-  in-memory shape.
+  while `add_attribute`, `rename_attribute` and `delete_attribute` rebuild the
+  complete attribute collection. Streaming output and general metadata editing
+  outside attributes are unsupported. Multi-unlimited resizing and v2 B-tree
+  output are rebuilt for the current in-memory shape.
+- **Attribute editing:** supported on bytes-backed files with v1 or v2 object
+  headers. Shared attribute messages are resolved and rebuilt as local messages;
+  reference-valued additions and custom metadata-heap filters are unsupported.
+  Dense rebuilding honors 4- and 8-byte address layouts. Conversion between
+  compact and dense forms is append-only; old metadata stays unreferenced because
+  no free-space reclamation is written.
 - **Value patching:** allocation is limited to an unallocated contiguous payload,
   an undefined slot already represented by the single-chunk layout or a
   fixed-/extensible-array entry, a missing fixed-array data block, a missing
@@ -508,8 +554,9 @@ the items below summarize the main user-visible gaps.
   region-reference and indirect version-4 values are appended as a new global
   heap collection and the superblock EOF is updated; old heap collections are
   not reclaimed. Shared
-  attribute messages and filtered fractal-heap storage are rejected. Attributes
-  cannot be added, deleted, renamed or moved to a different storage form.
+  attribute messages and filtered fractal-heap storage are rejected. Value
+  patching does not change names or storage form; use the attribute editing APIs
+  above for those operations.
 - **Read coverage:** virtual datasets, SWMR and parallel HDF5 are outside the
   profile. Built-in chunk filters are decoded directly; other dataset chunk
   filter IDs can be supplied through `Hdf5CustomFilter`. Custom filters on

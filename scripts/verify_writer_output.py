@@ -830,9 +830,13 @@ def verify_file(path: Path) -> None:
     assert payload[:2] == b"\x03\x02", "sensor datatype is not committed"
     assert int.from_bytes(payload[2:10], "little") == committed_addresses["sensor_type"]
 
-    committed_messages = object_header_messages(
-        data, committed_addresses["sensor_type"]
-    )
+    committed_messages = [
+        message
+        for message in object_header_messages(
+            data, committed_addresses["sensor_type"]
+        )
+        if message[0] != 0x00
+    ]
     assert [kind for kind, _, _ in committed_messages] == [0x03]
     _, committed_flags, committed_payload = committed_messages[0]
     assert not committed_flags & SHARED_FLAG

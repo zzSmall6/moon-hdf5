@@ -71,7 +71,6 @@ fn parse_attribute_data(
     reader.skip(round_up_to_eight(datatype_size) - datatype_size)
   }
   let dataspace_data = reader.read_bytes(dataspace_size)
-  let value_data = reader.read_bytes(reader.remaining())
   let datatype_data = if (flags & 0x01) != 0 {
     match shared_messages {
       Some(context) =>
@@ -99,6 +98,18 @@ fn parse_attribute_data(
   let datatype = parse_datatype_data(datatype_data)
   let dataspace = parse_dataspace_data(dataspace_data, length_size)
   let count = dataspace.element_count()
+  guard datatype.size >= 0 && count >= 0L else {
+    raise InvalidField("attribute value size is too large")
+  }
+  guard datatype.size > 0 || count == 0L else {
+    raise InvalidField("attribute value size is too large")
+  }
+  guard datatype.size == 0 || count <= 0x7FFFFFFFL / datatype.size.to_int64() else {
+    raise InvalidField("attribute value size is too large")
+  }
+  let value_data = reader.read_bytes(
+    (count * datatype.size.to_int64()).to_int(),
+  )
   let values = Some(
     decode_values(
       bytes,

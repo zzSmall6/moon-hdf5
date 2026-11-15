@@ -6037,6 +6037,14 @@ fn writer_next_power_of_two(
 }
 
 ///|
+fn writer_dense_heap_header_size(
+  offset_size : Int32,
+  length_size : Int32,
+) -> Int32 {
+  22 + length_size * 12 + offset_size * 3 + metadata_checksum_size
+}
+
+///|
 fn encode_writer_dense_heap_header(
   root_address : UInt64,
   id_length : Int32,
@@ -6047,32 +6055,36 @@ fn encode_writer_dense_heap_header(
   record_count : Int32,
   max_managed_size : Int32,
   table_width : Int32,
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
 ) -> Bytes {
-  let buffer = @buffer.Buffer::Buffer(size_hint=146)
+  let buffer = @buffer.Buffer::Buffer(
+    size_hint=writer_dense_heap_header_size(offset_size, length_size),
+  )
   writer_write_bytes(buffer, b"FRHP")
   buffer.write_byte(b'\x00')
   buffer.write_uint16_le(id_length.to_uint16())
   buffer.write_uint16_le(0)
   buffer.write_byte(b'\x02')
   buffer.write_uint_le(max_managed_size.reinterpret_as_uint())
-  buffer.write_uint64_le(0UL)
-  buffer.write_uint64_le(0xFFFFFFFFFFFFFFFFUL)
-  buffer.write_uint64_le(0UL)
-  buffer.write_uint64_le(0xFFFFFFFFFFFFFFFFUL)
-  buffer.write_uint64_le(managed_size.to_uint64())
-  buffer.write_uint64_le(managed_size.to_uint64())
-  buffer.write_uint64_le(0UL)
-  buffer.write_uint64_le(record_count.to_uint64())
-  buffer.write_uint64_le(0UL)
-  buffer.write_uint64_le(0UL)
-  buffer.write_uint64_le(0UL)
-  buffer.write_uint64_le(0UL)
+  write_uint_width(buffer, 0UL, length_size)
+  write_uint_width(buffer, heap_undefined_address(offset_size), offset_size)
+  write_uint_width(buffer, 0UL, length_size)
+  write_uint_width(buffer, heap_undefined_address(offset_size), offset_size)
+  write_uint_width(buffer, managed_size.to_uint64(), length_size)
+  write_uint_width(buffer, managed_size.to_uint64(), length_size)
+  write_uint_width(buffer, 0UL, length_size)
+  write_uint_width(buffer, record_count.to_uint64(), length_size)
+  write_uint_width(buffer, 0UL, length_size)
+  write_uint_width(buffer, 0UL, length_size)
+  write_uint_width(buffer, 0UL, length_size)
+  write_uint_width(buffer, 0UL, length_size)
   buffer.write_uint16_le(table_width.to_uint16())
-  buffer.write_uint64_le(start_block_size.to_uint64())
-  buffer.write_uint64_le(max_direct_size.to_uint64())
+  write_uint_width(buffer, start_block_size.to_uint64(), length_size)
+  write_uint_width(buffer, max_direct_size.to_uint64(), length_size)
   buffer.write_uint16_le(max_heap_bits.to_uint16())
   buffer.write_uint16_le(1)
-  buffer.write_uint64_le(root_address)
+  write_uint_width(buffer, root_address, offset_size)
   buffer.write_uint16_le(0)
   buffer.write_uint_le(metadata_checksum(buffer.to_bytes(), 0, buffer.length()))
   buffer.to_bytes()
@@ -6108,11 +6120,12 @@ fn encode_writer_dense_direct_block(
   block_size : Int32,
   heap_offset_size : Int32,
   entries : Array[WritableDenseHeapEntry],
+  offset_size~ : Int32 = 8,
 ) -> (Bytes, Array[Bytes]) raise Hdf5Error {
   let buffer = @buffer.Buffer::Buffer(size_hint=block_size)
   writer_write_bytes(buffer, b"FHDB")
   buffer.write_byte(b'\x00')
-  buffer.write_uint64_le(heap_address)
+  write_uint_width(buffer, heap_address, offset_size)
   write_uint_width(buffer, 0UL, heap_offset_size)
   let checksum_offset = buffer.length()
   buffer.write_uint_le(0U)
@@ -6177,8 +6190,10 @@ fn encode_writer_dense_btree_header(
   record_size : Int32,
   root_address : UInt64,
   record_count : Int32,
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
 ) -> Bytes {
-  let buffer = @buffer.Buffer::Buffer(size_hint=38)
+  let buffer = @buffer.Buffer::Buffer(size_hint=22 + offset_size + length_size)
   writer_write_bytes(buffer, b"BTHD")
   buffer.write_byte(b'\x00')
   buffer.write_byte(node_type.to_byte())
@@ -6187,9 +6202,9 @@ fn encode_writer_dense_btree_header(
   buffer.write_uint16_le(0)
   buffer.write_byte(b'\x64')
   buffer.write_byte(b'\x28')
-  buffer.write_uint64_le(root_address)
+  write_uint_width(buffer, root_address, offset_size)
   buffer.write_uint16_le(record_count.to_uint16())
-  buffer.write_uint64_le(record_count.to_uint64())
+  write_uint_width(buffer, record_count.to_uint64(), length_size)
   buffer.write_uint_le(metadata_checksum(buffer.to_bytes(), 0, buffer.length()))
   buffer.to_bytes()
 }
@@ -6463,15 +6478,16 @@ fn Hdf5Writer::encode_dense_metadata(
   }
   let block_size = writer_next_power_of_two(data_size, minimum_block_size)
   let max_direct_size = writer_next_power_of_two(block_size, 65536)
+  let heap_header_size = writer_dense_heap_header_size(8, 8)
   let root_address = if local_count > 0 {
-    heap_address + 146UL
+    heap_address + heap_header_size.to_uint64()
   } else {
     0xFFFFFFFFFFFFFFFFUL
   }
   let index_address = if local_count > 0 {
-    heap_address + 146UL + block_size.to_uint64()
+    heap_address + heap_header_size.to_uint64() + block_size.to_uint64()
   } else {
-    heap_address + 146UL
+    heap_address + heap_header_size.to_uint64()
   }
   let heap_header = encode_writer_dense_heap_header(
     root_address,
@@ -6800,13 +6816,33 @@ fn encode_object_header(
     raw_messages
   }
   let chunks = plan_object_header_chunks(messages)
+  let message_header_size = if creation_order { 6 } else { 4 }
+  let initial_message_size = object_header_messages_size(chunks[0])
+  let initial_continuation_size = if chunks.length() > 1 {
+    message_header_size + 16
+  } else {
+    0
+  }
+  let initial_unpadded = initial_message_size + initial_continuation_size
+  let minimum_initial_chunk_body : Int32 = 128
+  let initial_padding = if initial_unpadded + message_header_size <=
+    minimum_initial_chunk_body {
+    minimum_initial_chunk_body - initial_unpadded
+  } else {
+    0
+  }
   let chunk_bodies : Array[Int32] = []
   for index in 0..<chunks.length() {
-    let continuation_size = if index + 1 < chunks.length() { 20 } else { 0 }
+    let continuation_size = if index + 1 < chunks.length() {
+      message_header_size + 16
+    } else {
+      0
+    }
     chunk_bodies.push(
       object_header_messages_size(chunks[index]) + continuation_size,
     )
   }
+  chunk_bodies[0] = initial_unpadded + initial_padding
   let addresses : Array[UInt64] = [start]
   let mut next_end = start.to_int() + 12 + chunk_bodies[0]
   for index in 1..<chunks.length() {
@@ -6830,8 +6866,20 @@ fn encode_object_header(
       creation_order~,
     )
   }
+  if initial_padding > 0 {
+    let nil_size = initial_padding - message_header_size
+    write_header_message_with_order(
+      initial,
+      0,
+      Bytes::make(nil_size, b'\x00'),
+      creation_order~,
+    )
+  }
   guard initial.length() <= 65535 else {
     raise InvalidField("object header chunk is too large")
+  }
+  guard initial.length() == chunk_bodies[0] else {
+    raise InvalidField("object header padding size mismatch")
   }
   writer_write_bytes(output, b"OHDR")
   output.write_byte(b'\x02')
