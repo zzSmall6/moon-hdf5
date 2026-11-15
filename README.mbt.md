@@ -20,9 +20,11 @@ This project implements a documented subset of HDF5. The
   chunk/selection iterators for directly addressable mappings.
 - Writing covers groups, datasets, attributes, links, committed datatypes,
   filters, fills, dense/SOHM metadata, nested variable-length and reference
-  values, compact/contiguous/chunked/external storage, and resizable datasets.
+  values, compact/contiguous/chunked/virtual/external storage, and resizable
+  datasets.
 - Existing-file editing covers value and attribute patching, attribute and link
   add/rename/delete, object creation/deletion, and append-only metadata rebuilds.
+  Virtual datasets can be added to new or existing files.
   Every editing API returns a new byte image.
 
 See [Compatibility](docs/compatibility.md) for the exact supported and rejected
@@ -150,6 +152,9 @@ Dataset creation options:
   `write_dataset_slab`: in-memory resizing, append and rectangular writes.
 - `add_external_dataset`: unfiltered external raw-data slots; the caller creates
   the external files.
+- `add_virtual_dataset`: virtual storage from one or more source mappings. Use
+  `.` for a same-file source; external source names are stored without opening
+  the file.
 
 Fixed-size values support Shuffle, deflate, Fletcher32 and scale-offset.
 Variable-length values support Shuffle/deflate and must use fixed-size sequence
@@ -223,15 +228,18 @@ errors and 2 for invalid arguments.
 
 moon-hdf5 is not a drop-in replacement for libhdf5.
 
-- Not yet implemented: streaming output, free-space reclamation, SWMR and
-  parallel HDF5.
-- Virtual datasets are read-only. Same-file and external sources are resolved
-  through `Hdf5File::with_external_source` or `Hdf5Resolver`; source files must
-  be registered, printf-style source names and datatype conversion are not
-  supported, and each source mapping must use the virtual dataset's exact
-  datatype. Page and tile reads of all or non-overlapping hyperslab mappings
-  fetch only the requested elements; point and irregular block mappings are
-  expanded in memory per mapping.
+- Outside the common-file profile: streaming output, free-space reclamation,
+  SWMR and parallel HDF5.
+- Virtual datasets support all, empty and hyperslab mappings; HDF5 1.14.6 does
+  not support point or block virtual mappings, so the writer rejects them.
+  Readers resolve same-file and external sources through
+  `Hdf5File::with_external_source` or `Hdf5Resolver`. Writers store mappings but
+  do not open or validate source datasets. Source files must be registered when
+  reading, printf-style source names and datatype conversion are unsupported,
+  and each source mapping must use the virtual dataset's exact datatype. Page
+  and tile reads of all or non-overlapping hyperslab mappings fetch only the
+  requested elements; point and irregular block mappings are expanded in
+  memory per mapping.
 - Fixed boundaries: readers and writers are memory-resident at the API surface;
   editing is append-only; references and patches target existing objects, and
   external reference files must be registered; external raw data is

@@ -464,6 +464,7 @@ priv enum WritableStorage {
   WritableChunked(Array[UInt32], Array[Hdf5WriteFilter])
   WritableExtensible(Array[UInt32], Array[Hdf5WriteFilter], Array[Int32])
   WritableExternal(Array[Hdf5ExternalSlot])
+  WritableVirtual(Array[Hdf5VirtualMapping])
 }
 
 ///|
@@ -622,6 +623,12 @@ priv struct WritableExternalHeap {
 }
 
 ///|
+priv struct WritableVirtualHeap {
+  path : String
+  address : UInt64
+}
+
+///|
 priv struct WritableDenseHeapEntry {
   name : String
   hash : UInt32
@@ -678,6 +685,7 @@ priv struct WritableLayout {
   heap : WritableGlobalHeap
   dense : Array[WritableDenseMetadata]
   external : Array[WritableExternalHeap]
+  virtual_heaps : Array[WritableVirtualHeap]
   shared : WritableSharedMetadata?
 }
 
@@ -2443,7 +2451,10 @@ fn writer_dataset_chunk_grid(
       }
       (dimensions, filters, order, grid_dimensions)
     }
-    WritableCompact | WritableContiguous | WritableExternal(_) =>
+    WritableCompact
+    | WritableContiguous
+    | WritableExternal(_)
+    | WritableVirtual(_) =>
       raise InvalidArgument("dataset does not use chunked storage")
   }
 }
@@ -3087,6 +3098,8 @@ pub fn Hdf5Writer::write_dataset_slab(
   let unlimited_axes = match dataset.storage {
     WritableExternal(_) =>
       raise InvalidArgument("external datasets cannot be patched in a builder")
+    WritableVirtual(_) =>
+      raise InvalidArgument("virtual datasets cannot be patched in a builder")
     WritableExtensible(_, _, axes) => axes
     WritableChunked(_, _) | WritableCompact | WritableContiguous => []
   }
@@ -4374,6 +4387,23 @@ fn encode_external_data_layout(
 }
 
 ///|
+fn encode_virtual_layout(
+  heap_address : UInt64,
+  heap_index : Int32,
+  offset_size~ : Int32 = 8,
+) -> Bytes raise Hdf5Error {
+  guard heap_index > 0 else {
+    raise InvalidArgument("virtual mapping heap index must be positive")
+  }
+  let buffer = @buffer.Buffer::Buffer(size_hint=2 + offset_size + 4)
+  buffer.write_byte(b'\x04')
+  buffer.write_byte(b'\x03')
+  write_uint_width(buffer, heap_address, offset_size)
+  buffer.write_uint_le(heap_index.reinterpret_as_uint())
+  buffer.to_bytes()
+}
+
+///|
 fn external_slot_total(slots : Array[Hdf5ExternalSlot]) -> UInt64 {
   let mut total = 0UL
   for slot in slots {
@@ -5403,7 +5433,10 @@ fn encode_fixed_array_storage(
   let (_, filters) = match dataset.storage {
     WritableChunked(dimensions, filters) => (dimensions, filters)
     WritableExtensible(dimensions, filters, _) => (dimensions, filters)
-    WritableCompact | WritableContiguous | WritableExternal(_) =>
+    WritableCompact
+    | WritableContiguous
+    | WritableExternal(_)
+    | WritableVirtual(_) =>
       raise InvalidField("expected chunked writer dataset")
   }
   let entries = encode_dataset_chunks(
@@ -8054,7 +8087,10 @@ fn Hdf5Writer::shared_filter_candidates(
         let (chunk_dimensions, pipeline) = match dataset.storage {
           WritableChunked(dimensions, filters) => (dimensions, filters)
           WritableExtensible(dimensions, filters, _) => (dimensions, filters)
-          WritableCompact | WritableContiguous | WritableExternal(_) => continue
+          WritableCompact
+          | WritableContiguous
+          | WritableExternal(_)
+          | WritableVirtual(_) => continue
         }
         if pipeline.length() == 0 {
           continue
@@ -8299,6 +8335,17 @@ fn writer_external_heap_address(
 ) -> UInt64 {
   match external.search_by(heap => heap.path == path) {
     Some(index) => external[index].address
+    None => 0xFFFFFFFFFFFFFFFFUL
+  }
+}
+
+///|
+fn writer_virtual_heap_address(
+  virtual_heaps : Array[WritableVirtualHeap],
+  path : String,
+) -> UInt64 {
+  match virtual_heaps.search_by(heap => heap.path == path) {
+    Some(index) => virtual_heaps[index].address
     None => 0xFFFFFFFFFFFFFFFFUL
   }
 }
@@ -8637,12 +8684,13 @@ fn region_selection_encoding_width(selection : Hdf5RegionSelection) -> Int32 {
 }
 
 ///|
-fn encode_region_selection(
-  dataspace : Dataspace,
+fn encode_region_selection_body(
   selection : Hdf5RegionSelection,
+  rank : Int32,
 ) -> Bytes raise Hdf5Error {
-  validate_region_selection(dataspace, selection)
-  let rank = dataspace.dimensions.length()
+  guard rank >= 0 && rank <= 32 else {
+    raise InvalidArgument("region selection rank is outside 0..32")
+  }
   let buffer = @buffer.Buffer::Buffer()
   match selection {
     RegionEmpty | RegionAll => {
@@ -8654,6 +8702,13 @@ fn encode_region_selection(
     RegionPoints(points) => {
       guard points.length() <= 0x7FFFFFFF else {
         raise InvalidArgument("region reference contains too many points")
+      }
+      for point in points {
+        guard point.length() == rank else {
+          raise InvalidArgument(
+            "region point rank does not match the selection",
+          )
+        }
       }
       let width = region_selection_encoding_width(selection)
       buffer.write_uint_le(1U)
@@ -8668,6 +8723,14 @@ fn encode_region_selection(
       }
     }
     RegionHyperslab(start, stride, count, block) => {
+      guard start.length() == rank &&
+        stride.length() == rank &&
+        count.length() == rank &&
+        block.length() == rank else {
+        raise InvalidArgument(
+          "region hyperslab rank does not match the selection",
+        )
+      }
       let width = region_selection_encoding_width(selection)
       buffer.write_uint_le(2U)
       buffer.write_uint_le(3U)
@@ -8685,6 +8748,13 @@ fn encode_region_selection(
       guard blocks.length() <= 0x7FFFFFFF else {
         raise InvalidArgument("region reference contains too many blocks")
       }
+      for block in blocks {
+        guard block.start.length() == rank && block.end.length() == rank else {
+          raise InvalidArgument(
+            "region block rank does not match the selection",
+          )
+        }
+      }
       let width = region_selection_encoding_width(selection)
       buffer.write_uint_le(2U)
       buffer.write_uint_le(3U)
@@ -8701,6 +8771,15 @@ fn encode_region_selection(
     }
   }
   buffer.to_bytes()
+}
+
+///|
+fn encode_region_selection(
+  dataspace : Dataspace,
+  selection : Hdf5RegionSelection,
+) -> Bytes raise Hdf5Error {
+  validate_region_selection(dataspace, selection)
+  encode_region_selection_body(selection, dataspace.dimensions.length())
 }
 
 ///|
@@ -8930,7 +9009,8 @@ fn Hdf5Writer::object_payload(
   heap : WritableGlobalHeap,
   dense : Array[WritableDenseMetadata],
   external : Array[WritableExternalHeap],
-  external_addresses_final : Bool,
+  virtual_heaps : Array[WritableVirtualHeap],
+  aux_addresses_final : Bool,
   shared~ : Array[WritableSharedAttribute] = [],
   fills~ : Array[WritableSharedFill] = [],
   shared_filters~ : Array[WritableSharedFilter] = [],
@@ -9046,7 +9126,7 @@ fn Hdf5Writer::object_payload(
           )
         }
         WritableExternal(slots) => {
-          let heap_address = if external_addresses_final {
+          let heap_address = if aux_addresses_final {
             let address = writer_external_heap_address(external, object.path)
             guard address != 0xFFFFFFFFFFFFFFFFUL else {
               raise InvalidField("external data heap was not assigned")
@@ -9064,6 +9144,25 @@ fn Hdf5Writer::object_payload(
             buffer,
             msg_data_layout,
             encode_external_data_layout(external_slot_total(slots)),
+          )
+        }
+        WritableVirtual(_) => {
+          let heap_address = if aux_addresses_final {
+            let address = writer_virtual_heap_address(
+              virtual_heaps,
+              object.path,
+            )
+            guard address != 0xFFFFFFFFFFFFFFFFUL else {
+              raise InvalidField("virtual mapping heap was not assigned")
+            }
+            address
+          } else {
+            0UL
+          }
+          write_header_message(
+            buffer,
+            msg_data_layout,
+            encode_virtual_layout(heap_address, 1),
           )
         }
         WritableChunked(chunk_dimensions, filters) => {
@@ -9696,7 +9795,13 @@ fn Hdf5Writer::global_heap_regions(
 }
 
 ///|
-fn encode_heap_objects(objects : Array[Bytes]) -> Bytes raise Hdf5Error {
+fn encode_heap_objects(
+  objects : Array[Bytes],
+  length_size~ : Int32 = 8,
+) -> Bytes raise Hdf5Error {
+  guard length_size == 4 || length_size == 8 else {
+    raise InvalidField("global heap length size must be 4 or 8 bytes")
+  }
   let object_count = objects.length()
   if object_count == 0 {
     return b""
@@ -9721,27 +9826,34 @@ fn encode_heap_objects(objects : Array[Bytes]) -> Bytes raise Hdf5Error {
   writer_write_bytes(buffer, b"GCOL")
   buffer.write_byte(b'\x01')
   writer_write_zeros(buffer, 3)
-  buffer.write_uint64_le(collection_size.to_uint64())
+  write_uint_width(buffer, collection_size.to_uint64(), length_size)
   let mut object_index = 0
   for item in objects {
     object_index = object_index + 1
     buffer.write_uint16_le(object_index.to_uint16())
     buffer.write_uint16_le(0)
     buffer.write_uint_le(0U)
-    buffer.write_uint64_le(item.length().to_uint64())
+    write_uint_width(buffer, item.length().to_uint64(), length_size)
     writer_write_bytes(buffer, item)
     writer_write_zeros(buffer, round_up_to_eight(item.length()) - item.length())
   }
   buffer.write_uint16_le(0)
   buffer.write_uint16_le(0)
   buffer.write_uint_le(0U)
-  buffer.write_uint64_le((collection_size - used_size).to_uint64())
+  write_uint_width(
+    buffer,
+    (collection_size - used_size).to_uint64(),
+    length_size,
+  )
   writer_write_zeros(buffer, collection_size - buffer.length())
   buffer.to_bytes()
 }
 
 ///|
-fn encode_global_heap(heap : WritableGlobalHeap) -> Bytes raise Hdf5Error {
+fn encode_global_heap(
+  heap : WritableGlobalHeap,
+  length_size~ : Int32 = 8,
+) -> Bytes raise Hdf5Error {
   let objects : Array[Bytes] = []
   for item in heap.strings {
     objects.push(@utf8.encode(item))
@@ -9749,12 +9861,15 @@ fn encode_global_heap(heap : WritableGlobalHeap) -> Bytes raise Hdf5Error {
   for item in heap.sequences {
     objects.push(item)
   }
-  encode_heap_objects(objects)
+  encode_heap_objects(objects, length_size~)
 }
 
 ///|
-fn encode_region_heap(heap : WritableGlobalHeap) -> Bytes raise Hdf5Error {
-  encode_heap_objects(heap.regions)
+fn encode_region_heap(
+  heap : WritableGlobalHeap,
+  length_size~ : Int32 = 8,
+) -> Bytes raise Hdf5Error {
+  encode_heap_objects(heap.regions, length_size~)
 }
 
 ///|
@@ -9786,6 +9901,7 @@ fn assign_writable_addresses(
           object,
           templates,
           empty_heap,
+          [],
           [],
           [],
           false,
@@ -9928,6 +10044,28 @@ fn assign_writable_addresses(
       WritableGroup | WritableCommittedDatatype(_) => ()
     }
   }
+  let virtual_heaps : Array[WritableVirtualHeap] = []
+  for object in objects {
+    match object.kind {
+      WritableDatasetObject(dataset_index) => {
+        let dataset = writer.datasets[dataset_index]
+        match dataset.storage {
+          WritableVirtual(mappings) => {
+            let address = offset.to_uint64()
+            virtual_heaps.push({ path: object.path, address, })
+            offset = writer_align(
+              offset +
+              encode_heap_objects([
+                encode_virtual_mapping_block(dataset.dimensions, mappings, 8),
+              ]).length(),
+            )
+          }
+          _ => ()
+        }
+      }
+      WritableGroup | WritableCommittedDatatype(_) => ()
+    }
+  }
   for index in 0..<objects.length() {
     match objects[index].kind {
       WritableDatasetObject(dataset_index) => {
@@ -9939,6 +10077,7 @@ fn assign_writable_addresses(
           WritableChunked(_, _) => true
           WritableExtensible(_, _, _) => true
           WritableExternal(_) => false
+          WritableVirtual(_) => false
         }
         if has_storage {
           objects[index] = {
@@ -9987,6 +10126,7 @@ fn assign_writable_addresses(
               writer_align(offset + payload_length)
             }
             WritableExternal(_) => offset
+            WritableVirtual(_) => offset
           }
         }
       }
@@ -10058,7 +10198,10 @@ fn assign_writable_addresses(
       let (chunk_dimensions, pipeline) = match dataset.storage {
         WritableChunked(dimensions, filters) => (dimensions, filters)
         WritableExtensible(dimensions, filters, _) => (dimensions, filters)
-        WritableCompact | WritableContiguous | WritableExternal(_) =>
+        WritableCompact
+        | WritableContiguous
+        | WritableExternal(_)
+        | WritableVirtual(_) =>
           raise InvalidField("writer shared filter disappeared")
       }
       guard pipeline.length() > 0 else {
@@ -10186,7 +10329,7 @@ fn assign_writable_addresses(
   } else {
     None
   }
-  { objects, heap, dense, external, shared, }
+  { objects, heap, dense, external, virtual_heaps, shared, }
 }
 
 ///|
@@ -10240,6 +10383,7 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
         layout.heap,
         layout.dense,
         layout.external,
+        layout.virtual_heaps,
         true,
         shared=shared_attributes,
         fills=shared_fills,
@@ -10298,6 +10442,19 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
     external_payloads.push((metadata.address, payload))
     eof = writer_align(metadata.address.to_int() + payload.length())
   }
+  let virtual_payloads : Array[(UInt64, Bytes)] = []
+  for metadata in layout.virtual_heaps {
+    let dataset = self.datasets[self.writer_dataset_index(metadata.path)]
+    let mappings = match dataset.storage {
+      WritableVirtual(mappings) => mappings
+      _ => raise InvalidField("virtual mapping heap has the wrong dataset kind")
+    }
+    let payload = encode_heap_objects([
+      encode_virtual_mapping_block(dataset.dimensions, mappings, 8),
+    ])
+    virtual_payloads.push((metadata.address, payload))
+    eof = writer_align(metadata.address.to_int() + payload.length())
+  }
   let raw_payloads : Array[(UInt64, Bytes)] = []
   for object in objects {
     match object.kind {
@@ -10334,6 +10491,7 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
               )
             }
           WritableExternal(_) => b""
+          WritableVirtual(_) => b""
         }
         if payload.length() > 0 {
           raw_payloads.push((object.raw_address, payload))
@@ -10454,6 +10612,10 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
     writer_write_bytes(output, payload)
   }
   for (address, payload) in external_payloads {
+    writer_write_zeros(output, address.to_int() - output.length())
+    writer_write_bytes(output, payload)
+  }
+  for (address, payload) in virtual_payloads {
     writer_write_zeros(output, address.to_int() - output.length())
     writer_write_bytes(output, payload)
   }

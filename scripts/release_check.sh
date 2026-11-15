@@ -36,10 +36,12 @@ symbol_dense=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-dense.XXXXXX")
 filtered_links=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-filtered-links.XXXXXX")
 extended_floats=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-extended-floats.XXXXXX")
 external_references=$(mktemp -d "${TMPDIR:-/tmp}/moon-hdf5-external-references.XXXXXX")
+virtual_new=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-virtual-new.XXXXXX")
+virtual_edited=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-virtual-edited.XXXXXX")
 created=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created.XXXXXX")
 created8=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created8.XXXXXX")
 deleted=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-deleted.XXXXXX")
-trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"; rm -rf "$external_references"' EXIT HUP INT TERM
+trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$virtual_new" "$virtual_edited" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"; rm -rf "$external_references"' EXIT HUP INT TERM
 moon run src/cmd/write_demo --target native -- "$output"
 
 python=${H5PY_PYTHON:-}
@@ -60,6 +62,16 @@ else
     exit 1
   fi
   "$python" scripts/verify_writer_output.py "$output"
+fi
+
+echo "==> Virtual dataset output"
+moon run src/cmd/virtual_dataset_demo --target native -- \
+  "$virtual_new" "$virtual_edited"
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> Virtual-dataset writer verification skipped (SKIP_H5PY=1)"
+else
+  "$python" scripts/verify_virtual_dataset_write.py \
+    "$virtual_new" "$virtual_edited"
 fi
 
 echo "==> Symbol-table editing"

@@ -287,6 +287,7 @@ pub fn Hdf5File::add_external_link(Self, String, String, String, String) -> Byte
 pub fn Hdf5File::add_group(Self, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_hard_link(Self, String, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_soft_link(Self, String, String, String) -> Bytes raise Hdf5Error
+pub fn Hdf5File::add_virtual_dataset(Self, String, String, Array[UInt64], Datatype, Array[Hdf5VirtualMapping], fill_value? : DatasetValue) -> Bytes raise Hdf5Error
 pub fn Hdf5File::address_size(Self) -> Int32
 pub fn Hdf5File::attributes(Self, String) -> Array[Attribute] raise Hdf5Error
 pub fn Hdf5File::chunk_iterator(Self, String, Array[UInt64]) -> DatasetChunkIterator raise Hdf5Error
@@ -430,6 +431,17 @@ pub fn Hdf5Resolver::resolve_region_reference(Self, Bytes) -> Hdf5ResolvedRegion
 pub fn Hdf5Resolver::selection_iterator(Self, String, DatasetSelection, Int32) -> DatasetSelectionIterator raise Hdf5Error
 
 #derive(Eq, @debug.Debug)
+pub(all) struct Hdf5VirtualMapping {
+  source_file : String
+  source_dataset : String
+  source_selection : Hdf5RegionSelection
+  virtual_selection : Hdf5RegionSelection
+}
+pub fn Hdf5VirtualMapping::equal(Self, Self) -> Bool
+pub fn Hdf5VirtualMapping::not_equal(Self, Self) -> Bool
+pub fn Hdf5VirtualMapping::to_repr(Self) -> @debug.Repr
+
+#derive(Eq, @debug.Debug)
 pub(all) enum Hdf5WriteFilter {
   Shuffle
   Deflate(Int32)
@@ -479,6 +491,7 @@ pub fn Hdf5Writer::add_external_link(Self, String, String, String, String) -> Un
 pub fn Hdf5Writer::add_external_source(Self, String, &Hdf5Source) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_group(Self, String) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_soft_link(Self, String, String, String) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::add_virtual_dataset(Self, String, Array[UInt64], Datatype, Array[Hdf5VirtualMapping], fill_value? : DatasetValue) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::append_dataset(Self, String, Array[UInt64], Hdf5WriteValues) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::encode(Self) -> Bytes raise Hdf5Error
 pub fn Hdf5Writer::new() -> Self

@@ -7,14 +7,13 @@ documented subset, not complete HDF5 support.
 ## v1.0 profile
 
 The v1.0 profile is the verified rows in the reader and writer tables below,
-including their boundaries. External raw-data and virtual-dataset reading are
+including their boundaries. External raw-data and virtual-dataset support are
 post-v1.0 extensions. HDF5 2.0 datatype fixtures are forward-compatibility
 evidence, not part of the 1.14.6 baseline.
 
-Outside the profile: virtual-dataset writing, SWMR, parallel HDF5, in-file
-object storage reclamation, metadata editing beyond the supported
-object-creation, deletion, attribute and link paths; and netCDF-4/MATLAB
-high-level semantics.
+Outside the profile: SWMR, parallel HDF5, streaming output, in-file object
+storage reclamation, metadata editing beyond the supported object-creation,
+deletion, attribute and link paths; and netCDF-4/MATLAB high-level semantics.
 
 The release gate is `scripts/release_check.sh`: formatting, documentation and
 package checks; wasm/native tests; writer demo; and independent h5py
@@ -27,7 +26,7 @@ verification with h5py 3.13.0/HDF5 1.14.6.
 | Framing | Superblocks v0–v3, user blocks, 4- and 8-byte addresses, and mixed 4-byte-address/8-byte-length symbol tables | Other address/length combinations are not fully tested |
 | Groups | Symbol-table, compact and dense groups, creation-order indexes, soft links with relative and `.`/`..` targets, all named hard-link paths | Traversal stops at an address already in the current ancestor chain; dot-segment normalization is lexical |
 | Cross-file links | `Hdf5Resolver` follows chained external links, relative targets and version-4 references into registered external HDF5 files | `Hdf5File` alone does not open external targets |
-| Virtual datasets | Layout-and-global-heap mapping blocks; multiple mappings; same-file and registered external sources; full reads, hyperslabs, points, chunk tiles and selection pages; fill values for unmapped elements; 4- and 8-byte addresses; nested virtual datasets; direct `Hdf5File` and resolver reads | Reader-only; source files must be registered, printf-style source names are not expanded, and source and virtual datatypes must match exactly. A selected result is memory resident; page and tile reads remain bounded for all and non-overlapping hyperslab mappings, while point and irregular block mappings are expanded per mapping |
+| Virtual datasets | Layout-and-global-heap mapping blocks; multiple mappings; same-file and registered external sources; full reads, hyperslabs, points, chunk tiles and selection pages; fill values for unmapped elements; 4- and 8-byte addresses; nested virtual datasets; direct `Hdf5File` and resolver reads | Source files must be registered, printf-style source names are not expanded, and source and virtual datatypes must match exactly. A selected result is memory resident; page and tile reads remain bounded for all and non-overlapping hyperslab mappings, while point and irregular block mappings are expanded per mapping |
 | Attributes | Inline v1–v3, dense, SOHM wrappers, shared datatype/dataspace fields | Unsupported attribute datatypes fail the read instead of returning empty values |
 | Layouts and indexes | Compact, contiguous, chunked; v1 B-tree, single-chunk, implicit, fixed-array, extensible-array and v2 B-tree indexes | Unsupported index variants are rejected |
 | Filters | Deflate, shuffle, Fletcher32, integer and f32/f64 decimal scale-offset, masks and fill markers; caller-registered dataset chunk and fractal-heap metadata decoders through `Hdf5CustomFilter` | Other scale modes are rejected; overrides of built-in filter IDs are unsupported; unregistered required filters raise `UnsupportedFeature` |
@@ -59,7 +58,9 @@ for fixed-size values. Callers create the external files and exact slot sizes.
 ## Writer
 
 `src/cmd/write_demo` and `scripts/verify_writer_output.py` check the output with
-h5py 3.13.0/HDF5 1.14.6. Version-4 reference output is checked by MoonBit
+h5py 3.13.0/HDF5 1.14.6. `src/cmd/virtual_dataset_demo` and
+`scripts/verify_virtual_dataset_write.py` cover new-file and existing-file
+virtual-dataset output. Version-4 reference output is checked by MoonBit
 round-trip tests; `scripts/verify_external_reference_output.py` additionally
 reads external version-4 object, region and attribute references through the
 HDF5 1.14.6 C API because h5py's NumPy dtype bridge does not expose them.
@@ -68,9 +69,9 @@ HDF5 1.14.6 C API because h5py's NumPy dtype bridge does not expose them.
 | --- | --- | --- |
 | Framing | Superblock v3 and v2 object headers with OCHK continuations | Older output formats are not selected |
 | Groups and attributes | Compact/dense collections, creation order, continued headers, inline/dense attributes, compact/dense link editing and symbol-table conversion | Dense limits below |
-| Object creation | `add_group`, contiguous `add_dataset`, finite fixed-array or resizable `add_chunked_dataset` with built-in or caller-registered filters, and unfiltered `add_external_dataset` in bytes-backed files, including numeric, fixed-string, complex, fixed-size structured, variable-length UTF-8 string, variable-length sequence and legacy object/region-reference values; these values may be nested in compound, fixed-array and fixed-base sequence members; fill values; 4-/8-byte descriptors, reference slots, heap addresses, chunk-index fields and external-data heap fields; extensible-array indexes for one unlimited axis and v2 B-tree indexes for multiple unlimited axes; appended global heaps; v1/v2 parent headers and symbol-table parents | Filtered external storage and virtual-dataset writing are unsupported; no free-space reclamation; structured variable-length custom fills require 8-byte file addresses because HDF5 1.14.6 cannot represent them safely in 4-byte files |
+| Object creation | `add_group`, contiguous `add_dataset`, finite fixed-array or resizable `add_chunked_dataset` with built-in or caller-registered filters, `add_virtual_dataset`, and unfiltered `add_external_dataset` in bytes-backed files, including numeric, fixed-string, complex, fixed-size structured, variable-length UTF-8 string, variable-length sequence and legacy object/region-reference values; these values may be nested in compound, fixed-array and fixed-base sequence members; fill values; 4-/8-byte descriptors, reference slots, heap addresses, chunk-index fields, external-data heap fields and virtual-mapping heap fields; extensible-array indexes for one unlimited axis and v2 B-tree indexes for multiple unlimited axes; appended global heaps; v1/v2 parent headers and symbol-table parents | Filtered external storage is unsupported; virtual sources are not opened or validated during creation; no free-space reclamation; structured variable-length custom fills require 8-byte file addresses because HDF5 1.14.6 cannot represent them safely in 4-byte files |
 | Dense metadata | 9–65,535 records; FRHP/FHDB direct blocks, FHIB indirect roots, managed and huge heap objects with type-1 or filtered type-2 huge-object v2 B-trees, inline metadata filter pipelines, multi-level BTHD/BTIN/BTLF type 6/9 indexes; optional SOHM table with per-message-type indexes/heaps | No free-space manager or tiny heap output; larger compact sets use OCHK; filtered rebuilds require an encoder for every pipeline entry |
-| Datasets | Compact, contiguous, external raw data, virtual storage, paged fixed-array, extensible-array and v2 B-tree chunks; new contiguous, finite fixed-array chunked and unfiltered external datasets | No virtual-dataset output; virtual reading requires registered sources; compact payloads are limited to 65,535 bytes; external storage is unfiltered fixed-size only |
+| Datasets | Compact, contiguous, external raw data, virtual storage, paged fixed-array, extensible-array and v2 B-tree chunks; new contiguous, finite fixed-array chunked, virtual and unfiltered external datasets | Virtual mappings support all, empty and hyperslab selections; HDF5 1.14.6 rejects point and block virtual mappings, so the writer rejects them too; printf-style source names and datatype conversion are unsupported, and reading requires registered sources; compact payloads are limited to 65,535 bytes; external storage is unfiltered fixed-size only |
 | Numeric values | int/uint 1–8,191 bytes through `BigIntegerValues` or structured `BigInteger`/`BigTime`/`BigBitfield` values, in either byte order; IEEE float16/32/64; x87 80-bit extended floats in 10- or 16-byte storage with either byte order | Extended values retain `Double` precision; arbitrary non-x87 floating field layouts are not emitted; scale-offset is limited to 32/64-bit floats |
 | Strings and structures | Fixed/vlen UTF-8; compound, enum, array, time, bitfield, opaque, references, complex and sequences; `Datatype::write_vlen_string` and `Datatype::write_vlen_sequence_with_address_size` can be nested in structured values without losing the file's address width | Complex output is little-endian canonical `r`/`i`; written sequence bases are fixed-size but may contain region references |
 | References | Legacy 8-byte objects and 12-byte regions plus opt-in version-4 object, region and attribute references in datasets, attributes, compounds, arrays and fixed-base sequences, including region references nested in sequence bases; legacy and version-4 object-, region- and attribute-reference datasets and attributes can also be patched | Targets must be same-file objects or external sources registered before encoding or patching; external target files must remain available under the embedded name; region targets must be existing datasets with a non-null dataspace; attribute targets must already exist; legacy remains the default |
@@ -90,6 +91,8 @@ moon test --target wasm
 moon test --target native
 moon run src/cmd/write_demo --target native -- output.h5
 python scripts/verify_writer_output.py output.h5
+moon run src/cmd/virtual_dataset_demo --target native -- new.h5 edited.h5
+python scripts/verify_virtual_dataset_write.py new.h5 edited.h5
 ```
 
 Ordinary MoonBit tests need no Python or native HDF5. Fixture generation is in

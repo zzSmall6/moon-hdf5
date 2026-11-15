@@ -1,10 +1,270 @@
 ///|
-/// One serialized mapping in a virtual dataset layout.
-priv struct VirtualDatasetMapping {
+/// One source-to-virtual mapping in a virtual dataset layout.
+#derive(Eq, @debug.Debug)
+pub(all) struct Hdf5VirtualMapping {
   source_file : String
   source_dataset : String
   source_selection : Hdf5RegionSelection
   virtual_selection : Hdf5RegionSelection
+}
+
+///|
+pub extend Hdf5VirtualMapping with Eq::{not_equal, equal}
+
+///|
+pub extend Hdf5VirtualMapping with @debug.Debug::{to_repr}
+
+///|
+fn copy_virtual_mappings(
+  mappings : Array[Hdf5VirtualMapping],
+) -> Array[Hdf5VirtualMapping] {
+  mappings.map(mapping => {
+    source_file: mapping.source_file,
+    source_dataset: mapping.source_dataset,
+    source_selection: copy_region_selection(mapping.source_selection),
+    virtual_selection: copy_region_selection(mapping.virtual_selection),
+  })
+}
+
+///|
+fn validate_virtual_mapping_string(
+  value : String,
+  description : String,
+) -> Unit raise Hdf5Error {
+  let encoded = @utf8.encode(value)
+  guard encoded.length() > 0 && encoded.length() <= 0x7FFFFFFF else {
+    raise InvalidArgument(description + " is empty or too long")
+  }
+  for byte in encoded {
+    guard byte != b'\x00' else {
+      raise InvalidArgument(description + " cannot contain NUL")
+    }
+  }
+}
+
+///|
+fn virtual_mapping_source_rank(
+  selection : Hdf5RegionSelection,
+) -> Int32 raise Hdf5Error {
+  let rank = match selection {
+    RegionEmpty | RegionAll => 0
+    RegionPoints(points) =>
+      if points.length() == 0 {
+        0
+      } else {
+        points[0].length()
+      }
+    RegionHyperslab(start, _, _, _) => start.length()
+    RegionBlocks(blocks) =>
+      if blocks.length() == 0 {
+        0
+      } else {
+        blocks[0].start.length()
+      }
+  }
+  guard rank <= 32 else {
+    raise InvalidArgument("virtual source selection rank exceeds 32")
+  }
+  rank
+}
+
+///|
+fn validate_virtual_source_selection(
+  selection : Hdf5RegionSelection,
+) -> Unit raise Hdf5Error {
+  let rank = virtual_mapping_source_rank(selection)
+  match selection {
+    RegionEmpty | RegionAll => ()
+    RegionPoints(points) =>
+      for point in points {
+        guard point.length() == rank else {
+          raise InvalidArgument(
+            "virtual source point rank does not match the selection",
+          )
+        }
+      }
+    RegionHyperslab(_start, stride, count, block) => {
+      guard stride.length() == rank &&
+        count.length() == rank &&
+        block.length() == rank else {
+        raise InvalidArgument(
+          "virtual source hyperslab rank does not match the selection",
+        )
+      }
+      for axis in 0..<rank {
+        if count[axis] == 0UL || block[axis] == 0UL {
+          continue
+        }
+        guard stride[axis] > 0UL else {
+          raise InvalidArgument(
+            "virtual source hyperslab stride must be positive",
+          )
+        }
+      }
+    }
+    RegionBlocks(blocks) =>
+      for block in blocks {
+        guard block.start.length() == rank && block.end.length() == rank else {
+          raise InvalidArgument(
+            "virtual source block rank does not match the selection",
+          )
+        }
+        for axis in 0..<rank {
+          guard block.start[axis] <= block.end[axis] else {
+            raise InvalidArgument("virtual source block start exceeds its end")
+          }
+        }
+      }
+  }
+}
+
+///|
+fn virtual_selection_known_count(
+  selection : Hdf5RegionSelection,
+) -> UInt64? raise Hdf5Error {
+  match selection {
+    RegionEmpty => Some(0UL)
+    RegionAll => None
+    RegionPoints(points) => Some(points.length().to_uint64())
+    RegionHyperslab(_, _, count, block) => {
+      let mut total = 1UL
+      for axis in 0..<count.length() {
+        guard block[axis] == 0UL ||
+          count[axis] <= 0xFFFFFFFFFFFFFFFFUL / block[axis] else {
+          raise InvalidArgument("virtual hyperslab element count overflows")
+        }
+        let axis_count = count[axis] * block[axis]
+        guard axis_count == 0UL || total <= 0xFFFFFFFFFFFFFFFFUL / axis_count else {
+          raise InvalidArgument("virtual hyperslab element count overflows")
+        }
+        total = total * axis_count
+      }
+      Some(total)
+    }
+    RegionBlocks(blocks) => {
+      let mut total = 0UL
+      for block in blocks {
+        let mut block_count = 1UL
+        for axis in 0..<block.start.length() {
+          guard block.end[axis] >= block.start[axis] &&
+            block.end[axis] - block.start[axis] <= 0xFFFFFFFFFFFFFFFFUL - 1UL else {
+            raise InvalidArgument("virtual block element count overflows")
+          }
+          let length = block.end[axis] - block.start[axis] + 1UL
+          guard block_count <= 0xFFFFFFFFFFFFFFFFUL / length else {
+            raise InvalidArgument("virtual block element count overflows")
+          }
+          block_count = block_count * length
+        }
+        guard total <= 0xFFFFFFFFFFFFFFFFUL - block_count else {
+          raise InvalidArgument("virtual block element count overflows")
+        }
+        total = total + block_count
+      }
+      Some(total)
+    }
+  }
+}
+
+///|
+fn validate_virtual_mapping(
+  dimensions : Array[UInt64],
+  mapping : Hdf5VirtualMapping,
+) -> Unit raise Hdf5Error {
+  match mapping.source_selection {
+    RegionEmpty | RegionAll | RegionHyperslab(_, _, _, _) => ()
+    RegionPoints(_) | RegionBlocks(_) =>
+      raise UnsupportedFeature(
+        "HDF5 1.14.6 virtual datasets support only all, empty and hyperslab source selections; use multiple hyperslab mappings for irregular regions",
+      )
+  }
+  match mapping.virtual_selection {
+    RegionEmpty | RegionAll | RegionHyperslab(_, _, _, _) => ()
+    RegionPoints(_) | RegionBlocks(_) =>
+      raise UnsupportedFeature(
+        "HDF5 1.14.6 virtual datasets support only all, empty and hyperslab virtual selections",
+      )
+  }
+  validate_virtual_mapping_string(
+    mapping.source_file,
+    "virtual source file name",
+  )
+  validate_virtual_mapping_string(
+    mapping.source_dataset,
+    "virtual source dataset path",
+  )
+  validate_virtual_source_selection(mapping.source_selection)
+  let dataspace : Dataspace = {
+    kind: if dimensions.length() == 0 {
+      Scalar
+    } else {
+      Simple
+    },
+    dimensions,
+    maximum_dimensions: dimensions,
+  }
+  validate_region_selection(dataspace, mapping.virtual_selection)
+  match
+    (
+      virtual_selection_known_count(mapping.source_selection),
+      virtual_selection_known_count(mapping.virtual_selection),
+    ) {
+    (Some(source_count), Some(virtual_count)) => {
+      guard source_count == virtual_count else {
+        raise InvalidArgument(
+          "virtual source and virtual selections have different element counts",
+        )
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
+fn encode_virtual_mapping_block(
+  dimensions : Array[UInt64],
+  mappings : Array[Hdf5VirtualMapping],
+  length_size : Int32,
+) -> Bytes raise Hdf5Error {
+  guard length_size == 4 || length_size == 8 else {
+    raise InvalidArgument("virtual mapping length size must be 4 or 8 bytes")
+  }
+  guard mappings.length() <= 0x7FFFFFFF &&
+    editable_uint_fits_width(mappings.length().to_uint64(), length_size) else {
+    raise InvalidArgument("virtual mapping count is too large")
+  }
+  let buffer = @buffer.Buffer::Buffer()
+  buffer.write_byte(b'\x00')
+  write_uint_width(buffer, mappings.length().to_uint64(), length_size)
+  for mapping in mappings {
+    validate_virtual_mapping(dimensions, mapping)
+    writer_write_bytes(buffer, @utf8.encode(mapping.source_file))
+    buffer.write_byte(b'\x00')
+    writer_write_bytes(buffer, @utf8.encode(mapping.source_dataset))
+    buffer.write_byte(b'\x00')
+    writer_write_bytes(
+      buffer,
+      encode_region_selection_body(
+        mapping.source_selection,
+        virtual_mapping_source_rank(mapping.source_selection),
+      ),
+    )
+    writer_write_bytes(
+      buffer,
+      encode_region_selection_body(
+        mapping.virtual_selection,
+        dimensions.length(),
+      ),
+    )
+  }
+  let payload = buffer.to_bytes()
+  guard payload.length() <= 0x7FFFFFFF - 4 else {
+    raise InvalidArgument("virtual mapping block is too large")
+  }
+  let result = @buffer.Buffer::Buffer(size_hint=payload.length() + 4)
+  writer_write_bytes(result, payload)
+  result.write_uint_le(metadata_checksum(payload, 0, payload.length()))
+  result.to_bytes()
 }
 
 ///|
@@ -182,7 +442,7 @@ fn virtual_selection_ordinal_of(
 fn read_virtual_mappings(
   file : Hdf5File,
   layout : DataLayout,
-) -> Array[VirtualDatasetMapping] raise Hdf5Error {
+) -> Array[Hdf5VirtualMapping] raise Hdf5Error {
   let undefined = heap_undefined_address(file.superblock.offset_size)
   if layout.virtual_heap_address == undefined {
     return []
@@ -218,7 +478,7 @@ fn read_virtual_mappings(
     raise InvalidField("virtual mapping block entry count is too large")
   }
 
-  let mappings : Array[VirtualDatasetMapping] = []
+  let mappings : Array[Hdf5VirtualMapping] = []
   for _ in 0..<entry_count.to_int() {
     let source_file = read_link_c_string(
       reader, "virtual dataset source file name",

@@ -215,3 +215,183 @@ test "virtual datasets address large direct mappings without expansion" {
     Some(999999999999L),
   )
 }
+
+///|
+test "virtual datasets can be written to new files" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset(
+    "/source",
+    [3UL, 4UL],
+    Int32Values([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+  )
+  let datatype = Datatype::write_integer(true, 4)
+  writer.add_virtual_dataset("/same", [3UL, 4UL], datatype, [
+    {
+      source_file: ".",
+      source_dataset: "/source",
+      source_selection: RegionAll,
+      virtual_selection: RegionAll,
+    },
+  ])
+  writer.add_virtual_dataset(
+    "/mapped",
+    [2UL, 3UL],
+    datatype,
+    [
+      {
+        source_file: ".",
+        source_dataset: "/source",
+        source_selection: RegionHyperslab([1UL, 1UL], [1UL, 1UL], [2UL, 2UL], [
+          1UL, 1UL,
+        ]),
+        virtual_selection: RegionHyperslab([0UL, 0UL], [1UL, 1UL], [2UL, 2UL], [
+          1UL, 1UL,
+        ]),
+      },
+    ],
+    fill_value=SignedInteger(-1L),
+  )
+  writer.add_virtual_dataset(
+    "/empty",
+    [2UL, 2UL],
+    datatype,
+    [
+      {
+        source_file: ".",
+        source_dataset: "/source",
+        source_selection: RegionEmpty,
+        virtual_selection: RegionEmpty,
+      },
+    ],
+    fill_value=SignedInteger(-5L),
+  )
+
+  let file = Hdf5File::parse(writer.encode())
+  assert_eq(virtual_dataset_integers(file.read_dataset("/same")), [
+    1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L,
+  ])
+  let mapped = file.read_dataset("/mapped")
+  assert_eq(mapped.layout.kind(), Virtual)
+  assert_eq(virtual_dataset_integers(mapped), [6L, 7L, -1L, 10L, 11L, -1L])
+  assert_eq(virtual_dataset_integers(file.read_dataset("/empty")), [
+    -5L, -5L, -5L, -5L,
+  ])
+  let metadata = file.read_dataset_metadata("/mapped")
+  assert_eq(metadata.datatype.class, 0)
+  assert_eq(metadata.dataspace.dimensions, [2UL, 3UL])
+}
+
+///|
+test "virtual dataset writer rejects unsupported mapping selections" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/source", [2UL, 2UL], Int32Values([1, 2, 3, 4]))
+  let datatype = Datatype::write_integer(true, 4)
+  let points_error = try {
+    writer.add_virtual_dataset("/points", [2UL, 2UL], datatype, [
+      {
+        source_file: ".",
+        source_dataset: "/source",
+        source_selection: RegionPoints([[0UL, 0UL], [1UL, 1UL]]),
+        virtual_selection: RegionPoints([[0UL, 0UL], [1UL, 1UL]]),
+      },
+    ])
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_true(points_error is Some(UnsupportedFeature(_)))
+
+  let blocks_error = try {
+    writer.add_virtual_dataset("/blocks", [2UL, 2UL], datatype, [
+      {
+        source_file: ".",
+        source_dataset: "/source",
+        source_selection: RegionBlocks([{ start: [0UL, 0UL], end: [1UL, 1UL], }]),
+        virtual_selection: RegionBlocks([
+          { start: [0UL, 0UL], end: [1UL, 1UL], },
+        ]),
+      },
+    ])
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_true(blocks_error is Some(UnsupportedFeature(_)))
+}
+
+///|
+test "existing files can gain virtual datasets" {
+  let writer = Hdf5Writer::new()
+  writer.add_group("/group")
+  writer.add_dataset("/group/source", [2UL, 2UL], Int32Values([1, 2, 3, 4]))
+  let file = Hdf5File::parse(writer.encode())
+  let created = file.add_virtual_dataset(
+    "/group",
+    "mapped",
+    [3UL, 3UL],
+    Datatype::write_integer(true, 4),
+    [
+      {
+        source_file: ".",
+        source_dataset: "/group/source",
+        source_selection: RegionAll,
+        virtual_selection: RegionHyperslab([1UL, 1UL], [1UL, 1UL], [2UL, 2UL], [
+          1UL, 1UL,
+        ]),
+      },
+    ],
+    fill_value=SignedInteger(-1L),
+  ) catch {
+    error => fail("create virtual dataset: " + error.message())
+  }
+  let edited = Hdf5File::parse(created)
+  let metadata = edited.read_dataset_metadata("/group/mapped")
+  assert_eq(metadata.layout.kind(), Virtual)
+  assert_eq(metadata.dataspace.dimensions, [3UL, 3UL])
+  assert_eq(virtual_dataset_integers(edited.read_dataset("/group/mapped")), [
+    -1L, -1L, -1L, -1L, 1L, 2L, -1L, 3L, 4L,
+  ])
+  assert_eq(edited.resolve("/group/source").kind, Dataset)
+}
+
+///|
+test "existing four-byte files can gain virtual datasets" {
+  let file = Hdf5File::parse(
+    @fs.read_file_to_bytes("testdata/symbol_table_32.h5"),
+  )
+  let source = file.add_dataset(
+    "/group",
+    "virtual_source",
+    [2UL],
+    Int32Values([7, 8]),
+  ) catch {
+    error => fail("create virtual source: " + error.message())
+  }
+  let parsed_source = Hdf5File::parse(source)
+  let created = parsed_source.add_virtual_dataset(
+    "/group",
+    "virtual_mapped",
+    [2UL],
+    Datatype::write_integer(true, 4),
+    [
+      {
+        source_file: ".",
+        source_dataset: "/group/virtual_source",
+        source_selection: RegionAll,
+        virtual_selection: RegionAll,
+      },
+    ],
+  ) catch {
+    error => fail("create four-byte virtual dataset: " + error.message())
+  }
+  let edited = Hdf5File::parse(created)
+  assert_eq(edited.superblock.offset_size, 4)
+  assert_eq(
+    edited.read_dataset_metadata("/group/virtual_mapped").layout.kind(),
+    Virtual,
+  )
+  assert_eq(
+    virtual_dataset_integers(edited.read_dataset("/group/virtual_mapped")),
+    [7L, 8L],
+  )
+}

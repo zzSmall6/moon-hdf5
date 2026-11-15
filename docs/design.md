@@ -60,6 +60,13 @@ mappings are addressed directly, so a page request reads only the corresponding
 source elements even when the mapping itself contains very many elements. Point
 and irregular block mappings retain the materialized mapping path.
 
+The writer emits the same layout-v4 form. Each virtual dataset appends a
+checksummed mapping block as a global-heap object, then stores its heap address
+and object index in the dataset layout. All, empty and hyperslab selections are
+encoded; HDF5 1.14.6 rejects point and block virtual mappings, so the writer
+rejects them too. Source files are recorded by name but are not opened or
+validated during creation.
+
 Filters are decoded through a shared pipeline model: shuffle, deflate,
 Fletcher32, integer scale-offset and f32/f64 decimal scale-offset. Per-chunk
 masks follow HDF5 filter order. Non-finite scale-offset inputs are rejected.
@@ -447,7 +454,8 @@ rejected instead of producing a file HDF5 may corrupt on resize. Custom filters
 for appended chunked datasets are supplied through the `custom_filters`
 argument, registered with the same ID/name validation as `Hdf5Writer`, and used
 by the fixed-array, extensible-array and v2 B-tree storage encoders. Virtual
-storage is read-only; this entry point does not emit virtual mappings.
+dataset creation appends a width-aware mapping heap and layout-v4 message and
+supports an optional fill value.
 The parent may use link messages or a symbol table; symbol-table parents are
 converted during attachment. Created objects participate in later attribute,
 link and object-creation edits. Object deletion is available as hard-link

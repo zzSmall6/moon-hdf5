@@ -157,7 +157,7 @@ fn Hdf5File::append_created_values_heap(
     let start = append_aligned_bytes_to_tail(
       tail,
       self.bytes.length(),
-      encode_heap_objects(regions),
+      encode_heap_objects(regions, length_size=self.superblock.length_size),
       "append dataset region-reference heap",
     )
     file_offset_to_stored_address(start, self.superblock.base_address)
@@ -198,14 +198,17 @@ fn Hdf5File::append_created_values_heap(
     let start = append_aligned_bytes_to_tail(
       tail,
       self.bytes.length(),
-      encode_global_heap({
-        address: 0UL,
-        region_address,
-        strings,
-        regions,
-        sequences,
-        external_references: [],
-      }),
+      encode_global_heap(
+        {
+          address: 0UL,
+          region_address,
+          strings,
+          regions,
+          sequences,
+          external_references: [],
+        },
+        length_size=self.superblock.length_size,
+      ),
       "append dataset global heap",
     )
     file_offset_to_stored_address(start, self.superblock.base_address)
