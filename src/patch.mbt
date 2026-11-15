@@ -3323,6 +3323,8 @@ fn Hdf5File::patch_dataset_values_impl(
   )
   let nested_reference = patch_nested_reference_datatype(metadata.datatype)
   let vlen_reference = patch_vlen_reference_datatype(metadata.datatype)
+  let nested_vlen = !variable_length &&
+    datatype_contains_vlen(metadata.datatype)
   guard !datatype_contains_reference(metadata.datatype) ||
     legacy_object_reference ||
     legacy_region_reference ||
@@ -3333,12 +3335,7 @@ fn Hdf5File::patch_dataset_values_impl(
     vlen_reference else {
     raise UnsupportedFeature("reference datatypes cannot be patched")
   }
-  guard variable_length || !datatype_contains_vlen(metadata.datatype) else {
-    raise UnsupportedFeature(
-      "only variable-length string or sequence datatypes can be patched",
-    )
-  }
-  if variable_length && chunked {
+  if datatype_contains_vlen(metadata.datatype) && chunked {
     let filters = match header.first(msg_filter_pipeline) {
       Some(message) =>
         parse_filters(message, custom_filters=self.custom_filters)
@@ -3422,6 +3419,17 @@ fn Hdf5File::patch_dataset_values_impl(
       self.bytes.length(),
       prefix_tail,
       "append a nested-reference dataset heap",
+    )
+  } else if nested_vlen {
+    self.encode_patch_nested_references(
+      values,
+      metadata.datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append a nested variable-length dataset heap",
     )
   } else {
     let encoded = encode_write_values(values)
@@ -3508,11 +3516,12 @@ pub fn Hdf5File::patch_contiguous_dataset(
 /// one appended global heap; legacy region references append deduplicated
 /// target-address plus selection payloads to a global heap. Version-4 object
 /// references write direct address tokens, while version-4 region and attribute
-/// references append indirect heap payloads. Chunked values accept unfiltered
-/// storage, Shuffle or deflate, and cannot create a missing fixed-array data
-/// block or extensible-array metadata. External storage, external-file
-/// version-4 references, reference-bearing compound/array/sequence datatypes
-/// and nested variable-length datatypes are rejected. Legacy object references
+/// references append indirect heap payloads. Variable-length strings and
+/// sequences nested in compound, array and sequence members are encoded
+/// recursively. Chunked values accept unfiltered storage, Shuffle or deflate,
+/// and cannot create a missing fixed-array data block or extensible-array
+/// metadata. External storage and external-file version-4 references are
+/// rejected. Legacy object references
 /// require a slot width equal to the file address size; legacy region
 /// references require four additional bytes and existing dataset targets with
 /// non-null dataspaces. Version-4 region and attribute targets are same-file

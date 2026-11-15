@@ -96,49 +96,6 @@ fn patch_vlen_string_charset_valid(value : String, charset : Int32) -> Bool {
 }
 
 ///|
-fn encode_patch_vlen_references(
-  lengths : Array[Int32],
-  objects : Array[Bytes],
-  heap : PatchHeap,
-  heap_address : UInt64,
-  offset_size : Int32,
-  element_size : Int32,
-) -> Bytes raise Hdf5Error {
-  guard lengths.length() == objects.length() else {
-    raise InvalidField("variable-length value metadata length mismatch")
-  }
-  guard element_size >= 8 + offset_size else {
-    raise UnsupportedFeature("variable-length datatype is too small")
-  }
-  guard lengths.length().to_int64() * element_size.to_int64() <= 0x7FFFFFFFL else {
-    raise UnsupportedFeature("variable-length value is too large")
-  }
-  let buffer = @buffer.Buffer::Buffer(size_hint=lengths.length() * element_size)
-  for index in 0..<lengths.length() {
-    buffer.write_uint_le(lengths[index].reinterpret_as_uint())
-    let item = objects[index]
-    if item.length() == 0 {
-      write_uint_width(buffer, 0UL, offset_size)
-      buffer.write_uint_le(0U)
-    } else {
-      let heap_index = match heap.objects.search_by(object => object == item) {
-        Some(heap_index) => heap_index
-        None =>
-          raise InvalidField("variable-length value is missing from its heap")
-      }
-      write_uint_width(buffer, heap_address, offset_size)
-      buffer.write_uint_le((heap_index + 1).reinterpret_as_uint())
-    }
-    writer_write_zeros(buffer, element_size - 8 - offset_size)
-  }
-  let payload = buffer.to_bytes()
-  guard payload.length() == lengths.length() * element_size else {
-    raise InvalidField("variable-length reference size mismatch")
-  }
-  payload
-}
-
-///|
 fn Hdf5File::encode_patch_vlen_values(
   self : Hdf5File,
   values : Hdf5WriteValues,
@@ -153,169 +110,53 @@ fn Hdf5File::encode_patch_vlen_values(
   guard datatype.class == 9 else {
     raise UnsupportedFeature("only variable-length values can be patched")
   }
-  let lengths : Array[Int32] = []
-  let objects : Array[Bytes] = []
-  if datatype.vlen_is_string {
-    guard datatype.string_charset >= 0 && datatype.string_charset <= 1 else {
-      raise UnsupportedFeature("unsupported variable-length string charset")
-    }
-    let items = match values {
+  let items : Array[DatasetValue] = if datatype.vlen_is_string {
+    let strings = match values {
       VariableStringValues(items) => items
       _ =>
         raise InvalidArgument("patched values must be variable-length strings")
     }
-    for item in items {
-      guard patch_vlen_string_charset_valid(item, datatype.string_charset) else {
-        raise InvalidArgument(
-          "variable-length strings do not match the datatype charset",
-        )
-      }
-      let encoded = @utf8.encode(item)
-      lengths.push(encoded.length())
-      objects.push(encoded)
+    let converted : Array[DatasetValue] = []
+    for item in strings {
+      converted.push(Text(item))
     }
+    converted
   } else {
-    guard datatype.base_types.length() == 1 && datatype.base_types[0].size > 0 else {
-      raise UnsupportedFeature(
-        "variable-length sequence datatype is missing a base datatype",
-      )
-    }
-    let base = datatype.base_types[0]
-    guard !datatype_contains_vlen(base) else {
-      raise UnsupportedFeature(
-        "variable-length sequence base must be fixed-size",
-      )
-    }
-    let items = match values {
+    match values {
       StructuredValues(_, items) => items
       _ =>
         raise InvalidArgument(
           "patched values must be variable-length sequences",
         )
     }
-    let sequences : Array[Array[DatasetValue]] = []
-    for item in items {
-      let sequence = match item {
-        Sequence(values) => values
-        _ =>
-          raise InvalidArgument(
-            "patched values must be variable-length sequences",
-          )
-      }
-      guard sequence.length().to_int64() <= 0x7FFFFFFFL else {
-        raise UnsupportedFeature("variable-length sequence is too large")
-      }
-      guard sequence.length().to_int64() <= 0x7FFFFFFFL / base.size.to_int64() else {
-        raise UnsupportedFeature(
-          "variable-length sequence payload is too large",
-        )
-      }
-      sequences.push(sequence)
-    }
-    if datatype_contains_reference(base) {
-      let payloads : Array[Bytes] = []
-      for sequence in sequences {
-        for element in sequence {
-          self.collect_patch_structured_reference_payloads(
-            base, element, payloads, offset_size, 0,
-          )
-        }
-      }
-      let heap_objects = patch_unique_heap_objects(payloads)
-      let mut has_payload = heap_objects.length() > 0
-      for sequence in sequences {
-        if sequence.length() > 0 {
-          has_payload = true
-        }
-      }
-      let heap_address = if has_payload {
-        let start = next_aligned_tail_start(file_length, tail.length(), purpose)
-        file_offset_to_stored_address(start, base_address)
-      } else {
-        0UL
-      }
-      let reference_heap = { objects: heap_objects, data: b"", }
-      let sequence_objects : Array[Bytes] = []
-      for sequence in sequences {
-        if sequence.length() == 0 {
-          lengths.push(0)
-          sequence_objects.push(b"")
-        } else {
-          let encoded = @buffer.Buffer::Buffer(
-            size_hint=sequence.length() * base.size,
-          )
-          for element in sequence {
-            writer_write_bytes(
-              encoded,
-              self.encode_patch_structured_reference_value(
-                base, element, reference_heap, heap_address, offset_size, 0,
-              ),
-            )
-          }
-          let payload = encoded.to_bytes()
-          guard payload.length() == sequence.length() * base.size else {
-            raise InvalidField("variable-length sequence payload size mismatch")
-          }
-          lengths.push(sequence.length())
-          sequence_objects.push(payload)
-          if !heap_objects.contains(payload) {
-            guard heap_objects.length() < 65535 else {
-              raise UnsupportedFeature(
-                "variable-length values have too many heap objects",
-              )
-            }
-            heap_objects.push(payload)
-          }
-        }
-      }
-      let heap = encode_patch_heap(heap_objects, length_size)
-      if heap.data.length() > 0 {
-        append_aligned_bytes_to_tail(tail, file_length, heap.data, purpose)
-        |> ignore
-      }
-      return encode_patch_vlen_references(
-        lengths,
-        sequence_objects,
-        heap,
-        heap_address,
-        offset_size,
-        datatype.size,
-      )
-    }
-    for sequence in sequences {
-      if sequence.length() == 0 {
-        lengths.push(0)
-        objects.push(b"")
-      } else {
-        let encoded = @buffer.Buffer::Buffer(
-          size_hint=sequence.length() * base.size,
-        )
-        for element in sequence {
-          writer_write_bytes(encoded, encode_structured_value(base, element))
-        }
-        lengths.push(sequence.length())
-        objects.push(encoded.to_bytes())
-      }
-    }
   }
-  let heap = encode_patch_heap(patch_unique_heap_objects(objects), length_size)
-  let heap_address = if heap.data.length() == 0 {
-    0UL
-  } else {
+  let heap_start = next_aligned_tail_start(file_length, tail.length(), purpose)
+  let heap_address = file_offset_to_stored_address(heap_start, base_address)
+  let heap : PatchHeap = { objects: [], data: b"", }
+  let payload = @buffer.Buffer::Buffer(size_hint=items.length() * datatype.size)
+  for item in items {
+    writer_write_bytes(
+      payload,
+      self.encode_patch_structured_reference_value(
+        datatype, item, heap, heap_address, offset_size, 0,
+      ),
+    )
+  }
+  let bytes = payload.to_bytes()
+  guard bytes.length() == items.length() * datatype.size else {
+    raise InvalidField("variable-length payload size mismatch")
+  }
+  let encoded_heap = encode_patch_heap(heap.objects, length_size)
+  if encoded_heap.data.length() > 0 {
     let start = append_aligned_bytes_to_tail(
       tail,
       file_length,
-      heap.data,
+      encoded_heap.data,
       purpose,
     )
-    file_offset_to_stored_address(start, base_address)
+    guard start == heap_start else {
+      raise InvalidField("variable-length heap address changed while encoding")
+    }
   }
-  encode_patch_vlen_references(
-    lengths,
-    objects,
-    heap,
-    heap_address,
-    offset_size,
-    datatype.size,
-  )
+  bytes
 }

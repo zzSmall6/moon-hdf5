@@ -250,7 +250,7 @@ test "patching supports big-endian numeric datasets and rejects external sources
 }
 
 ///|
-test "patching supports nested references but rejects nested variable lengths" {
+test "patching supports nested references and variable lengths" {
   let writer = Hdf5Writer::new()
   writer.add_dataset("/target", [1UL], Int64Values([42L]))
   let reference_record = Datatype::write_compound([
@@ -305,26 +305,24 @@ test "patching supports nested references but rejects nested variable lengths" {
     }
     _ => fail("expected patched reference record values")
   }
-  let sequence_error = try {
+  let sequence_patched = Hdf5File::parse(
     file.patch_contiguous_dataset(
       "/sequence_record",
       StructuredValues(sequence_record, [
-        Compound([{ name: "items", value: Sequence([SignedInteger(2L)]), }]),
+        Compound([
+          {
+            name: "items",
+            value: Sequence([SignedInteger(2L), SignedInteger(3L)]),
+          },
+        ]),
       ]),
-    )
-    |> ignore
-    None
-  } catch {
-    error => Some(error)
-  }
-  assert_eq(
-    sequence_error,
-    Some(
-      UnsupportedFeature(
-        "only variable-length string or sequence datatypes can be patched",
-      ),
     ),
   )
+  match sequence_patched.read_dataset("/sequence_record").values {
+    Structured([Compound([items])]) =>
+      assert_eq(items.value, Sequence([SignedInteger(2L), SignedInteger(3L)]))
+    _ => fail("expected patched nested variable-length values")
+  }
 }
 
 ///|

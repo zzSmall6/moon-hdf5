@@ -320,12 +320,12 @@ region and attribute references append their indirect payloads to the heap,
 validate region dataspaces and existing attribute names, and rewrite kind,
 payload length, heap address and object index. The superblock EOF and checksum
 are updated; all-empty variable-length, null-only region-reference and
-all-null version-4 values skip the append. Compound and fixed-array values are
-traversed recursively, so references in members, nested members and array
-elements and fixed-base sequence elements use the same address-width and heap
-rules. Shared attribute messages, filtered heap storage, external-file
-version-4 flags and nested variable-length values are rejected. Old global
-heaps remain unreferenced because no free-space reclamation is written.
+all-null version-4 values skip the append. Compound, fixed-array and sequence
+values are traversed recursively, so references and variable-length values in
+members, nested members, array elements and sequence elements use the same
+address-width and heap rules. Shared attribute messages, filtered heap storage
+and external-file version-4 flags are rejected. Old global heaps remain
+unreferenced because no free-space reclamation is written.
 
 `add_attribute`, `rename_attribute` and `delete_attribute` use a separate
 metadata-rebuild path. The reader collects compact and dense attribute messages,

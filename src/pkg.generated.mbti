@@ -230,6 +230,7 @@ pub fn Datatype::write_version4_object_reference_with_address_size(Int32) -> Sel
 pub fn Datatype::write_version4_region_reference() -> Self
 pub fn Datatype::write_version4_region_reference_with_address_size(Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_vlen_sequence(Self) -> Self raise Hdf5Error
+pub fn Datatype::write_vlen_string() -> Self
 
 #derive(@debug.Debug)
 pub(all) struct EnumMember {

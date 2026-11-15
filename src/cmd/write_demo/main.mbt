@@ -888,6 +888,62 @@ fn run(args : Array[String]) -> Int32 {
         @lib.Elements([@lib.FloatingPoint(3.25), @lib.FloatingPoint(4.5)]),
       ]),
     )
+    let nested_text = @lib.Datatype::write_vlen_string()
+    let nested_counts = @lib.Datatype::write_vlen_sequence(
+      @lib.Datatype::write_integer(true, 4),
+    )
+    let nested_labels = @lib.Datatype::write_array(nested_text, [2UL])
+    let nested_type = @lib.Datatype::write_compound([
+      ("name", nested_text),
+      ("counts", nested_counts),
+      ("labels", nested_labels),
+    ])
+    let nested_record = fn(
+      name : String,
+      counts : Array[@lib.DatasetValue],
+      left : String,
+      right : String,
+    ) -> @lib.DatasetValue {
+      @lib.Compound([
+        { name: "name", value: @lib.Text(name), },
+        { name: "counts", value: @lib.Sequence(counts), },
+        {
+          name: "labels",
+          value: @lib.Elements([@lib.Text(left), @lib.Text(right)]),
+        },
+      ])
+    }
+    writer.add_dataset(
+      "/structured/nested_vlen",
+      [2UL],
+      StructuredValues(nested_type, [
+        nested_record(
+          "first",
+          [@lib.SignedInteger(1L), @lib.SignedInteger(2L)],
+          "甲",
+          "",
+        ),
+        nested_record("", [], "", "乙"),
+      ]),
+    )
+    writer.add_attribute(
+      "/structured/nested_vlen",
+      "prototype",
+      [],
+      StructuredValues(nested_type, [nested_record("template", [], "x", "y")]),
+    )
+    writer.add_chunked_dataset(
+      "/structured/nested_vlen_chunked",
+      [4UL],
+      [2U],
+      StructuredValues(nested_type, [
+        nested_record("压缩", [@lib.SignedInteger(3L)], "一", ""),
+        nested_record("", [], "", "二"),
+        nested_record("third", [@lib.SignedInteger(4L)], "三", "四"),
+        nested_record("", [], "", ""),
+      ]),
+      filters=[Shuffle, Deflate(6)],
+    )
     writer.add_extensible_dataset(
       "/structured/states",
       [0UL],

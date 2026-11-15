@@ -34,6 +34,7 @@ fn writer_datatype(
   reference_kind~ : Int32 = 0,
   bit_offset~ : Int32 = 0,
   bit_precision~ : Int32 = 0,
+  vlen_is_string~ : Bool = false,
   opaque_tag~ : String = "",
   enum_members~ : Array[EnumMember] = [],
   compound_members~ : Array[CompoundMember] = [],
@@ -46,7 +47,7 @@ fn writer_datatype(
     size,
     signed,
     little_endian,
-    vlen_is_string: false,
+    vlen_is_string,
     enum_members,
     compound_members,
     base_types,
@@ -71,7 +72,7 @@ fn writer_datatype(
     } else {
       0
     },
-    string_charset: if class == 3 {
+    string_charset: if class == 3 || (class == 9 && vlen_is_string) {
       1
     } else {
       0
@@ -198,6 +199,12 @@ pub fn Datatype::write_vlen_sequence(
     )
   }
   writer_datatype(9, 16, base_types=[base])
+}
+
+///|
+/// Creates a variable-length UTF-8 string datatype for structured writes.
+pub fn Datatype::write_vlen_string() -> Datatype {
+  writer_datatype(9, 16, vlen_is_string=true, base_types=[writer_datatype(0, 1)])
 }
 
 ///|
@@ -1095,23 +1102,35 @@ fn validate_writer_datatype(
       }
     }
     9 => {
-      guard datatype.size == 16 &&
-        !datatype.vlen_is_string &&
-        datatype.base_types.length() == 1 else {
-        raise InvalidArgument("writer variable-length sequence is invalid")
+      guard datatype.size == 16 else {
+        raise InvalidArgument("writer variable-length datatype is invalid")
       }
-      let base = datatype.base_types[0]
-      guard !datatype_contains_vlen(base) else {
-        raise InvalidArgument(
-          "writer variable-length sequence base must be fixed-size",
-        )
+      if datatype.vlen_is_string {
+        guard datatype.base_types.length() == 1 else {
+          raise InvalidArgument("writer variable-length string is invalid")
+        }
+        let base = datatype.base_types[0]
+        validate_writer_datatype(base, depth + 1, reference_address_size~)
+        guard base.class == 0 && base.size == 1 && !base.signed else {
+          raise InvalidArgument("writer variable-length string base is invalid")
+        }
+      } else {
+        guard datatype.base_types.length() == 1 else {
+          raise InvalidArgument("writer variable-length sequence is invalid")
+        }
+        let base = datatype.base_types[0]
+        guard !datatype_contains_vlen(base) else {
+          raise InvalidArgument(
+            "writer variable-length sequence base must be fixed-size",
+          )
+        }
+        guard !datatype_contains_region_reference(base) else {
+          raise InvalidArgument(
+            "writer variable-length sequence base cannot contain region references",
+          )
+        }
+        validate_writer_datatype(base, depth + 1, reference_address_size~)
       }
-      guard !datatype_contains_region_reference(base) else {
-        raise InvalidArgument(
-          "writer variable-length sequence base cannot contain region references",
-        )
-      }
-      validate_writer_datatype(base, depth + 1, reference_address_size~)
     }
     10 => {
       guard datatype.base_types.length() == 1 &&
@@ -1275,17 +1294,24 @@ fn validate_structured_value(
         raise InvalidArgument("enum value does not match any member")
       }
     }
-    9 => {
-      guard value is Sequence(items) else {
-        raise InvalidArgument(
-          "variable-length sequence value has the wrong kind",
-        )
+    9 =>
+      if datatype.vlen_is_string {
+        guard value is Text(_) else {
+          raise InvalidArgument(
+            "variable-length string value has the wrong kind",
+          )
+        }
+      } else {
+        guard value is Sequence(items) else {
+          raise InvalidArgument(
+            "variable-length sequence value has the wrong kind",
+          )
+        }
+        let base = datatype.base_types[0]
+        for item in items {
+          validate_structured_value(item, base, depth + 1)
+        }
       }
-      let base = datatype.base_types[0]
-      for item in items {
-        validate_structured_value(item, base, depth + 1)
-      }
-    }
     10 => {
       guard value is Elements(items) else {
         raise InvalidArgument("array value has the wrong kind")
@@ -3100,15 +3126,40 @@ fn encode_writer_datatype(
     }
     9 => {
       let buffer = @buffer.Buffer::Buffer()
-      buffer.write_byte(b'\x19')
-      buffer.write_byte(b'\x00')
-      buffer.write_byte(b'\x00')
+      buffer.write_byte(((1 << 4) | 9).to_byte())
+      buffer.write_byte(
+        if datatype.vlen_is_string {
+          (1 | (datatype.string_padding << 4)).to_byte()
+        } else {
+          b'\x00'
+        },
+      )
+      buffer.write_byte(
+        if datatype.vlen_is_string {
+          datatype.string_charset.to_byte()
+        } else {
+          b'\x00'
+        },
+      )
       buffer.write_byte(b'\x00')
       buffer.write_uint_le(datatype.size.reinterpret_as_uint())
-      writer_write_bytes(
-        buffer,
-        encode_writer_datatype(datatype.base_types[0], reference_address_size~),
-      )
+      if datatype.vlen_is_string {
+        writer_write_bytes(
+          buffer,
+          encode_writer_datatype(
+            datatype.base_types[0],
+            reference_address_size~,
+          ),
+        )
+      } else {
+        writer_write_bytes(
+          buffer,
+          encode_writer_datatype(
+            datatype.base_types[0],
+            reference_address_size~,
+          ),
+        )
+      }
       buffer.to_bytes()
     }
     10 => {
@@ -3365,35 +3416,54 @@ fn encode_structured_value(
         _ => ()
       }
     9 =>
-      match value {
-        Sequence(items) =>
-          if items.length() == 0 {
-            buffer.write_uint_le(0U)
-            buffer.write_uint64_le(0UL)
-            buffer.write_uint_le(0U)
-          } else {
-            let encoded = @buffer.Buffer::Buffer()
-            let base = datatype.base_types[0]
-            for item in items {
-              writer_write_bytes(
-                encoded,
-                encode_structured_value(
-                  base,
-                  item,
-                  heap~,
-                  objects~,
-                  reference_address_size~,
-                ),
+      if datatype.vlen_is_string {
+        match value {
+          Text(text) =>
+            if @utf8.encode(text).length() == 0 {
+              buffer.write_uint_le(0U)
+              buffer.write_uint64_le(0UL)
+              buffer.write_uint_le(0U)
+            } else {
+              let encoded = @utf8.encode(text)
+              buffer.write_uint_le(encoded.length().reinterpret_as_uint())
+              buffer.write_uint64_le(heap.address)
+              buffer.write_uint_le(
+                writable_heap_index(heap, text).reinterpret_as_uint(),
               )
             }
-            let data = encoded.to_bytes()
-            buffer.write_uint_le(items.length().reinterpret_as_uint())
-            buffer.write_uint64_le(heap.address)
-            buffer.write_uint_le(
-              writable_sequence_heap_index(heap, data).reinterpret_as_uint(),
-            )
-          }
-        _ => ()
+          _ => ()
+        }
+      } else {
+        match value {
+          Sequence(items) =>
+            if items.length() == 0 {
+              buffer.write_uint_le(0U)
+              buffer.write_uint64_le(0UL)
+              buffer.write_uint_le(0U)
+            } else {
+              let encoded = @buffer.Buffer::Buffer()
+              let base = datatype.base_types[0]
+              for item in items {
+                writer_write_bytes(
+                  encoded,
+                  encode_structured_value(
+                    base,
+                    item,
+                    heap~,
+                    objects~,
+                    reference_address_size~,
+                  ),
+                )
+              }
+              let data = encoded.to_bytes()
+              buffer.write_uint_le(items.length().reinterpret_as_uint())
+              buffer.write_uint64_le(heap.address)
+              buffer.write_uint_le(
+                writable_sequence_heap_index(heap, data).reinterpret_as_uint(),
+              )
+            }
+          _ => ()
+        }
       }
     10 =>
       match value {
@@ -7570,6 +7640,66 @@ fn collect_heap_strings(
 }
 
 ///|
+fn collect_heap_structured_strings(
+  output : Array[String],
+  datatype : Datatype,
+  value : DatasetValue,
+) -> Unit raise Hdf5Error {
+  match datatype.class {
+    6 =>
+      match value {
+        Compound(fields) =>
+          for index in 0..<fields.length() {
+            collect_heap_structured_strings(
+              output,
+              datatype.compound_members[index].datatype,
+              fields[index].value,
+            )
+          }
+        _ => ()
+      }
+    9 =>
+      if datatype.vlen_is_string {
+        match value {
+          Text(text) =>
+            if text != "" && !output.contains(text) {
+              guard output.length() < 65535 else {
+                raise InvalidField("writer global heap has too many objects")
+              }
+              output.push(text)
+            }
+          _ => ()
+        }
+      } else {
+        match value {
+          Sequence(items) =>
+            for item in items {
+              collect_heap_structured_strings(
+                output,
+                datatype.base_types[0],
+                item,
+              )
+            }
+          _ => ()
+        }
+      }
+    10 =>
+      match value {
+        Elements(items) =>
+          for item in items {
+            collect_heap_structured_strings(
+              output,
+              datatype.base_types[0],
+              item,
+            )
+          }
+        _ => ()
+      }
+    _ => ()
+  }
+}
+
+///|
 fn collect_heap_sequences(
   output : Array[Bytes],
   datatype : Datatype,
@@ -7595,32 +7725,34 @@ fn collect_heap_sequences(
         _ => ()
       }
     9 =>
-      match value {
-        Sequence(items) =>
-          if items.length() > 0 {
-            let base = datatype.base_types[0]
-            let encoded = @buffer.Buffer::Buffer()
-            for item in items {
-              writer_write_bytes(
-                encoded,
-                encode_structured_value(
-                  base,
-                  item,
-                  heap~,
-                  objects~,
-                  reference_address_size~,
-                ),
-              )
-            }
-            let data = encoded.to_bytes()
-            if !output.contains(data) {
-              guard output.length() < 65535 else {
-                raise InvalidField("writer global heap has too many objects")
+      if !datatype.vlen_is_string {
+        match value {
+          Sequence(items) =>
+            if items.length() > 0 {
+              let base = datatype.base_types[0]
+              let encoded = @buffer.Buffer::Buffer()
+              for item in items {
+                writer_write_bytes(
+                  encoded,
+                  encode_structured_value(
+                    base,
+                    item,
+                    heap~,
+                    objects~,
+                    reference_address_size~,
+                  ),
+                )
               }
-              output.push(data)
+              let data = encoded.to_bytes()
+              if !output.contains(data) {
+                guard output.length() < 65535 else {
+                  raise InvalidField("writer global heap has too many objects")
+                }
+                output.push(data)
+              }
             }
-          }
-        _ => ()
+          _ => ()
+        }
       }
     10 =>
       match value {
@@ -7758,13 +7890,36 @@ fn Hdf5Writer::global_heap_strings(
   let strings : Array[String] = []
   for dataset in self.datasets {
     collect_heap_strings(strings, dataset.values)
+    match dataset.values {
+      StructuredValues(datatype, items) =>
+        for item in items {
+          collect_heap_structured_strings(strings, datatype, item)
+        }
+      _ => ()
+    }
     match dataset.fill_value {
-      Some(fill) => collect_heap_strings(strings, fill)
+      Some(fill) => {
+        collect_heap_strings(strings, fill)
+        match fill {
+          StructuredValues(datatype, items) =>
+            for item in items {
+              collect_heap_structured_strings(strings, datatype, item)
+            }
+          _ => ()
+        }
+      }
       None => ()
     }
   }
   for attribute in self.attributes {
     collect_heap_strings(strings, attribute.values)
+    match attribute.values {
+      StructuredValues(datatype, items) =>
+        for item in items {
+          collect_heap_structured_strings(strings, datatype, item)
+        }
+      _ => ()
+    }
   }
   strings
 }

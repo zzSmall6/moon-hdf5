@@ -141,10 +141,7 @@ fn Hdf5File::collect_patch_structured_reference_payloads(
         }
       }
     }
-    9 =>
-      raise UnsupportedFeature(
-        "nested variable-length values cannot be patched",
-      )
+    9 => ()
     10 => {
       let items = match value {
         Elements(items) => items
@@ -170,13 +167,24 @@ fn Hdf5File::collect_patch_structured_reference_payloads(
 }
 
 ///|
-fn patch_nested_reference_heap_index(
+fn patch_add_heap_object(
   heap : PatchHeap,
   payload : Bytes,
 ) -> Int32 raise Hdf5Error {
   match heap.objects.search_by(object => object == payload) {
     Some(index) => index + 1
-    None => raise InvalidField("nested reference is missing from its heap")
+    None => {
+      guard payload.length() > 0 else {
+        raise InvalidField("empty heap objects must use a null descriptor")
+      }
+      guard heap.objects.length() < 65535 else {
+        raise UnsupportedFeature(
+          "variable-length values have too many heap objects",
+        )
+      }
+      heap.objects.push(payload)
+      heap.objects.length()
+    }
   }
 }
 
@@ -254,7 +262,7 @@ fn Hdf5File::encode_patch_structured_reference_value(
                 buffer.write_uint_le(payload.length().reinterpret_as_uint())
                 write_uint_width(buffer, heap_address, offset_size)
                 buffer.write_uint_le(
-                  patch_nested_reference_heap_index(heap, payload).reinterpret_as_uint(),
+                  patch_add_heap_object(heap, payload).reinterpret_as_uint(),
                 )
               }
               _ =>
@@ -275,7 +283,7 @@ fn Hdf5File::encode_patch_structured_reference_value(
                 buffer.write_uint_le(payload.length().reinterpret_as_uint())
                 write_uint_width(buffer, heap_address, offset_size)
                 buffer.write_uint_le(
-                  patch_nested_reference_heap_index(heap, payload).reinterpret_as_uint(),
+                  patch_add_heap_object(heap, payload).reinterpret_as_uint(),
                 )
               }
               _ =>
@@ -307,7 +315,7 @@ fn Hdf5File::encode_patch_structured_reference_value(
             )
             write_uint_width(buffer, heap_address, offset_size)
             buffer.write_uint_le(
-              patch_nested_reference_heap_index(heap, payload).reinterpret_as_uint(),
+              patch_add_heap_object(heap, payload).reinterpret_as_uint(),
             )
           }
           _ =>
@@ -322,9 +330,102 @@ fn Hdf5File::encode_patch_structured_reference_value(
       buffer.to_bytes()
     }
     9 =>
-      raise UnsupportedFeature(
-        "nested variable-length values cannot be patched",
-      )
+      if datatype.vlen_is_string {
+        let text = match value {
+          Text(text) => text
+          _ =>
+            raise InvalidArgument(
+              "variable-length string value has the wrong kind",
+            )
+        }
+        guard datatype.string_charset >= 0 && datatype.string_charset <= 1 else {
+          raise UnsupportedFeature("unsupported variable-length string charset")
+        }
+        guard patch_vlen_string_charset_valid(text, datatype.string_charset) else {
+          raise InvalidArgument(
+            "variable-length strings do not match the datatype charset",
+          )
+        }
+        guard datatype.size >= 8 + offset_size else {
+          raise UnsupportedFeature("variable-length datatype is too small")
+        }
+        let encoded = @utf8.encode(text)
+        let buffer = @buffer.Buffer::Buffer(size_hint=datatype.size)
+        if encoded.length() == 0 {
+          writer_write_zeros(buffer, datatype.size)
+        } else {
+          let index = patch_add_heap_object(heap, encoded)
+          buffer.write_uint_le(encoded.length().reinterpret_as_uint())
+          write_uint_width(buffer, heap_address, offset_size)
+          buffer.write_uint_le(index.reinterpret_as_uint())
+          writer_write_zeros(buffer, datatype.size - 8 - offset_size)
+        }
+        guard buffer.length() == datatype.size else {
+          raise InvalidField(
+            "variable-length string value size does not match its datatype",
+          )
+        }
+        buffer.to_bytes()
+      } else {
+        guard datatype.base_types.length() == 1 &&
+          datatype.base_types[0].size > 0 else {
+          raise InvalidField(
+            "variable-length sequence is missing its base type",
+          )
+        }
+        guard datatype.size >= 8 + offset_size else {
+          raise UnsupportedFeature("variable-length datatype is too small")
+        }
+        let items = match value {
+          Sequence(items) => items
+          _ =>
+            raise InvalidArgument(
+              "variable-length sequence value has the wrong kind",
+            )
+        }
+        let base = datatype.base_types[0]
+        guard items.length().to_int64() <= 0x7FFFFFFFL / base.size.to_int64() else {
+          raise UnsupportedFeature(
+            "variable-length sequence payload is too large",
+          )
+        }
+        let encoded = @buffer.Buffer::Buffer(
+          size_hint=items.length() * base.size,
+        )
+        for item in items {
+          writer_write_bytes(
+            encoded,
+            self.encode_patch_structured_reference_value(
+              base,
+              item,
+              heap,
+              heap_address,
+              offset_size,
+              depth + 1,
+            ),
+          )
+        }
+        let payload = encoded.to_bytes()
+        guard payload.length() == items.length() * base.size else {
+          raise InvalidField("variable-length sequence payload size mismatch")
+        }
+        let buffer = @buffer.Buffer::Buffer(size_hint=datatype.size)
+        if items.length() == 0 {
+          writer_write_zeros(buffer, datatype.size)
+        } else {
+          let index = patch_add_heap_object(heap, payload)
+          buffer.write_uint_le(items.length().reinterpret_as_uint())
+          write_uint_width(buffer, heap_address, offset_size)
+          buffer.write_uint_le(index.reinterpret_as_uint())
+          writer_write_zeros(buffer, datatype.size - 8 - offset_size)
+        }
+        guard buffer.length() == datatype.size else {
+          raise InvalidField(
+            "variable-length sequence value size does not match its datatype",
+          )
+        }
+        buffer.to_bytes()
+      }
     10 => {
       let items = match value {
         Elements(items) => items
@@ -372,7 +473,7 @@ fn Hdf5File::encode_patch_nested_references(
 ) -> Bytes raise Hdf5Error {
   let items = match values {
     StructuredValues(_, items) => items
-    _ => raise InvalidArgument("patched values must be structured references")
+    _ => raise InvalidArgument("patched values must be structured values")
   }
   let payloads : Array[Bytes] = []
   for item in items {
@@ -380,17 +481,11 @@ fn Hdf5File::encode_patch_nested_references(
       datatype, item, payloads, offset_size, 0,
     )
   }
-  let heap = encode_patch_heap(patch_unique_heap_objects(payloads), length_size)
-  let heap_address = if heap.data.length() == 0 {
-    0UL
-  } else {
-    let start = append_aligned_bytes_to_tail(
-      tail,
-      file_length,
-      heap.data,
-      purpose,
-    )
-    file_offset_to_stored_address(start, base_address)
+  let heap_start = next_aligned_tail_start(file_length, tail.length(), purpose)
+  let heap_address = file_offset_to_stored_address(heap_start, base_address)
+  let heap : PatchHeap = {
+    objects: patch_unique_heap_objects(payloads),
+    data: b"",
   }
   let buffer = @buffer.Buffer::Buffer(size_hint=items.length() * datatype.size)
   for item in items {
@@ -403,7 +498,19 @@ fn Hdf5File::encode_patch_nested_references(
   }
   let payload = buffer.to_bytes()
   guard payload.length() == items.length() * datatype.size else {
-    raise InvalidField("nested reference payload size mismatch")
+    raise InvalidField("nested structured payload size mismatch")
+  }
+  let encoded_heap = encode_patch_heap(heap.objects, length_size)
+  if encoded_heap.data.length() > 0 {
+    let start = append_aligned_bytes_to_tail(
+      tail,
+      file_length,
+      encoded_heap.data,
+      purpose,
+    )
+    guard start == heap_start else {
+      raise InvalidField("nested heap address changed while encoding")
+    }
   }
   payload
 }

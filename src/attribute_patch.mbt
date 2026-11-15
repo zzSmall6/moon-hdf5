@@ -175,9 +175,10 @@ fn Hdf5File::find_patchable_attribute(
 /// to a global heap and rewrite their existing heap-address/index slots.
 /// Same-file version-4 object references rewrite direct address tokens; version-4
 /// region and attribute references append indirect global-heap payloads and
-/// rewrite their kind, length, heap-address and index fields. External-file
-/// version-4 references, compound/array/sequence reference datatypes, shared
-/// attribute messages and nested variable-length datatypes are rejected. Legacy
+/// rewrite their kind, length, heap-address and index fields. References and
+/// variable-length strings or sequences nested in compound, array and sequence
+/// members are encoded recursively. External-file version-4 references and
+/// shared attribute messages are rejected. Legacy
 /// object-reference slots must match the file address size; legacy
 /// region-reference slots must be four bytes wider and target existing datasets
 /// with non-null dataspaces. Version-4 region and attribute targets follow the
@@ -224,6 +225,7 @@ pub fn Hdf5File::patch_attribute_values(
   )
   let nested_reference = patch_nested_reference_datatype(datatype)
   let vlen_reference = patch_vlen_reference_datatype(datatype)
+  let nested_vlen = !variable_length && datatype_contains_vlen(datatype)
   guard !datatype_contains_reference(datatype) ||
     legacy_object_reference ||
     legacy_region_reference ||
@@ -233,11 +235,6 @@ pub fn Hdf5File::patch_attribute_values(
     nested_reference ||
     vlen_reference else {
     raise UnsupportedFeature("reference attributes cannot be patched")
-  }
-  guard variable_length || !datatype_contains_vlen(datatype) else {
-    raise UnsupportedFeature(
-      "only variable-length string or sequence attributes can be patched",
-    )
   }
   guard patch_values_match_datatype(values, datatype) else {
     raise InvalidArgument("patched values must match the attribute datatype")
@@ -313,6 +310,17 @@ pub fn Hdf5File::patch_attribute_values(
       self.bytes.length(),
       tail,
       "append a nested-reference attribute heap",
+    )
+  } else if nested_vlen {
+    self.encode_patch_nested_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      tail,
+      "append a nested variable-length attribute heap",
     )
   } else {
     let encoded = encode_write_values(values)

@@ -331,9 +331,10 @@ collection whose size is a multiple of 4096 bytes; it is appended at an
 8-byte-aligned file offset before any newly placed chunk or index payload, and
 only the fixed-size global-heap references in the dataset values are rewritten.
 Empty strings and empty sequences use null heap references and all-empty patches
-append no collection. Sequence bases must be fixed-size and cannot contain
-nested variable-length datatypes; reference-bearing bases are encoded
-recursively with the same same-file rules as other nested references. Chunked
+append no collection. Sequence bases and nested compound or array members may
+themselves contain variable-length values; all nested heap objects are encoded
+recursively. Reference-bearing bases use the same same-file rules as other
+nested references. Chunked
 variable-length data supports unfiltered storage, Shuffle or deflate;
 Fletcher32 and scale-offset are rejected. The patcher does not create a missing
 fixed-array data block or extensible-array metadata for a variable-length
@@ -398,13 +399,14 @@ including a non-default K carried by the superblock-extension B-tree K message,
 regenerate sibling links and emit termination keys with the datatype storage
 size. V2 trees preserve their node size and split/merge thresholds. The rebuild
 updates the layout address, object-header checksum and superblock EOF.
-Attributes, links and other metadata are preserved; external storage,
-external-file version-4 references and nested variable-length datatypes are
-rejected. Fixed-base vlen sequences, including sequences whose base contains
-supported references, legacy same-file object and region references, same-file
-version-4 object, region and attribute references, and references nested in
-compound and fixed-array members are accepted, and the dataset shape and chunk
-grid are never changed. The operation returns a complete new byte image.
+Attributes, links and other metadata are preserved; external storage and
+external-file version-4 references are rejected. Variable-length strings and
+sequences, legacy same-file object and region references, same-file version-4
+object, region and attribute references, and references or variable-length
+values nested in compound, array and sequence members are accepted. Chunked
+datasets containing variable-length values retain the Shuffle/deflate
+restriction, and the dataset shape and chunk grid are never changed. The
+operation returns a complete new byte image.
 
 `patch_attribute_values` targets an existing attribute on any resolvable object.
 Inline attribute messages are rewritten inside their object-header chunk, and
@@ -536,13 +538,13 @@ the items below summarize the main user-visible gaps.
   requires a stored fill marker. Registered caller-defined filters can be
   re-encoded when their implementation provides `encode`. Missing chunks in an
   index without a writable record path continue to read as fill values.
-  Variable-length UTF-8 string and fixed-base sequence values can be patched in
-  compact, contiguous and chunked storage. Their new values share one appended
-  global heap collection; only chunked Shuffle and deflate pipelines are
-  supported, and creating a missing fixed-array data block or extensible-array
-  metadata is rejected for these datatypes. Nested variable-length and
-  sequence bases with references are supported, while nested variable-length
-  values remain read-only. Legacy object-reference datasets can be patched when
+  Variable-length UTF-8 strings and sequences can be patched in compact,
+  contiguous and chunked storage. Their new values share one appended global
+  heap collection; only chunked Shuffle and deflate pipelines are supported,
+  and creating a missing fixed-array data block or extensible-array metadata is
+  rejected for these datatypes. Variable-length values nested in compound,
+  array or sequence members are patched recursively, including sequences whose
+  bases contain variable-length values. Legacy object-reference datasets can be patched when
   their fixed-width slots match the file address size. Legacy region-reference
   datasets can be patched when their slots are four bytes wider and every
   target is an existing dataset with a non-null dataspace. Same-file 18-byte
@@ -556,9 +558,9 @@ the items below summarize the main user-visible gaps.
   fixed-size, variable-length UTF-8 string, fixed-base variable-length sequence,
   legacy same-file object-reference or legacy same-file region-reference
   attribute, or same-file version-4 object-, region- or attribute-reference
-  attribute, including references nested in compound, fixed-array and
-  fixed-base sequence members. Nested variable-length values are rejected. The
-  attribute must remain the same shape and datatype, and its name, creation
+  attribute, including references and variable-length values nested in
+  compound, fixed-array and sequence members. The attribute must remain the
+  same shape and datatype, and its name, creation
   order and inline/dense storage are preserved. Variable-length,
   region-reference and indirect version-4 values are appended as a new global
   heap collection and the superblock EOF is updated; old heap collections are
@@ -609,9 +611,9 @@ the items below summarize the main user-visible gaps.
   points, hyperslab or blocks, and each target is an existing same-file dataset
   with a non-null dataspace. Same-file version-4 object, region and attribute
   references can be rewritten in their 18-byte slots; attribute targets must
-  already exist and external-file flags are unsupported. References nested
-  inside compound, fixed-array and fixed-base sequence datatypes can be patched
-  recursively; nested variable-length values remain read-only.
+  already exist and external-file flags are unsupported. References and
+  variable-length values nested inside compound, fixed-array and sequence
+  datatypes can be patched recursively.
 - **Unlimited dimensions:** `append_dataset` writes only at the trailing edge of
   every unlimited axis. Use `write_dataset_slab` for interior writes and
   arbitrary rectangular placement; unlimited axes grow to the slab's trailing

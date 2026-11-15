@@ -734,6 +734,39 @@ def verify_file(path: Path) -> None:
         vectors = handle["structured/vectors"]
         assert vectors.dtype.subdtype == (np.dtype("<f4"), (2,))
         np.testing.assert_array_equal(vectors[:], [[1.5, -2.0], [3.25, 4.5]])
+        nested_vlen = handle["structured/nested_vlen"][:]
+        assert nested_vlen.dtype.names == ("name", "counts", "labels")
+        assert nested_vlen[0]["name"].decode("utf-8") == "first"
+        assert nested_vlen[0]["counts"].tolist() == [1, 2]
+        assert [item.decode("utf-8") for item in nested_vlen[0]["labels"]] == [
+            "甲",
+            "",
+        ]
+        assert nested_vlen[1]["name"] == b""
+        assert nested_vlen[1]["counts"].tolist() == []
+        assert [item.decode("utf-8") for item in nested_vlen[1]["labels"]] == [
+            "",
+            "乙",
+        ]
+        nested_prototype = handle["structured/nested_vlen"].attrs["prototype"]
+        assert nested_prototype["name"] == b"template"
+        assert nested_prototype["counts"].tolist() == []
+        chunked_nested = handle["structured/nested_vlen_chunked"]
+        assert chunked_nested.chunks == (2,)
+        assert chunked_nested.shuffle
+        assert chunked_nested.compression == "gzip"
+        assert chunked_nested.compression_opts == 6
+        chunked_nested_values = chunked_nested[:]
+        assert [
+            row["name"].decode("utf-8") for row in chunked_nested_values
+        ] == ["压缩", "", "third", ""]
+        assert [
+            row["counts"].tolist() for row in chunked_nested_values
+        ] == [[3], [], [4], []]
+        assert [
+            [item.decode("utf-8") for item in row["labels"]]
+            for row in chunked_nested_values
+        ] == [["一", ""], ["", "二"], ["三", "四"], ["", ""]]
         states = handle["structured/states"]
         assert states.dtype.metadata["enum"] == {
             "UNKNOWN": 0,
