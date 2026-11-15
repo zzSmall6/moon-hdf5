@@ -882,14 +882,7 @@ fn Hdf5File::write_rebuilt_attributes(
   guard max_creation_order <= 65535UL else {
     raise InvalidField("attribute creation order exceeds the file format")
   }
-  let mut dense = attributes.length() > writer_dense_threshold
-  if dense {
-    for attribute in attributes {
-      if attribute.data.length() > writer_dense_max_managed_size {
-        dense = false
-      }
-    }
-  }
+  let dense = attributes.length() > writer_dense_threshold
   if !dense {
     for attribute in attributes {
       let encoded_size = if plan.version == 1 {

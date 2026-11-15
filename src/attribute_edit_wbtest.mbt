@@ -326,6 +326,54 @@ test "attribute storage converts between compact and dense forms" {
 }
 
 ///|
+test "dense attribute rebuilding spans heap blocks and huge objects" {
+  let writer = Hdf5Writer::new()
+  let value = "r".repeat(60000)
+  writer.add_group("/rebuild")
+  for index in 0..<8 {
+    writer.add_attribute(
+      "/rebuild",
+      "small_" + index.to_string(),
+      [],
+      UInt64Values([index.to_uint64()]),
+    )
+  }
+  let first = Hdf5File::parse(writer.encode()).add_attribute(
+    "/rebuild",
+    "medium_0",
+    [],
+    FixedStringValues([value], 60000),
+  )
+  let second = Hdf5File::parse(first).add_attribute(
+    "/rebuild",
+    "medium_1",
+    [],
+    FixedStringValues([value], 60000),
+  )
+  let third = Hdf5File::parse(second).add_attribute(
+    "/rebuild",
+    "huge",
+    [2UL],
+    FixedStringValues([value, value], 60000),
+  )
+
+  let file = Hdf5File::parse(third)
+  let attributes = file.attributes("/rebuild")
+  assert_eq(attributes.length(), 11)
+  for name in ["medium_0", "medium_1"] {
+    match find_attribute(attributes, name).values {
+      Some(Strings(values)) => assert_eq(values, [value])
+      _ => fail("expected a rebuilt medium attribute")
+    }
+  }
+  match find_attribute(attributes, "huge").values {
+    Some(Strings(values)) => assert_eq(values, [value, value])
+    _ => fail("expected a rebuilt huge attribute")
+  }
+  assert_eq(attribute_edit_dense_records(file, "/rebuild").length(), 11)
+}
+
+///|
 test "renaming a dense ordered attribute preserves creation order" {
   let writer = Hdf5Writer::new()
   writer.add_group("/ordered")
