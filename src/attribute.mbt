@@ -205,6 +205,7 @@ fn read_attributes(
   offset_size : Int32,
   length_size : Int32,
   base_address : UInt64,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
   shared_messages~ : SharedMessageContext? = None,
 ) -> Array[Attribute] raise Hdf5Error {
   let attributes : Array[Attribute] = []
@@ -242,7 +243,12 @@ fn read_attributes(
         raise InvalidField("dense attributes have no name or order index")
       }
       let heap = parse_fractal_heap(
-        bytes, heap_address, offset_size, length_size, base_address,
+        bytes,
+        heap_address,
+        offset_size,
+        length_size,
+        base_address,
+        custom_filters~,
       )
       let records = read_metadata_btree_records(
         bytes,
@@ -312,6 +318,7 @@ fn read_source_attributes(
   offset_size : Int32,
   length_size : Int32,
   base_address : UInt64,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
   shared_messages~ : SharedMessageContext? = None,
 ) -> Array[Attribute] raise Hdf5Error {
   let attributes : Array[Attribute] = []
@@ -349,7 +356,12 @@ fn read_source_attributes(
         raise InvalidField("dense attributes have no name or order index")
       }
       let heap = parse_source_fractal_heap(
-        source, heap_address, offset_size, length_size, base_address,
+        source,
+        heap_address,
+        offset_size,
+        length_size,
+        base_address,
+        custom_filters~,
       )
       let records = read_source_metadata_btree_records(
         source,

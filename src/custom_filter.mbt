@@ -1,11 +1,12 @@
 ///|
-/// Encodes and decodes one third-party HDF5 filter for dataset chunks.
+/// Encodes and decodes one third-party HDF5 filter for dataset chunks and
+/// fractal-heap metadata.
 ///
 /// HDF5 applies filters in reverse pipeline order. `data` is the payload at
-/// this stage, `element_size` is the dataset element width, and
-/// `expected_size` is the decoded chunk byte count. A decoder must return
-/// exactly `expected_size` bytes. Implementations that only read files may
-/// omit `encode`; trying to write through such a filter raises
+/// this stage, `element_size` is the dataset element width (zero for metadata
+/// heap blocks), and `expected_size` is the decoded byte count. A decoder must
+/// return exactly `expected_size` bytes. Implementations that only read files
+/// may omit `encode`; trying to write through such a filter raises
 /// `UnsupportedFeature`.
 pub(open) trait Hdf5CustomFilter {
   fn id(Self) -> Int32

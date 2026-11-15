@@ -96,6 +96,7 @@ fn Hdf5File::editable_attributes(
         self.superblock.offset_size,
         self.superblock.length_size,
         self.superblock.base_address,
+        custom_filters=self.custom_filters,
       )
       let records = read_metadata_btree_records(
         self.bytes,

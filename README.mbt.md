@@ -511,10 +511,11 @@ the items below summarize the main user-visible gaps.
 - **Attribute editing:** supported on bytes-backed files with v1 or v2 object
   headers. Shared attribute messages are resolved and rebuilt as local messages;
   added reference values must target existing same-file objects, datasets or
-  attributes, and custom metadata-heap filters are unsupported. Dense rebuilding
-  and reference slots honor 4- and 8-byte address layouts. Conversion between
-  compact and dense forms is append-only; old metadata stays unreferenced because
-  no free-space reclamation is written.
+  attributes, and registered custom filters can decode existing dense metadata
+  heaps. Rebuilt attribute heaps use built-in storage without filters. Dense
+  rebuilding and reference slots honor 4- and 8-byte address layouts.
+  Conversion between compact and dense forms is append-only; old metadata stays
+  unreferenced because no free-space reclamation is written.
 - **Value patching:** allocation is limited to an unallocated contiguous payload,
   an undefined slot already represented by the single-chunk layout or a
   fixed-/extensible-array entry, a missing fixed-array data block, a missing
@@ -566,10 +567,10 @@ the items below summarize the main user-visible gaps.
   patching does not change names or storage form; use the attribute editing APIs
   above for those operations.
 - **Read coverage:** virtual datasets, SWMR and parallel HDF5 are outside the
-  profile. Built-in chunk filters are decoded directly; other dataset chunk
-  filter IDs can be supplied through `Hdf5CustomFilter`. Custom filters on
-  metadata heaps are not supported, and built-in filter IDs cannot be
-  overridden. Writing requires a registered encoder and a preceding
+  profile. Built-in filters are decoded directly; other filter IDs in dataset
+  chunk and fractal-heap metadata pipelines can be supplied through
+  `Hdf5CustomFilter`, and built-in filter IDs cannot be overridden. Writing
+  requires a registered encoder and a preceding
   `Hdf5Writer::add_custom_filter` call. Unsupported layouts, indexes, datatypes
   and unregistered filters raise `UnsupportedFeature`; detection of unsupported
   input is not exhaustive. Unsupported attribute datatypes fail the read instead

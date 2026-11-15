@@ -57,8 +57,9 @@ element width and expected decoded size, and the pipeline bounds intermediate
 output as well as verifying the final size. The same trait has an optional
 encoder used by the writer and value patching; decoder-only implementations keep
 working for reads and raise `UnsupportedFeature` when output is requested.
-Built-in IDs cannot be overridden. Filters attached to metadata heaps do not use
-the caller registry and still require built-in support.
+Built-in IDs cannot be overridden. Filters attached to fractal-heap metadata use
+the same caller registry, so dense groups, dense attributes and SOHM heap
+objects can use caller-supplied decoders.
 
 Datatype decoding recursively handles fixed-point layouts, IEEE and normalized
 binary floats, fixed/vlen strings, compound, enum, array, time, bitfield, opaque,

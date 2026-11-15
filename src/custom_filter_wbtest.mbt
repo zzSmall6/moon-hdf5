@@ -285,6 +285,100 @@ test "resolver registers custom filters and rejects built-in IDs" {
 }
 
 ///|
+fn custom_metadata_filter_fixture(bytes : Bytes) -> Bytes raise Hdf5Error {
+  let mutated = bytes.to_array()
+  let fixed_size = 22 + 8 * 12 + 8 * 3
+  let mut offset = 0
+  let mut patched = false
+  while offset + 9 <= bytes.length() {
+    let signature = bytes.get_view(start=offset, end=offset + 4).unwrap()
+    if signature.equal_to_bytes(b"FRHP") {
+      let filter_size = Reader::at(bytes, offset + 7).read_u16_le().to_int()
+      if filter_size > 0 {
+        let pipeline_start = offset + fixed_size + 8 + 4
+        let pipeline_end = pipeline_start + filter_size
+        guard pipeline_end + 4 <= bytes.length() else {
+          raise InvalidField("truncated fractal heap filter pipeline")
+        }
+        let reader = Reader::at(bytes, pipeline_start)
+        let version = reader.read_u8().to_int()
+        guard version == 1 || version == 2 else {
+          raise InvalidField("invalid fractal heap filter pipeline")
+        }
+        let count = reader.read_u8().to_int()
+        if version == 1 {
+          reader.skip(6)
+        }
+        for _ in 0..<count {
+          let id_offset = reader.position()
+          let id = reader.read_u16_le().to_int()
+          let name_size = if version == 1 || id >= 256 {
+            reader.read_u16_le().to_int()
+          } else {
+            0
+          }
+          let _flags = reader.read_u16_le()
+          let parameter_count = reader.read_u16_le().to_int()
+          reader.skip(name_size)
+          reader.skip(parameter_count * 4)
+          if version == 1 && parameter_count % 2 != 0 {
+            reader.skip(4)
+          }
+          if id == 1 {
+            mutated[id_offset] = b'\x2a'
+            mutated[id_offset + 1] = b'\x00'
+            patched = true
+          }
+        }
+        guard reader.position() == pipeline_end else {
+          raise InvalidField("fractal heap filter pipeline size mismatch")
+        }
+        let checksum = metadata_checksum(
+          Bytes::from_array(mutated),
+          offset,
+          pipeline_end - offset,
+        )
+        for index in 0..<4 {
+          mutated[pipeline_end + index] = ((checksum >> (index * 8)) & 0xFFU).to_byte()
+        }
+      }
+    }
+    offset = offset + 1
+  }
+  guard patched else {
+    raise InvalidField("filtered fractal heap was not found")
+  }
+  Bytes::from_array(mutated)
+}
+
+///|
+test "custom filters decode dense metadata heaps" {
+  let input = @fs.read_file_to_bytes("testdata/fractal_heap_advanced.h5")
+  let bytes = custom_metadata_filter_fixture(input) catch {
+    error => fail("fixture: " + error.message())
+  }
+  let file = Hdf5File::parse(bytes)
+  let error = try {
+    file.resolve("/filtered/item_0000") |> ignore
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(error, Some(UnsupportedFeature("filter 42 is not supported")))
+
+  let custom : &Hdf5CustomFilter = { marker: 1, }
+  let filtered = file.with_custom_filter(custom)
+  assert_eq(filtered.resolve("/filtered/item_0000").kind, Dataset)
+  assert_eq(filtered.attributes("/filtered").length(), 0)
+
+  let sources : Array[&Hdf5Source] = [bytes]
+  let source_file = Hdf5File::parse_source(sources[0]).with_custom_filter(
+    custom,
+  )
+  assert_eq(source_file.resolve("/filtered/item_0000").kind, Dataset)
+}
+
+///|
 test "custom filters cannot return oversized intermediate output" {
   let decoder : &Hdf5CustomFilter = OversizedTestFilter::{ }
   let filter : Filter = { id: 43, parameters: [], decoder: Some(decoder), }

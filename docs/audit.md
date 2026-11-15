@@ -224,8 +224,8 @@ heaps and heap extension across multiple blocks are not emitted.
 
 - Detection of unsupported input is not exhaustive.
 - Whole-dataset and single-selection results are memory resident.
-- Custom filter callbacks are limited to dataset chunk pipelines. Writing and
-  patching require a registered encoder; metadata-heap filters and overrides of
+- Custom filter callbacks cover dataset chunk and fractal-heap metadata decoder
+  pipelines. Writing and patching require a registered encoder; overrides of
   built-in filter IDs are not accepted.
 - External raw data requires caller registration and caller-managed files.
 - Dense and SOHM output use compact single-block writer forms; larger producer
@@ -277,9 +277,9 @@ heaps and heap extension across multiple blocks are not emitted.
   legacy or version-4 object/region/attribute-reference additions, including
   references nested in compound and fixed-array members.
   Added reference values must target existing same-file objects, datasets or
-  attributes and use the file's address width. Custom metadata-heap filters are
-  outside the editing boundary, and old attribute metadata and global heaps are
-  not reclaimed.
+  attributes and use the file's address width. Registered custom filters can
+  decode existing dense metadata heaps; rebuilt heaps are unfiltered. Old
+  attribute metadata and global heaps are not reclaimed.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB

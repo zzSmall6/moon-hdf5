@@ -415,6 +415,7 @@ fn parse_fractal_heap(
   offset_size : Int32,
   length_size : Int32,
   base_address : UInt64,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> FractalHeap raise Hdf5Error {
   let sources : Array[&Hdf5Source] = [bytes]
   parse_source_fractal_heap(
@@ -424,6 +425,7 @@ fn parse_fractal_heap(
     length_size,
     base_address,
     bytes~,
+    custom_filters~,
   )
 }
 
@@ -435,6 +437,7 @@ fn parse_source_fractal_heap(
   length_size : Int32,
   base_address : UInt64,
   bytes~ : Bytes = b"",
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> FractalHeap raise Hdf5Error {
   let offset = source_address_to_offset(address, base_address)
   let fixed_size = 22 + length_size * 12 + offset_size * 3
@@ -506,14 +509,17 @@ fn parse_source_fractal_heap(
     raise InvalidField("invalid fractal heap maximum size")
   }
   let filters : Array[Filter] = if filter_info_size != 0 {
-    parse_filters({
-      msg_type: msg_filter_pipeline,
-      flags: b'\x00',
-      data: encoded_filters,
-      data_offset: -1,
-      chunk_start: -1,
-      checksum_offset: -1,
-    })
+    parse_filters(
+      {
+        msg_type: msg_filter_pipeline,
+        flags: b'\x00',
+        data: encoded_filters,
+        data_offset: -1,
+        chunk_start: -1,
+        checksum_offset: -1,
+      },
+      custom_filters~,
+    )
   } else {
     []
   }

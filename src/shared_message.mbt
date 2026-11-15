@@ -22,6 +22,7 @@ priv struct SharedMessageContext {
   offset_size : Int32
   length_size : Int32
   base_address : UInt64
+  custom_filters : Array[&Hdf5CustomFilter]
   indexes : Array[SharedMessageIndex]
 }
 
@@ -77,6 +78,7 @@ fn parse_shared_message_context(
   bytes : Bytes,
   source : &Hdf5Source?,
   superblock : Superblock,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> SharedMessageContext raise Hdf5Error {
   let indexes : Array[SharedMessageIndex] = []
   let context : SharedMessageContext = {
@@ -85,6 +87,7 @@ fn parse_shared_message_context(
     offset_size: superblock.offset_size,
     length_size: superblock.length_size,
     base_address: superblock.base_address,
+    custom_filters,
     indexes,
   }
   if superblock.version < 2 ||
@@ -222,6 +225,7 @@ fn SharedMessageContext::resolve_sohm_heap_id(
         self.offset_size,
         self.length_size,
         self.base_address,
+        custom_filters=self.custom_filters,
       )
     None =>
       parse_fractal_heap(
@@ -230,6 +234,7 @@ fn SharedMessageContext::resolve_sohm_heap_id(
         self.offset_size,
         self.length_size,
         self.base_address,
+        custom_filters=self.custom_filters,
       )
   }
   heap.get_data(heap_id)

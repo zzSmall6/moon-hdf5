@@ -67,7 +67,8 @@ pub fn Hdf5File::parse_source(source : &Hdf5Source) -> Hdf5File raise Hdf5Error 
 }
 
 ///|
-/// Returns a file that can decode the given third-party dataset chunk filter.
+/// Returns a file that can decode the given third-party dataset chunk or
+/// fractal-heap metadata filter.
 ///
 /// Registrations are checked for duplicate and built-in filter IDs. The
 /// original value is unchanged, so calls can be chained or kept separate.
@@ -77,11 +78,20 @@ pub fn Hdf5File::with_custom_filter(
 ) -> Hdf5File raise Hdf5Error {
   let custom_filters = self.custom_filters.copy()
   register_custom_filter(custom_filters, filter)
+  let shared_messages : SharedMessageContext = {
+    bytes: self.shared_messages.bytes,
+    source: self.shared_messages.source,
+    offset_size: self.shared_messages.offset_size,
+    length_size: self.shared_messages.length_size,
+    base_address: self.shared_messages.base_address,
+    custom_filters,
+    indexes: self.shared_messages.indexes,
+  }
   {
     bytes: self.bytes,
     superblock: self.superblock,
     source: self.source,
-    shared_messages: self.shared_messages,
+    shared_messages,
     custom_filters,
   }
 }
@@ -186,6 +196,7 @@ fn Hdf5File::links(
             self.superblock.offset_size,
             self.superblock.length_size,
             self.superblock.base_address,
+            custom_filters=self.custom_filters,
           )
         None =>
           read_group_links_v2(
@@ -194,6 +205,7 @@ fn Hdf5File::links(
             self.superblock.offset_size,
             self.superblock.length_size,
             self.superblock.base_address,
+            custom_filters=self.custom_filters,
           )
       }
   }
@@ -435,6 +447,7 @@ pub fn Hdf5File::attributes(
         self.superblock.offset_size,
         self.superblock.length_size,
         self.superblock.base_address,
+        custom_filters=self.custom_filters,
         shared_messages=Some(self.shared_messages),
       )
     None =>
@@ -444,6 +457,7 @@ pub fn Hdf5File::attributes(
         self.superblock.offset_size,
         self.superblock.length_size,
         self.superblock.base_address,
+        custom_filters=self.custom_filters,
         shared_messages=Some(self.shared_messages),
       )
   }

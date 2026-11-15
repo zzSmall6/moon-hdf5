@@ -219,9 +219,9 @@ pub fn Hdf5Resolver::add_source(
 }
 
 ///|
-/// Registers a third-party dataset chunk filter for every source opened by this
-/// resolver. Registrations apply to future reads and cannot replace built-in
-/// filters or duplicate an existing ID.
+/// Registers a third-party dataset chunk or fractal-heap metadata filter for
+/// every source opened by this resolver. Registrations apply to future reads
+/// and cannot replace built-in filters or duplicate an existing ID.
 pub fn Hdf5Resolver::add_custom_filter(
   self : Hdf5Resolver,
   filter : &Hdf5CustomFilter,

@@ -118,6 +118,7 @@ test "shared message heap IDs validate their index and size" {
     offset_size: 8,
     length_size: 8,
     base_address: 0UL,
+    custom_filters: [],
     indexes: [],
   }
   let size_error = try {
@@ -148,6 +149,7 @@ test "shared message heap IDs validate their index and size" {
     offset_size: 8,
     length_size: 8,
     base_address: 0UL,
+    custom_filters: [],
     indexes: [
       { message_types: 1 << 0x0B, heap_address: heap_undefined_address(8), },
     ],
