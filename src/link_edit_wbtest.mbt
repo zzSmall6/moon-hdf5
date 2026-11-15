@@ -247,6 +247,217 @@ test "link editing rebuilds four-byte address groups" {
 }
 
 ///|
+test "link editing converts symbol table groups to link messages" {
+  let bytes = @fs.read_file_to_bytes("testdata/basic_v0.h5")
+  let file = Hdf5File::parse(bytes)
+  let root = file.object_header_at(file.resolve("/").address)
+  assert_true(root.first(msg_symbol_table) is Some(_))
+
+  let hard = file.add_hard_link("/", "matrix_alias", "/matrix") catch {
+    error => fail("add symbol-table hard link: " + error.message())
+  }
+  let soft = Hdf5File::parse(hard).add_soft_link("/", "group_soft", "group") catch {
+    error => fail("add symbol-table soft link: " + error.message())
+  }
+  let external = Hdf5File::parse(soft).add_external_link(
+    "/", "external", "other.h5", "/matrix",
+  ) catch {
+    error => fail("add symbol-table external link: " + error.message())
+  }
+  let edited = Hdf5File::parse(external)
+  let header = edited.object_header_at(edited.resolve("/").address)
+  assert_true(header.first(msg_symbol_table) is None)
+  assert_true(header.first(msg_link_info) is Some(_))
+  assert_true(header.messages.any(message => message.msg_type == msg_link))
+
+  let links = edited.links(header)
+  assert_eq(links.map(link => link.name), [
+    "group", "matrix", "matrix_alias", "group_soft", "external",
+  ])
+  assert_eq(
+    edited.resolve("/matrix_alias").address,
+    edited.resolve("/matrix").address,
+  )
+  assert_eq(
+    edited.resolve("/group_soft").address,
+    edited.resolve("/group").address,
+  )
+  match links.search_by(link => link.name == "external") {
+    Some(index) => {
+      assert_eq(links[index].cache_type, 64U)
+      assert_eq(links[index].link_target, Some("other.h5"))
+      assert_eq(links[index].external_path, Some("/matrix"))
+    }
+    None => fail("expected external link")
+  }
+  assert_eq(edited.attributes("/").length(), 1)
+  assert_eq(edited.attributes("/")[0].name, "title")
+  match edited.attributes("/")[0].values {
+    Some(Strings(values)) => assert_eq(values, ["hello"])
+    _ => fail("expected the root title attribute")
+  }
+  assert_eq(integer_values(edited.read_dataset("/group/values")).length(), 10)
+
+  let renamed = edited.rename_link("/", "matrix_alias", "matrix_renamed") catch {
+    error => fail("rename converted symbol-table link: " + error.message())
+  }
+  let renamed_file = Hdf5File::parse(renamed)
+  assert_eq(
+    renamed_file.resolve("/matrix_renamed").address,
+    renamed_file.resolve("/matrix").address,
+  )
+  let deleted = renamed_file.delete_link("/", "group_soft") catch {
+    error => fail("delete converted symbol-table link: " + error.message())
+  }
+  let deleted_file = Hdf5File::parse(deleted)
+  assert_true(
+    !deleted_file
+    .links(deleted_file.object_header_at(deleted_file.resolve("/").address))
+    .any(link => link.name == "group_soft"),
+  )
+}
+
+///|
+test "link editing converts nested symbol table groups to dense storage" {
+  let bytes = @fs.read_file_to_bytes("testdata/basic_v0.h5")
+  let file = Hdf5File::parse(bytes)
+  let node = file.resolve("/group")
+  let header = file.object_header_at(node.address)
+  assert_true(header.first(msg_symbol_table) is Some(_))
+  assert_eq(file.links(header).length(), 1)
+
+  let hard = file.add_hard_link("/group", "values_alias", "/group/values") catch {
+    error => fail("add nested symbol-table hard link: " + error.message())
+  }
+  let soft = Hdf5File::parse(hard).add_soft_link("/group", "self", ".") catch {
+    error => fail("add nested symbol-table soft link: " + error.message())
+  }
+  let mut edited = soft
+  for index in 0..<7 {
+    edited = Hdf5File::parse(edited).add_soft_link(
+      "/group",
+      "extra_" + index.to_string(),
+      "values",
+    ) catch {
+      error => fail("add nested symbol-table dense link: " + error.message())
+    }
+  }
+  let edited_file = Hdf5File::parse(edited)
+  let edited_header = edited_file.object_header_at(
+    edited_file.resolve("/group").address,
+  )
+  assert_true(edited_header.first(msg_symbol_table) is None)
+  assert_true(edited_header.first(msg_link_info) is Some(_))
+  assert_true(
+    !edited_header.messages.any(message => message.msg_type == msg_link),
+  )
+  assert_eq(
+    edited_file.resolve("/group/values_alias").address,
+    edited_file.resolve("/group/values").address,
+  )
+  assert_eq(
+    edited_file.resolve("/group/self").address,
+    edited_file.resolve("/group").address,
+  )
+  for index in 0..<7 {
+    assert_eq(
+      edited_file.resolve("/group/extra_" + index.to_string()).address,
+      edited_file.resolve("/group/values").address,
+    )
+  }
+}
+
+///|
+test "link editing handles mixed offset and length widths" {
+  let bytes = @fs.read_file_to_bytes("testdata/symbol_table_32.h5")
+  let file = Hdf5File::parse(bytes)
+  assert_eq(file.superblock.offset_size, 4)
+  assert_eq(file.superblock.length_size, 8)
+  let root = file.object_header_at(file.resolve("/").address)
+  assert_true(root.first(msg_symbol_table) is Some(_))
+  assert_eq(file.links(root).map(link => link.name), [
+    "alias", "group", "matrix", "soft",
+  ])
+  assert_eq(
+    file.resolve("/soft").address,
+    file.resolve("/group/values").address,
+  )
+
+  let hard = file.add_hard_link("/", "matrix_alias", "/matrix") catch {
+    error => fail("add mixed-width hard link: " + error.message())
+  }
+  let converted = Hdf5File::parse(hard)
+  let converted_header = converted.object_header_at(
+    converted.resolve("/").address,
+  )
+  assert_eq(converted_header._version, 2)
+  assert_true(converted_header.first(msg_link_info) is Some(_))
+  let soft = Hdf5File::parse(hard).add_soft_link("/", "group_soft", "group") catch {
+    error => fail("add mixed-width soft link: " + error.message())
+  }
+  let mut edited = soft
+  for index in 0..<4 {
+    edited = Hdf5File::parse(edited).add_soft_link(
+      "/",
+      "extra_" + index.to_string(),
+      "group",
+    ) catch {
+      error => fail("add mixed-width dense link: " + error.message())
+    }
+  }
+  let edited_file = Hdf5File::parse(edited)
+  assert_eq(edited_file.superblock.offset_size, 4)
+  assert_eq(edited_file.superblock.length_size, 8)
+  let header = edited_file.object_header_at(edited_file.resolve("/").address)
+  assert_true(header.first(msg_symbol_table) is None)
+  let (_, heap_address, name_index_address, order_index_address) = editable_link_storage(
+    header, 4,
+  )
+  assert_true(heap_address != heap_undefined_address(4))
+  assert_true(name_index_address != heap_undefined_address(4))
+  assert_true(order_index_address != heap_undefined_address(4))
+  assert_eq(edited_group_links(edited, "/").length(), 10)
+  assert_eq(
+    edited_file.resolve("/matrix_alias").address,
+    edited_file.resolve("/matrix").address,
+  )
+  for index in 0..<4 {
+    assert_eq(
+      edited_file.resolve("/extra_" + index.to_string()).address,
+      edited_file.resolve("/group").address,
+    )
+  }
+  let with_attribute = edited_file.add_attribute(
+    "/group",
+    "note",
+    [],
+    UInt64Values([7UL]),
+  ) catch {
+    error => fail("add mixed-width attribute: " + error.message())
+  }
+  let attributed = Hdf5File::parse(with_attribute)
+  let attributes = attributed.attributes("/group")
+  assert_eq(attributes.length(), 2)
+  match attributes[1].values {
+    Some(UnsignedIntegers(values)) => assert_eq(values, [7UL])
+    _ => fail("expected the added mixed-width attribute")
+  }
+}
+
+///|
+test "source-backed symbol table reads use length-size name offsets" {
+  let bytes = @fs.read_file_to_bytes("testdata/symbol_table_32.h5")
+  let sources : Array[&Hdf5Source] = [bytes]
+  let file = Hdf5File::parse_source(sources[0])
+  assert_eq(file.superblock.offset_size, 4)
+  assert_eq(file.superblock.length_size, 8)
+  assert_eq(file.walk().map(node => node.path), [
+    "/alias", "/group", "/group/values", "/matrix", "/soft",
+  ])
+  assert_eq(integer_values(file.read_dataset("/soft")), [0L, 1L, 2L, 3L, 4L])
+}
+
+///|
 test "link editing spans dense heap direct blocks" {
   let writer = Hdf5Writer::new()
   writer.add_group("/large")

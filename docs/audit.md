@@ -94,7 +94,7 @@ structures raise errors; detection is not exhaustive.
 | In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including fixed-size, variable-length UTF-8 string, sequence, legacy object-reference, legacy region-reference and same-file version-4 object/region/attribute-reference values, plus references and variable-length values nested in compound, fixed-array and sequence members, sparse fill-only chunks, undefined slots in existing indexes, missing fixed-array data blocks, missing extensible-array data/index/super blocks, unallocated fixed- and extensible-array pages, missing v1/v2 B-tree chunk records and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout, slot, page-bitmap, FADB/FAHD, EAHD/EAIB/EASB/EADB and B-tree fields, affected checksums and superblock EOF updated; v1 tree rebuilds honor the superblock K, sibling links and datatype-sized termination keys; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved; variable-length values use one appended global heap collection and null references for empty values; object references rewrite address-width slots from existing target paths; region references append deduplicated target-address plus selection payloads to a global heap and rewrite heap-address/index slots; version-4 object references write direct address tokens, while version-4 region and attribute references append indirect heap payloads and rewrite kind, length, heap address and index fields |
 | Attribute patching | Existing fixed-size inline, dense and creation-order-tracked attributes on objects, including compact attributes, big-endian numeric values, large dense values, variable-length UTF-8 strings, sequences, legacy object references, legacy region references and same-file version-4 object/region/attribute references, plus references and variable-length values nested in compound, fixed-array and sequence members; object-header/OCHK and fractal-heap direct-block checksums are refreshed, variable-length, region-reference and indirect version-4 values append a global heap and update the superblock EOF, while attribute message metadata and indexes remain unchanged |
 | Attribute editing | Add, rename and delete on v1/v2 object headers, including compact-to-dense and dense-to-compact conversion, ordered-dense creation-order preservation, variable-length string and sequence addition, committed datatypes, shared compact/dense attributes, 4-byte-address dense heaps/B-trees, aligned continuation chunks, OCHK/OHDR checksum refresh, dense heap/name/order index rebuilding and superblock EOF repair; v1, 4-byte and shared fixture edits are independently readable by h5py 3.13.0/HDF5 1.14.6 |
-| Link editing | Add, rename and delete for hard, soft and external links in v2 link-message groups, including compact/dense conversion, creation-order preservation, 4-/8-byte target addresses, multi-block dense heaps, huge external-link objects, huge-object v2 B-tree records, aligned continuation chunks, OCHK/OHDR checksum refresh and superblock EOF repair; writer-demo edits and a separate 4-byte-address edit are independently readable by h5py 3.13.0/HDF5 1.14.6 |
+| Link editing | Add, rename and delete for hard, soft and external links in v2 link-message groups and symbol-table groups, including symbol-table-to-link-message conversion, compact/dense conversion, creation-order preservation, 4-/8-byte target addresses, mixed 4-byte-address/8-byte-length files, in-place version 1 to version 2 object-header upgrades, multi-block dense heaps, huge external-link objects, huge-object v2 B-tree records, aligned continuation chunks, OCHK/OHDR checksum refresh and superblock EOF repair; writer-demo edits and separate 4/8-width compact and dense edits are independently readable by h5py 3.13.0/HDF5 1.14.6 |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
 
 ## Reader findings
@@ -292,13 +292,13 @@ heaps and heap extension across multiple blocks are not emitted.
   attributes and use the file's address width. Registered custom filters can
   decode existing dense metadata heaps; rebuilt heaps are unfiltered. Old
   attribute metadata and global heaps are not reclaimed.
-- Link editing is limited to v2 link-message groups; symbol-table groups are
-  rejected. Hard-link targets must already exist in the same bytes-backed file,
-  while soft and external targets are stored without resolution. Object
-  creation, object deletion, external-target creation and free-space
-  reclamation are not performed. Compact and dense link metadata is rebuilt
-  from the final link set, so old link messages, heaps and indexes remain
-  unreferenced.
+- Link editing also accepts symbol-table groups and converts them to compact or
+  dense link-message storage. Hard-link targets must already exist in the same
+  bytes-backed file, while soft and external targets are stored without
+  resolution. Object creation, object deletion, external-target creation and
+  free-space reclamation are not performed. Compact, dense and symbol-table
+  link metadata is rebuilt from the final link set, so old link messages,
+  heaps, symbol tables and indexes remain unreferenced.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB

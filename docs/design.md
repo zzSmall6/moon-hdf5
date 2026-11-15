@@ -361,18 +361,26 @@ written.
 `add_hard_link`, `add_soft_link`, `add_external_link`, `rename_link` and
 `delete_link` use the same object-message rebuild machinery. The reader
 collects compact link messages or dense-heap link objects, their creation order
-and their targets, then re-encodes the complete group link set. Up to eight
-links use compact link-info and v1 link messages; larger sets use a newly
-appended fractal heap plus name and creation-order v2 B-tree indexes. Dense
-storage reuses the multi-block/heap-object encoder, so link payloads larger than
-65,535 bytes use huge heap IDs. Link-info addresses, hard-link target addresses
-and dense B-tree pointers all honor the file's 4- or 8-byte address width.
-Hard-link targets are resolved to an existing object before rebuilding; soft
-and external targets are stored without resolution. Rebuilding preserves
-creation order and never deletes target objects. Symbol-table groups, object
+and their targets, then re-encodes the complete group link set. Older groups
+whose links live in a symbol table are read through the v1 B-tree and local
+heap, normalized to hard or soft links, and converted to compact or dense
+link-message storage; symbol-table entries do not have a creation order, so
+their traversal order becomes the fallback order. Up to eight links use compact
+link-info and v1 link messages; larger sets use a newly appended fractal heap
+plus name and creation-order v2 B-tree indexes. Dense storage reuses the
+multi-block/heap-object encoder, so link payloads larger than 65,535 bytes use
+huge heap IDs. Link-info addresses, hard-link target addresses and dense B-tree
+pointers all honor the file's 4- or 8-byte address width, including files whose
+symbol-table name offsets use the 8-byte length width alongside 4-byte object
+addresses. Hard-link targets are resolved to an existing object before
+rebuilding; soft and external targets are stored without resolution. Rebuilding
+preserves creation order where it exists and never deletes target objects.
+When a version 1 object header cannot hold an eight-byte-aligned continuation
+message for the rebuilt link messages, its initial chunk is upgraded in place to
+a version 2 `OHDR` that continues into a checksummed `OCHK` chunk. Object
 creation and object deletion are outside this path. Link edits are append-only
-and leave the previous compact messages, dense heap and indexes unreferenced
-because no free-space manager is written.
+and leave the previous compact messages, dense heap, symbol tables and indexes
+unreferenced because no free-space manager is written.
 
 ## Errors and verification
 

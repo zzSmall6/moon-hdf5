@@ -31,7 +31,9 @@ moon package --list >/dev/null 2>&1 || {
 
 echo "==> Writer compatibility"
 output=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-release.XXXXXX")
-trap 'rm -f "$output"' EXIT HUP INT TERM
+symbol_compact=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-compact.XXXXXX")
+symbol_dense=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-dense.XXXXXX")
+trap 'rm -f "$output" "$symbol_compact" "$symbol_dense"' EXIT HUP INT TERM
 moon run src/cmd/write_demo --target native -- "$output"
 
 python=${H5PY_PYTHON:-}
@@ -52,6 +54,18 @@ else
     exit 1
   fi
   "$python" scripts/verify_writer_output.py "$output"
+fi
+
+echo "==> Symbol-table editing"
+moon run src/cmd/symbol_table_edit_demo --target native -- \
+  testdata/symbol_table_32.h5 "$symbol_compact" compact
+moon run src/cmd/symbol_table_edit_demo --target native -- \
+  testdata/symbol_table_32.h5 "$symbol_dense" dense
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> Symbol-table edit verification skipped (SKIP_H5PY=1)"
+else
+  "$python" scripts/verify_symbol_table_edit.py "$symbol_compact" compact
+  "$python" scripts/verify_symbol_table_edit.py "$symbol_dense" dense
 fi
 
 if [ "${SKIP_H5PY:-0}" = "1" ]; then

@@ -851,6 +851,61 @@ fn append_contiguous_dense_metadata(
 }
 
 ///|
+/// One logical object-header message used while rebuilding an object header.
+priv struct RebuiltObjectMessage {
+  msg_type : Int32
+  flags : Byte
+  data : Bytes
+  creation_order : UInt64
+}
+
+///|
+/// Rewrites a version 1 object header in place as a version 2 header whose
+/// initial chunk contains only a continuation message. This is needed when the
+/// version 1 continuation message cannot consume an eight-byte-aligned body,
+/// which happens when the address and length widths differ.
+fn write_upgraded_v2_object_header(
+  output : FixedArray[Byte],
+  plan : ObjectHeaderRewritePlan,
+  offset_size : Int32,
+  length_size : Int32,
+  continuation_address : UInt64,
+  continuation_length : UInt64,
+  tracking : Bool,
+) -> Unit raise Hdf5Error {
+  let order_size = if tracking { 2 } else { 0 }
+  let chunk_size = 4 + order_size + offset_size + length_size
+  guard chunk_size <= 255 else {
+    raise UnsupportedFeature("object header continuation message is too large")
+  }
+  guard editable_uint_fits_width(continuation_length, length_size) else {
+    raise UnsupportedFeature("object header continuation is too large")
+  }
+  let total_size = 7 + chunk_size + 4
+  let capacity = 16 + plan.body_size
+  guard total_size <= capacity else {
+    raise UnsupportedFeature("object header has no room for a version 2 header")
+  }
+  let buffer = @buffer.Buffer::Buffer(size_hint=capacity)
+  writer_write_bytes(buffer, b"OHDR")
+  buffer.write_byte(b'\x02')
+  buffer.write_byte(if tracking { b'\x0c' } else { b'\x00' })
+  buffer.write_byte(chunk_size.to_byte())
+  buffer.write_byte(msg_object_continuation.to_byte())
+  buffer.write_uint16_le((offset_size + length_size).to_uint16())
+  buffer.write_byte(b'\x00')
+  if tracking {
+    buffer.write_uint16_le(0U.to_uint16())
+  }
+  write_uint_width(buffer, continuation_address, offset_size)
+  write_uint_width(buffer, continuation_length, length_size)
+  let checksum = metadata_checksum(buffer.to_bytes(), 0, buffer.length())
+  buffer.write_uint_le(checksum)
+  writer_write_zeros(buffer, capacity - total_size)
+  patch_heap_output_bytes(output, plan.offset, buffer.to_bytes())
+}
+
+///|
 /// Replaces selected messages in an object header with a rebuilt message set.
 /// The new messages are encoded with the same object-header order size as the
 /// copied messages.
@@ -859,7 +914,7 @@ fn Hdf5File::write_rebuilt_object_messages(
   address : UInt64,
   header : ObjectHeader,
   replaced_types : Array[Int32],
-  new_messages : Array[Bytes],
+  new_messages : Array[RebuiltObjectMessage],
   tracking : Bool,
   tail : @buffer.Buffer,
 ) -> Bytes raise Hdf5Error {
@@ -872,31 +927,40 @@ fn Hdf5File::write_rebuilt_object_messages(
     offset_size,
     length_size,
   )
-  let order_size = if plan.version == 2 && tracking { 2 } else { 0 }
-  let messages : Array[Bytes] = []
+  let v1_remainder = plan.body_size - (8 + offset_size + length_size)
+  let upgrade = plan.version == 1 && v1_remainder % 8 != 0
+  let output_version = if upgrade { 2 } else { plan.version }
+  let order_size = if output_version == 2 && tracking { 2 } else { 0 }
+  let messages : Array[RebuiltObjectMessage] = []
   for message in header.messages {
     if message.msg_type == _msg_nil ||
       message.msg_type == msg_object_continuation ||
       replaced_types.contains(message.msg_type) {
       continue
     }
-    messages.push(
-      encode_edit_message(
-        plan.version,
-        order_size,
-        message.msg_type,
-        message.flags,
-        message.data,
-        0UL,
-      ),
-    )
+    messages.push({
+      msg_type: message.msg_type,
+      flags: message.flags,
+      data: message.data,
+      creation_order: 0UL,
+    })
   }
   for message in new_messages {
     messages.push(message)
   }
+  let encoded : Array[Bytes] = []
   let mut message_bytes = 0
   for message in messages {
-    message_bytes = message_bytes + message.length()
+    let bytes = encode_edit_message(
+      output_version,
+      order_size,
+      message.msg_type,
+      message.flags,
+      message.data,
+      message.creation_order,
+    )
+    message_bytes = message_bytes + bytes.length()
+    encoded.push(bytes)
   }
   let chunk_offset = next_aligned_tail_start(
     self.bytes.length(),
@@ -904,15 +968,15 @@ fn Hdf5File::write_rebuilt_object_messages(
     "append object header continuation",
   )
   let chunk = @buffer.Buffer::Buffer(
-    size_hint=message_bytes + (if plan.version == 1 { 0 } else { 8 }),
+    size_hint=message_bytes + (if output_version == 1 { 0 } else { 8 }),
   )
-  if plan.version == 1 {
-    for message in messages {
+  if output_version == 1 {
+    for message in encoded {
       writer_write_bytes(chunk, message)
     }
   } else {
     writer_write_bytes(chunk, b"OCHK")
-    for message in messages {
+    for message in encoded {
       writer_write_bytes(chunk, message)
     }
     chunk.write_uint_le(metadata_checksum(chunk.to_bytes(), 0, chunk.length()))
@@ -935,16 +999,28 @@ fn Hdf5File::write_rebuilt_object_messages(
     self.superblock.base_address,
   )
   let output = self.bytes.to_fixedarray()
-  rewrite_initial_object_header(
-    output,
-    plan,
-    offset_size,
-    length_size,
-    continuation_address,
-    chunk_bytes.length().to_uint64(),
-    tracking,
-    messages.length(),
-  )
+  if upgrade {
+    write_upgraded_v2_object_header(
+      output,
+      plan,
+      offset_size,
+      length_size,
+      continuation_address,
+      chunk_bytes.length().to_uint64(),
+      tracking,
+    )
+  } else {
+    rewrite_initial_object_header(
+      output,
+      plan,
+      offset_size,
+      length_size,
+      continuation_address,
+      chunk_bytes.length().to_uint64(),
+      tracking,
+      messages.length(),
+    )
+  }
   self.finish_appended_image(output, tail)
 }
 
@@ -1035,47 +1111,34 @@ fn Hdf5File::write_rebuilt_attributes(
     dense_addresses = Some((heap_address, index_address, order_address))
   }
   let tracking = plan.track_order || dense
-  let order_size = if plan.version == 2 && tracking { 2 } else { 0 }
-  let new_messages : Array[Bytes] = []
+  let new_messages : Array[RebuiltObjectMessage] = []
   if attributes.length() > 0 {
     match dense_addresses {
       Some((heap_address, index_address, order_address)) =>
-        new_messages.push(
-          encode_edit_message(
-            plan.version,
-            order_size,
-            msg_attribute_info,
-            b'\x00',
-            encode_dense_attribute_info(
-              offset_size, max_creation_order, heap_address, index_address, order_address,
-            ),
-            0UL,
+        new_messages.push({
+          msg_type: msg_attribute_info,
+          flags: b'\x00',
+          data: encode_dense_attribute_info(
+            offset_size, max_creation_order, heap_address, index_address, order_address,
           ),
-        )
+          creation_order: 0UL,
+        })
       None => {
-        new_messages.push(
-          encode_edit_message(
-            plan.version,
-            order_size,
-            msg_attribute_info,
-            b'\x00',
-            encode_editable_compact_attribute_info(
-              offset_size, tracking, max_creation_order,
-            ),
-            0UL,
+        new_messages.push({
+          msg_type: msg_attribute_info,
+          flags: b'\x00',
+          data: encode_editable_compact_attribute_info(
+            offset_size, tracking, max_creation_order,
           ),
-        )
+          creation_order: 0UL,
+        })
         for attribute in attributes {
-          new_messages.push(
-            encode_edit_message(
-              plan.version,
-              order_size,
-              msg_attribute,
-              attribute.flags,
-              attribute.data,
-              attribute.creation_order,
-            ),
-          )
+          new_messages.push({
+            msg_type: msg_attribute,
+            flags: attribute.flags,
+            data: attribute.data,
+            creation_order: attribute.creation_order,
+          })
         }
       }
     }

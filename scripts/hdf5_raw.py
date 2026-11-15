@@ -4,7 +4,12 @@ def uint(data: bytes, offset: int, size: int) -> int:
     return int.from_bytes(data[offset : offset + size], "little")
 
 
-def object_header_messages(data: bytes, address: int) -> list[tuple[int, int, bytes]]:
+def object_header_messages(
+    data: bytes,
+    address: int,
+    offset_size: int = 8,
+    length_size: int = 8,
+) -> list[tuple[int, int, bytes]]:
     assert data[address : address + 4] == b"OHDR", "expected a v2 object header"
     flags = data[address + 5]
     offset = address + 6
@@ -33,8 +38,10 @@ def object_header_messages(data: bytes, address: int) -> list[tuple[int, int, by
             offset += message_size
             messages.append((message_type, message_flags, payload))
             if message_type == 0x10:
-                continuation_address = uint(payload, 0, 8)
-                continuation_length = uint(payload, 8, 8)
+                continuation_address = uint(payload, 0, offset_size)
+                continuation_length = uint(
+                    payload, offset_size, length_size
+                )
                 assert data[continuation_address : continuation_address + 4] == b"OCHK"
                 assert continuation_length >= 8
                 blocks.append(

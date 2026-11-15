@@ -197,10 +197,34 @@ fn Hdf5File::editable_links(
   self : Hdf5File,
   header : ObjectHeader,
 ) -> Array[EditableLink] raise Hdf5Error {
-  guard !header.messages.any(message => message.msg_type == msg_symbol_table) else {
-    raise UnsupportedFeature(
-      "link editing requires link-message groups, not symbol tables",
-    )
+  match header.first(msg_symbol_table) {
+    Some(message) => {
+      let offset_size = self.superblock.offset_size
+      let length_size = self.superblock.length_size
+      let symbol_table = parse_symbol_table_message(
+        message, offset_size, length_size,
+      )
+      let links = read_group_links_v1(
+        self.bytes,
+        symbol_table.btree_address,
+        symbol_table.heap_address,
+        offset_size,
+        length_size,
+        self.superblock.base_address,
+      )
+      let editable : Array[EditableLink] = []
+      for index in 0..<links.length() {
+        let link = links[index]
+        let normalized = if link.cache_type == 2U {
+          link
+        } else {
+          { ..link, cache_type: 0U, link_target: None, external_path: None, }
+        }
+        editable.push({ link: normalized, creation_order: index.to_uint64(), })
+      }
+      return editable
+    }
+    None => ()
   }
   let offset_size = self.superblock.offset_size
   let length_size = self.superblock.length_size
@@ -410,9 +434,9 @@ fn Hdf5File::write_rebuilt_links(
     }
   }
   let dense = links.length() > writer_dense_threshold
-  let tracking = existing_tracking || dense
-  let order_size = if header._version == 2 && tracking { 2 } else { 0 }
-  let new_messages : Array[Bytes] = []
+  let symbol_table = header.first(msg_symbol_table) is Some(_)
+  let tracking = existing_tracking || dense || symbol_table
+  let new_messages : Array[RebuiltObjectMessage] = []
   if dense {
     let entries : Array[WritableDenseHeapEntry] = []
     for link in links {
@@ -449,53 +473,47 @@ fn Hdf5File::write_rebuilt_links(
     }
     let index_address = heap_address + heap_bytes.length().to_uint64()
     let order_address = index_address + index_bytes.length().to_uint64()
-    new_messages.push(
-      encode_edit_message(
-        header._version,
-        order_size,
-        msg_link_info,
-        b'\x00',
-        encode_dense_storage_info(
-          true,
-          max_creation_order,
-          heap_address,
-          index_address,
-          order_address,
-          offset_size~,
-        ),
-        0UL,
+    new_messages.push({
+      msg_type: msg_link_info,
+      flags: b'\x00',
+      data: encode_dense_storage_info(
+        true,
+        max_creation_order,
+        heap_address,
+        index_address,
+        order_address,
+        offset_size~,
       ),
-    )
+      creation_order: 0UL,
+    })
   } else {
-    new_messages.push(
-      encode_edit_message(
-        header._version,
-        order_size,
-        msg_link_info,
-        b'\x00',
-        encode_editable_compact_link_info(
-          offset_size, tracking, max_creation_order,
-        ),
-        0UL,
+    new_messages.push({
+      msg_type: msg_link_info,
+      flags: b'\x00',
+      data: encode_editable_compact_link_info(
+        offset_size, tracking, max_creation_order,
       ),
-    )
+      creation_order: 0UL,
+    })
     for link in links {
-      new_messages.push(
-        encode_edit_message(
-          header._version,
-          order_size,
-          msg_link,
-          b'\x00',
-          encode_editable_link(link, link.link.name, tracking, offset_size),
-          link.creation_order,
-        ),
-      )
+      new_messages.push({
+        msg_type: msg_link,
+        flags: b'\x00',
+        data: encode_editable_link(link, link.link.name, tracking, offset_size),
+        creation_order: link.creation_order,
+      })
     }
   }
   self.write_rebuilt_object_messages(
     address,
     header,
-    [_msg_nil, msg_object_continuation, msg_link_info, msg_link],
+    if symbol_table {
+      [
+        _msg_nil, msg_object_continuation, msg_symbol_table, msg_link_info, msg_link,
+      ]
+    } else {
+      [_msg_nil, msg_object_continuation, msg_link_info, msg_link]
+    },
     new_messages,
     tracking,
     tail,

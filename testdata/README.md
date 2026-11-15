@@ -24,6 +24,7 @@ python3 -m venv /tmp/moon-hdf5-h5py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_nested_vlen_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_filtered_attribute_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_hard_link_fixture.py
+/tmp/moon-hdf5-h5py/bin/python scripts/generate_symbol_table_32_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_matlab73_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_wide_numeric_fixture.py
 ```
@@ -69,6 +70,8 @@ Independent verifiers run with the HDF5 1.14.6 environment:
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_external_reference_fixture.py testdata/external_references.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_shared_messages_fixture.py testdata/shared_messages.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_hard_links_fixture.py testdata/hard_links.h5
+/tmp/moon-hdf5-h5py/bin/python scripts/verify_symbol_table_edit.py /tmp/symbol_compact.h5 compact
+/tmp/moon-hdf5-h5py/bin/python scripts/verify_symbol_table_edit.py /tmp/symbol_dense.h5 dense
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_matlab73_fixture.py testdata/matlab73_compatible.mat
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_netcdf4_fixture.py testdata/netcdf4_1_7_5.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_wide_numeric_fixture.py testdata/wide_numeric.h5
@@ -100,5 +103,6 @@ verifies the committed files.
 | `external_storage*.h5`, `external_storage_*.bin` | Multi-file/offset/unaligned raw-data slots and 4-byte-address storage |
 | `vlen_fills.h5` | Default/custom variable-length string fills from producer files |
 | `hard_links.h5` | Named hard-link aliases and ancestor-cycle traversal |
+| `symbol_table.h5`, `symbol_table_32.h5` | Empty/compact/dense symbol-table groups, hard/soft links, nested groups and 8/8 plus mixed 4-byte-address/8-byte-length layouts |
 | `netcdf4_1_7_5.h5` | netCDF group, dimension, chunk, filter, UTF-8 and reference-attribute structures |
 | `matlab73_compatible.mat` | hdf5storage metadata, numeric/logical/char/struct and empty arrays |

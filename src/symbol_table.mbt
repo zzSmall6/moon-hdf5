@@ -35,7 +35,7 @@ fn read_symbol_table_node(
   bytes : Bytes,
   address : UInt64,
   offset_size : Int32,
-  _length_size : Int32,
+  length_size : Int32,
   base_address : UInt64,
   heap : LocalHeap,
   links : Array[GroupLink],
@@ -53,7 +53,7 @@ fn read_symbol_table_node(
   reader.skip(1)
   let symbol_count = reader.read_u16_le().to_int()
   for _ in 0..<symbol_count {
-    let name_offset = reader.read_uint_le(offset_size)
+    let name_offset = reader.read_uint_le(length_size)
     let object_header_address = reader.read_uint_le(offset_size)
     let cache_type = reader.read_u32_le()
     let _reserved = reader.read_u32_le()

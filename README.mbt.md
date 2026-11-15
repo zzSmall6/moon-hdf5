@@ -42,10 +42,9 @@ moon-hdf5 implements a documented subset of HDF5. The
   fixed-array members.
 - `add_hard_link`, `add_soft_link`, `add_external_link`, `rename_link` and
   `delete_link` rebuild a group's complete link collection on bytes-backed
-  files, preserving creation order and switching between compact and dense
-  storage as needed.
-- General object creation, object deletion and symbol-table-group link editing
-  remain unsupported.
+  files, including symbol-table groups, preserving creation order and switching
+  between compact and dense storage as needed.
+- General object creation and object deletion remain unsupported.
 
 ## Installation
 
@@ -531,9 +530,10 @@ the items below summarize the main user-visible gaps.
   fixed-base variable-length sequences, plus legacy and version-4 references,
   while `add_attribute`, `rename_attribute` and `delete_attribute` rebuild the
   complete attribute collection and the link operations rebuild the complete
-  link collection. Streaming output, object creation/deletion and link editing
-  of symbol-table groups are unsupported. Multi-unlimited resizing and v2 B-tree
-  output are rebuilt for the current in-memory shape.
+  link collection. Symbol-table groups are converted to compact or dense
+  link-message groups when edited. Streaming output and object creation/deletion
+  are unsupported. Multi-unlimited resizing and v2 B-tree output are rebuilt for
+  the current in-memory shape.
 - **Attribute editing:** supported on bytes-backed files with v1 or v2 object
   headers. Shared attribute messages are resolved and rebuilt as local messages;
   added reference values must target existing same-file objects, datasets or
@@ -542,16 +542,20 @@ the items below summarize the main user-visible gaps.
   rebuilding and reference slots honor 4- and 8-byte address layouts.
   Conversion between compact and dense forms is append-only; old metadata stays
   unreferenced because no free-space reclamation is written.
-- **Link editing:** supported on bytes-backed files with v2 link-message groups,
-  including compact groups and groups using dense fractal-heap storage. Hard
-  links must target an existing object in the same file; soft-link targets may
-  be unresolved. External links store the target file and path without opening
-  it. Rebuilding preserves creation order, switches at the eight-link compact
-  threshold, honors 4- and 8-byte address widths, and writes multi-block or huge
-  dense metadata when required. Symbol-table groups, object creation and object
-  deletion are not handled by link editing. Conversion is append-only and old
-  link metadata remains unreferenced because no free-space reclamation is
-  written.
+- **Link editing:** supported on bytes-backed files with v2 link-message groups
+  and with symbol-table groups. Symbol-table links are read through their
+  B-tree/local-heap representation and converted to compact or dense
+  link-message storage. Hard links must target an existing object in the same
+  file; soft-link targets may be unresolved. External links store the target
+  file and path without opening it and therefore require conversion away from
+  the symbol-table representation. Rebuilding preserves creation order when it
+  exists, switches at the eight-link compact threshold, honors 4- and 8-byte
+  address widths including mixed 4-byte-address/8-byte-length files, and writes
+  multi-block or huge dense metadata when required. Version 1 object headers are
+  upgraded in place to version 2 when a version 1 continuation cannot be
+  eight-byte aligned. Object creation and object deletion are not handled by
+  link editing. Conversion is append-only and old link metadata remains
+  unreferenced because no free-space reclamation is written.
 - **Value patching:** allocation is limited to an unallocated contiguous payload,
   an undefined slot already represented by the single-chunk layout or a
   fixed-/extensible-array entry, a missing fixed-array data block, a missing

@@ -370,6 +370,7 @@ fn read_source_symbol_node(
   source : &Hdf5Source,
   address : UInt64,
   offset_size : Int32,
+  length_size : Int32,
   base_address : UInt64,
   heap : SourceLocalHeap,
   links : Array[GroupLink],
@@ -383,13 +384,13 @@ fn read_source_symbol_node(
   }
   count_reader.skip(1)
   let symbol_count = count_reader.read_u16_le().to_int()
-  let entry_size = offset_size * 2 + 24
+  let entry_size = length_size + offset_size + 24
   let reader = Reader::new(
     source.read_at(absolute, 8 + symbol_count * entry_size),
   )
   reader.skip(8)
   for _ in 0..<symbol_count {
-    let name_offset = reader.read_uint_le(offset_size)
+    let name_offset = reader.read_uint_le(length_size)
     let object_header_address = reader.read_uint_le(offset_size)
     let cache_type = reader.read_u32_le()
     reader.skip(4)
@@ -454,7 +455,7 @@ fn read_source_group_btree(
       )
     } else {
       read_source_symbol_node(
-        source, child, offset_size, base_address, heap, links,
+        source, child, offset_size, length_size, base_address, heap, links,
       )
     }
   }

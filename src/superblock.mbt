@@ -100,7 +100,7 @@ fn parse_superblock_v0(
   let end_of_file_offset = reader.position()
   let end_of_file_address = reader.read_uint_le(offset_size)
   let driver_info_address = reader.read_uint_le(offset_size)
-  let _root_link_name_offset = reader.read_uint_le(offset_size)
+  let _root_link_name_offset = reader.read_uint_le(length_size)
   let root_group_object_header = reader.read_uint_le(offset_size)
   let _root_cache_type = reader.read_u32_le()
   let _root_reserved = reader.read_u32_le()
