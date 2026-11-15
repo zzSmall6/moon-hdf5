@@ -36,9 +36,11 @@ moon-hdf5 implements a documented subset of HDF5. The
 - `add_attribute`, `rename_attribute` and `delete_attribute` update the
   attributes of an existing bytes-backed file, preserving creation order and
   switching between compact and dense attribute storage as the collection
-  crosses the writer threshold.
-- Other general metadata editing and adding reference-valued attributes remain
-  unsupported.
+  crosses the writer threshold. New attributes can contain fixed-size values,
+  variable-length UTF-8 strings or sequences, and legacy or version-4 object,
+  region and attribute references, including references nested in compound and
+  fixed-array members.
+- Other general metadata editing remains unsupported.
 
 ## Installation
 
@@ -451,13 +453,18 @@ These APIs accept groups, datasets and committed datatypes in bytes-backed
 up to eight attributes; larger collections are rebuilt as dense storage when
 every encoded attribute message is at most 65,535 bytes. Existing creation order
 is retained. Adding fixed-size values and variable-length UTF-8 strings or
-sequences is supported; reference-valued additions remain unsupported. Shared
+sequences is supported, as are legacy and version-4 object, region and
+attribute references. Reference targets must already exist in the same file;
+region targets must be datasets with a non-null dataspace, and version-4
+attribute-reference names must name an existing attribute. New vlen and
+indirect-reference payloads use appended global-heap collections. Shared
 attribute messages are resolved and written back as local messages, leaving the
-other shared-message objects in the file untouched. Dense rebuilding uses the
-file's address and length widths, including 4-byte-address files. The object's
-initial header chunk is replaced by a continuation message and the rebuilt
-messages are appended at an aligned EOF. Old attribute metadata remains
-unreferenced because no free-space reclamation is performed.
+other shared-message objects in the file untouched. Dense rebuilding and
+reference slots use the file's address and length widths, including
+4-byte-address files. The object's initial header chunk is replaced by a
+continuation message and the rebuilt messages are appended at an aligned EOF.
+Old attribute metadata remains unreferenced because no free-space reclamation is
+performed.
 
 Run the larger example and verify it independently with h5py:
 
@@ -503,8 +510,9 @@ the items below summarize the main user-visible gaps.
   output are rebuilt for the current in-memory shape.
 - **Attribute editing:** supported on bytes-backed files with v1 or v2 object
   headers. Shared attribute messages are resolved and rebuilt as local messages;
-  reference-valued additions and custom metadata-heap filters are unsupported.
-  Dense rebuilding honors 4- and 8-byte address layouts. Conversion between
+  added reference values must target existing same-file objects, datasets or
+  attributes, and custom metadata-heap filters are unsupported. Dense rebuilding
+  and reference slots honor 4- and 8-byte address layouts. Conversion between
   compact and dense forms is append-only; old metadata stays unreferenced because
   no free-space reclamation is written.
 - **Value patching:** allocation is limited to an unallocated contiguous payload,

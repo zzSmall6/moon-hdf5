@@ -218,12 +218,17 @@ pub fn Datatype::write_float_with_order(Int32, Bool) -> Self raise Hdf5Error
 pub fn Datatype::write_integer(Bool, Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_integer_with_order(Bool, Int32, Bool) -> Self raise Hdf5Error
 pub fn Datatype::write_object_reference() -> Self
+pub fn Datatype::write_object_reference_with_address_size(Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_opaque(Int32, String) -> Self raise Hdf5Error
 pub fn Datatype::write_region_reference() -> Self
+pub fn Datatype::write_region_reference_with_address_size(Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_time(Int32, little_endian? : Bool) -> Self raise Hdf5Error
 pub fn Datatype::write_version4_attribute_reference() -> Self
+pub fn Datatype::write_version4_attribute_reference_with_address_size(Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_version4_object_reference() -> Self
+pub fn Datatype::write_version4_object_reference_with_address_size(Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_version4_region_reference() -> Self
+pub fn Datatype::write_version4_region_reference_with_address_size(Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_vlen_sequence(Self) -> Self raise Hdf5Error
 
 #derive(@debug.Debug)

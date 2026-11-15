@@ -337,7 +337,11 @@ layouts. Compact and dense shared attribute messages are resolved through SOHM
 and emitted as local attribute messages; editing does not mutate the existing
 shared-message table or heaps. Added variable-length strings and fixed-base
 sequences receive a newly appended global heap before their descriptors are
-encoded. Reference-valued additions remain unsupported.
+encoded. Added legacy and version-4 object, region and attribute references
+resolve their targets against the existing hierarchy; region targets use the
+target dataset's dataspace, attribute targets must already exist, and new
+indirect-reference payloads use a second appended global heap. Reference slots
+and indirect payload addresses use the file's 4- or 8-byte address width.
 
 The object's initial header chunk is replaced by an object-continuation message
 followed by NIL padding. Every non-attribute message from the original header and

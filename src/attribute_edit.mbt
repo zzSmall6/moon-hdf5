@@ -260,27 +260,159 @@ fn rewrite_attribute_name(
 }
 
 ///|
+fn attribute_values_contain_reference(values : Hdf5WriteValues) -> Bool {
+  match values {
+    ObjectReferenceValues(_) => true
+    StructuredValues(datatype, _) => datatype_contains_reference(datatype)
+    _ => false
+  }
+}
+
+///|
+fn Hdf5File::editable_reference_objects(
+  self : Hdf5File,
+) -> Array[WritableObject] raise Hdf5Error {
+  let objects : Array[WritableObject] = [
+    {
+      path: "/",
+      kind: WritableGroup,
+      address: self.superblock.root_group_object_header,
+      raw_address: self.superblock.root_group_object_header,
+      dataspace: None,
+    },
+  ]
+  for node in self.walk() {
+    if node.address == 0UL || node.kind == Unknown {
+      continue
+    }
+    let kind = match node.kind {
+      Group => WritableGroup
+      Dataset => WritableDatasetObject(0)
+      Datatype => WritableCommittedDatatype(0)
+      Unknown => continue
+    }
+    let dataspace = if node.kind == Dataset {
+      Some(self.read_dataset_metadata(node.path).dataspace)
+    } else {
+      None
+    }
+    objects.push({
+      path: node.path,
+      kind,
+      address: node.address,
+      raw_address: node.address,
+      dataspace,
+    })
+  }
+  objects
+}
+
+///|
+fn Hdf5File::validate_editable_attribute_reference_target(
+  self : Hdf5File,
+  path : String,
+  name : String,
+  targets : Array[WritableAttribute],
+) -> Unit raise Hdf5Error {
+  let canonical = canonical_writer_path(path)
+  let attributes = self.attributes(canonical)
+  guard attributes.search_by(attribute => attribute.name == name) is Some(_) else {
+    raise InvalidArgument(
+      "attribute reference attribute does not exist: " + canonical + "." + name,
+    )
+  }
+  if targets.search_by(target => {
+      target.object_path == canonical && target.name == name
+    })
+    is None {
+    targets.push({
+      object_path: canonical,
+      name,
+      dimensions: [],
+      values: Int8Values([]),
+      creation_order: 0UL,
+    })
+  }
+}
+
+///|
+fn Hdf5File::collect_editable_attribute_references(
+  self : Hdf5File,
+  datatype : Datatype,
+  value : DatasetValue,
+  targets : Array[WritableAttribute],
+) -> Unit raise Hdf5Error {
+  match datatype.class {
+    6 =>
+      match value {
+        Compound(fields) =>
+          for index in 0..<fields.length() {
+            self.collect_editable_attribute_references(
+              datatype.compound_members[index].datatype,
+              fields[index].value,
+              targets,
+            )
+          }
+        _ => ()
+      }
+    7 =>
+      if datatype.reference_kind == 4 {
+        match value {
+          AttributeReference(Some(path), name) =>
+            self.validate_editable_attribute_reference_target(
+              path, name, targets,
+            )
+          _ => ()
+        }
+      }
+    9 =>
+      match value {
+        Sequence(items) =>
+          for item in items {
+            self.collect_editable_attribute_references(
+              datatype.base_types[0],
+              item,
+              targets,
+            )
+          }
+        _ => ()
+      }
+    10 =>
+      match value {
+        Elements(items) =>
+          for item in items {
+            self.collect_editable_attribute_references(
+              datatype.base_types[0],
+              item,
+              targets,
+            )
+          }
+        _ => ()
+      }
+    _ => ()
+  }
+}
+
+///|
 fn encode_new_attribute_message(
   name : String,
   dimensions : Array[UInt64],
   values : Hdf5WriteValues,
   heap : WritableGlobalHeap,
+  objects : Array[WritableObject],
+  reference_address_size : Int32,
 ) -> Bytes raise Hdf5Error {
-  match values {
-    ObjectReferenceValues(_) =>
-      raise UnsupportedFeature(
-        "adding object-reference attributes is not supported",
-      )
-    StructuredValues(datatype, _) =>
-      if datatype_contains_reference(datatype) {
-        raise UnsupportedFeature(
-          "adding reference-bearing structured attributes is not supported",
-        )
-      }
-    _ => ()
-  }
-  validate_write_values(dimensions, values)
-  let encoded = encode_write_values(values, heap~, objects=[])
+  validate_write_values(
+    dimensions,
+    values,
+    reference_address_size=Some(reference_address_size),
+  )
+  let encoded = encode_write_values(
+    values,
+    heap~,
+    objects~,
+    reference_address_size~,
+  )
   let encoded_name = @utf8.encode(name)
   let dataspace = encode_dataspace(dimensions)
   guard encoded_name.length() + 1 <= 65535 &&
@@ -313,6 +445,8 @@ fn encode_new_attribute_message(
 ///|
 fn editable_values_heap(
   values : Hdf5WriteValues,
+  objects : Array[WritableObject],
+  reference_address_size : Int32,
 ) -> WritableGlobalHeap raise Hdf5Error {
   let strings : Array[String] = []
   collect_heap_strings(strings, values)
@@ -327,7 +461,14 @@ fn editable_values_heap(
   match values {
     StructuredValues(datatype, items) =>
       for item in items {
-        collect_heap_sequences(sequences, datatype, item, heap=empty, objects=[])
+        collect_heap_sequences(
+          sequences,
+          datatype,
+          item,
+          heap=empty,
+          objects~,
+          reference_address_size~,
+        )
       }
     _ => ()
   }
@@ -1031,8 +1172,45 @@ pub fn Hdf5File::add_attribute(
     raise InvalidField("attribute creation order exceeds the file format")
   }
   let tail = @buffer.Buffer::Buffer()
-  let initial_heap = editable_values_heap(values)
-  let heap = if initial_heap.strings.length() > 0 ||
+  let reference_address_size = self.superblock.offset_size
+  let has_references = attribute_values_contain_reference(values)
+  let objects = if has_references {
+    self.editable_reference_objects()
+  } else {
+    []
+  }
+  let reference_attributes : Array[WritableAttribute] = []
+  if has_references {
+    match values {
+      StructuredValues(datatype, items) =>
+        for item in items {
+          self.collect_editable_attribute_references(
+            datatype, item, reference_attributes,
+          )
+        }
+      _ => ()
+    }
+  }
+  let initial_heap = editable_values_heap(
+    values, objects, reference_address_size,
+  )
+  if has_references {
+    match values {
+      StructuredValues(datatype, items) =>
+        for item in items {
+          collect_heap_regions(
+            initial_heap.regions,
+            datatype,
+            item,
+            objects,
+            reference_attributes,
+            reference_address_size~,
+          )
+        }
+      _ => ()
+    }
+  }
+  let heap_address = if initial_heap.strings.length() > 0 ||
     initial_heap.sequences.length() > 0 {
     let heap_payload = encode_global_heap(initial_heap)
     let heap_offset = append_aligned_bytes_to_tail(
@@ -1041,21 +1219,32 @@ pub fn Hdf5File::add_attribute(
       heap_payload,
       "append an attribute global heap",
     )
-    let heap_address = file_offset_to_stored_address(
-      heap_offset,
-      self.superblock.base_address,
-    )
-    {
-      address: heap_address,
-      region_address: initial_heap.region_address,
-      strings: initial_heap.strings,
-      regions: initial_heap.regions,
-      sequences: initial_heap.sequences,
-    }
+    file_offset_to_stored_address(heap_offset, self.superblock.base_address)
   } else {
-    initial_heap
+    0UL
   }
-  let data = encode_new_attribute_message(name, dimensions, values, heap)
+  let region_address = if initial_heap.regions.length() > 0 {
+    let heap_payload = encode_region_heap(initial_heap)
+    let heap_offset = append_aligned_bytes_to_tail(
+      tail,
+      self.bytes.length(),
+      heap_payload,
+      "append an attribute region-reference heap",
+    )
+    file_offset_to_stored_address(heap_offset, self.superblock.base_address)
+  } else {
+    0UL
+  }
+  let heap = {
+    address: heap_address,
+    region_address,
+    strings: initial_heap.strings,
+    regions: initial_heap.regions,
+    sequences: initial_heap.sequences,
+  }
+  let data = encode_new_attribute_message(
+    name, dimensions, values, heap, objects, reference_address_size,
+  )
   attributes.push({ name, creation_order, flags: b'\x00', data, })
   self.write_rebuilt_attributes(node.address, header, attributes, tail)
 }

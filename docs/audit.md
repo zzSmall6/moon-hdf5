@@ -274,9 +274,12 @@ heaps and heap extension across multiple blocks are not emitted.
   deletion and renaming use a rebuild path that supports v1/v2 object headers,
   compact/dense conversion, ordered-dense creation order, shared compact/dense
   attribute messages (rebuilt as local messages), 4-byte-address dense heaps and
-  reference-free additions; reference-valued additions are rejected. Custom
-  metadata-heap filters are outside the editing boundary, and old attribute
-  metadata and global heaps are not reclaimed.
+  legacy or version-4 object/region/attribute-reference additions, including
+  references nested in compound and fixed-array members.
+  Added reference values must target existing same-file objects, datasets or
+  attributes and use the file's address width. Custom metadata-heap filters are
+  outside the editing boundary, and old attribute metadata and global heaps are
+  not reclaimed.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB

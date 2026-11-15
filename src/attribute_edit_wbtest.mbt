@@ -523,6 +523,154 @@ test "committed datatype attributes can be added renamed and deleted" {
 }
 
 ///|
+test "reference-valued attributes can be added to existing files" {
+  let writer = Hdf5Writer::new()
+  writer.add_group("/group")
+  writer.add_dataset("/source", [1UL], Int64Values([5L]))
+  writer.add_dataset("/target", [2UL, 2UL], Int64Values([0L, 1L, 2L, 3L]))
+  writer.add_attribute("/target", "unit", [], FixedStringValues(["m"], 1))
+  let file = Hdf5File::parse(writer.encode())
+
+  let object_added = file.add_attribute(
+    "/source",
+    "objects",
+    [2UL],
+    ObjectReferenceValues([Some("/target"), None]),
+  )
+  let object_file = Hdf5File::parse(object_added)
+  let target = object_file.resolve("/target")
+  match find_attribute(object_file.attributes("/source"), "objects").values {
+    Some(Structured([Reference(first), Reference(second)])) => {
+      assert_eq(first.length(), 8)
+      assert_eq(
+        object_file.resolve_object_reference(first),
+        Some({ address: target.address, kind: Dataset, path: Some("/target"), }),
+      )
+      assert_true(object_file.resolve_object_reference(second) is None)
+    }
+    _ => fail("expected added legacy object-reference values")
+  }
+
+  let object_type = Datatype::write_version4_object_reference()
+  let version4_added = object_file.add_attribute(
+    "/source",
+    "v4_objects",
+    [1UL],
+    StructuredValues(object_type, [ObjectReference(Some("/group"))]),
+  )
+  let version4_file = Hdf5File::parse(version4_added)
+  let group = version4_file.resolve("/group")
+  match
+    find_attribute(version4_file.attributes("/source"), "v4_objects").values {
+    Some(Structured([Reference(bytes)])) =>
+      assert_eq(
+        version4_file.resolve_object_reference(bytes),
+        Some({ address: group.address, kind: Group, path: Some("/group"), }),
+      )
+    _ => fail("expected an added version-4 object-reference value")
+  }
+
+  let region_type = Datatype::write_version4_region_reference()
+  let region_added = version4_file.add_attribute(
+    "/source",
+    "v4_regions",
+    [1UL],
+    StructuredValues(region_type, [
+      RegionReference(
+        Some("/target"),
+        RegionHyperslab([0UL, 0UL], [1UL, 1UL], [2UL, 2UL], [1UL, 1UL]),
+      ),
+    ]),
+  )
+  let region_file = Hdf5File::parse(region_added)
+  match find_attribute(region_file.attributes("/source"), "v4_regions").values {
+    Some(Structured([Reference(bytes)])) =>
+      match region_file.resolve_region_reference(bytes) {
+        Some(region) => {
+          assert_eq(region.path, Some("/target"))
+          assert_eq(
+            region.selection,
+            RegionHyperslab([0UL, 0UL], [1UL, 1UL], [2UL, 2UL], [1UL, 1UL]),
+          )
+        }
+        None => fail("expected an added version-4 region reference")
+      }
+    _ => fail("expected added version-4 region-reference values")
+  }
+
+  let attribute_type = Datatype::write_version4_attribute_reference()
+  let attribute_added = region_file.add_attribute(
+    "/source",
+    "v4_attributes",
+    [1UL],
+    StructuredValues(attribute_type, [
+      AttributeReference(Some("/target"), "unit"),
+    ]),
+  )
+  let attribute_file = Hdf5File::parse(attribute_added)
+  match
+    find_attribute(attribute_file.attributes("/source"), "v4_attributes").values {
+    Some(Structured([Reference(bytes)])) =>
+      assert_eq(
+        attribute_file
+        .resolve_attribute_reference(bytes)
+        .map(target => (target.path, target.attribute_name)),
+        Some((Some("/target"), "unit")),
+      )
+    _ => fail("expected added version-4 attribute-reference values")
+  }
+  assert_eq(integer_values(attribute_file.read_dataset("/source")), [5L])
+}
+
+///|
+test "reference-valued attributes honor four-byte file addresses" {
+  let file = Hdf5File::parse(
+    @fs.read_file_to_bytes("testdata/references_layouts_32.h5"),
+  )
+  assert_eq(file.superblock.offset_size, 4)
+  let added = file.add_attribute(
+    "/compact",
+    "added_ref",
+    [1UL],
+    ObjectReferenceValues([Some("/group")]),
+  )
+  let object_file = Hdf5File::parse(added)
+  let group = object_file.resolve("/group")
+  match find_attribute(object_file.attributes("/compact"), "added_ref").values {
+    Some(Structured([Reference(bytes)])) => {
+      assert_eq(bytes.length(), 4)
+      assert_eq(
+        object_file.resolve_object_reference(bytes),
+        Some({ address: group.address, kind: Group, path: Some("/group"), }),
+      )
+    }
+    _ => fail("expected a four-byte object-reference attribute")
+  }
+
+  let version4_type = Datatype::write_version4_object_reference_with_address_size(
+    4,
+  )
+  let version4_added = object_file.add_attribute(
+    "/compact",
+    "added_v4_ref",
+    [1UL],
+    StructuredValues(version4_type, [ObjectReference(Some("/group"))]),
+  )
+  let version4_file = Hdf5File::parse(version4_added)
+  match
+    find_attribute(version4_file.attributes("/compact"), "added_v4_ref").values {
+    Some(Structured([Reference(bytes)])) => {
+      assert_eq(bytes.length(), 14)
+      assert_eq(
+        version4_file.resolve_object_reference(bytes),
+        Some({ address: group.address, kind: Group, path: Some("/group"), }),
+      )
+    }
+    _ => fail("expected a four-byte version-4 object-reference attribute")
+  }
+}
+
+///|
 test "attribute editing rejects invalid names and missing targets" {
   let writer = Hdf5Writer::new()
   writer.add_dataset("/dataset", [1UL], Int64Values([1L]))
