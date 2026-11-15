@@ -642,3 +642,34 @@ test "link editing stores huge external links in the huge-object index" {
   assert_eq(object_id, 1UL)
   assert_eq(Reader::at(bytes, address.to_int()).read_u8(), b'\x01')
 }
+
+///|
+test "link edits preserve filtered metadata heap pipelines" {
+  let file = Hdf5File::parse(
+    @fs.read_file_to_bytes("testdata/fractal_heap_advanced.h5"),
+  )
+  let renamed = file.rename_link("/filtered", "item_0000", "renamed_item") catch {
+    error => fail("rename filtered link: " + error.message())
+  }
+  let rebuilt = Hdf5File::parse(renamed)
+  let links = edited_group_links(renamed, "/filtered")
+  assert_eq(links.length(), 1201)
+  assert_true(links.any(link => link.name == "renamed_item"))
+  assert_true(links.any(link => link.name == "long_" + "x".repeat(5000)))
+  assert_eq(integer_values(rebuilt.read_dataset("/filtered/renamed_item")), [0L])
+
+  let header = rebuilt.object_header_at(rebuilt.resolve("/filtered").address)
+  let (_, heap_address, _, _) = editable_link_storage(
+    header,
+    rebuilt.superblock.offset_size,
+  )
+  let heap = parse_fractal_heap(
+    renamed,
+    heap_address,
+    rebuilt.superblock.offset_size,
+    rebuilt.superblock.length_size,
+    rebuilt.superblock.base_address,
+  )
+  assert_eq(heap.filters.map(filter => filter.id), [1, 3])
+  assert_eq(heap.encoded_filters.length(), 18)
+}

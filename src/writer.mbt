@@ -599,10 +599,17 @@ priv struct WritableSharedFilter {
 }
 
 ///|
+priv struct WritableSharedHeap {
+  message_types : Int32
+  address : UInt64
+  messages : Array[Bytes]
+}
+
+///|
 priv struct WritableSharedMetadata {
   extension_address : UInt64
   table_address : UInt64
-  heap_address : UInt64
+  heaps : Array[WritableSharedHeap]
   fills : Array[WritableSharedFill]
   filters : Array[WritableSharedFilter]
   attributes : Array[WritableSharedAttribute]
@@ -6716,8 +6723,13 @@ fn writer_next_power_of_two(
 fn writer_dense_heap_header_size(
   offset_size : Int32,
   length_size : Int32,
+  filter_info_size~ : Int32 = 0,
 ) -> Int32 {
-  22 + length_size * 12 + offset_size * 3 + metadata_checksum_size
+  22 +
+  length_size * 12 +
+  offset_size * 3 +
+  (if filter_info_size > 0 { length_size + 4 + filter_info_size } else { 0 }) +
+  metadata_checksum_size
 }
 
 ///|
@@ -6739,14 +6751,21 @@ fn encode_writer_dense_heap_header(
   huge_objects~ : UInt64 = 0UL,
   current_rows~ : Int32 = 0,
   starting_rows~ : Int32 = 1,
+  filtered_root_size~ : UInt64 = 0UL,
+  filtered_root_mask~ : UInt32 = 0U,
+  encoded_filters~ : Bytes = b"",
 ) -> Bytes {
   let buffer = @buffer.Buffer::Buffer(
-    size_hint=writer_dense_heap_header_size(offset_size, length_size),
+    size_hint=writer_dense_heap_header_size(
+      offset_size,
+      length_size,
+      filter_info_size=encoded_filters.length(),
+    ),
   )
   writer_write_bytes(buffer, b"FRHP")
   buffer.write_byte(b'\x00')
   buffer.write_uint16_le(id_length.to_uint16())
-  buffer.write_uint16_le(0)
+  buffer.write_uint16_le(encoded_filters.length().to_uint16())
   buffer.write_byte(b'\x02')
   buffer.write_uint_le(max_managed_size.reinterpret_as_uint())
   write_uint_width(buffer, next_huge_id, length_size)
@@ -6775,6 +6794,11 @@ fn encode_writer_dense_heap_header(
   buffer.write_uint16_le(starting_rows.to_uint16())
   write_uint_width(buffer, root_address, offset_size)
   buffer.write_uint16_le(current_rows.to_uint16())
+  if encoded_filters.length() > 0 {
+    write_uint_width(buffer, filtered_root_size, length_size)
+    buffer.write_uint_le(filtered_root_mask)
+    writer_write_bytes(buffer, encoded_filters)
+  }
   buffer.write_uint_le(metadata_checksum(buffer.to_bytes(), 0, buffer.length()))
   buffer.to_bytes()
 }
@@ -6801,54 +6825,6 @@ fn patched_zeroed_checksum(bytes : Bytes, checksum_offset : Int32) -> Bytes {
     .unwrap(),
   )
   output.to_bytes()
-}
-
-///|
-fn encode_writer_dense_direct_block(
-  heap_address : UInt64,
-  block_size : Int32,
-  heap_offset_size : Int32,
-  entries : Array[WritableDenseHeapEntry],
-  offset_size~ : Int32 = 8,
-) -> (Bytes, Array[Bytes]) raise Hdf5Error {
-  let buffer = @buffer.Buffer::Buffer(size_hint=block_size)
-  writer_write_bytes(buffer, b"FHDB")
-  buffer.write_byte(b'\x00')
-  write_uint_width(buffer, heap_address, offset_size)
-  write_uint_width(buffer, 0UL, heap_offset_size)
-  let checksum_offset = buffer.length()
-  buffer.write_uint_le(0U)
-  let ids : Array[Bytes] = []
-  for entry in entries {
-    match entry.shared_id {
-      Some(id) => {
-        guard id.length() == 8 else {
-          raise InvalidField(
-            "writer shared-message heap ID has an invalid size",
-          )
-        }
-        ids.push(id)
-      }
-      None => {
-        let offset = buffer.length()
-        guard offset.to_uint64() <= 0xFFFFFFFFUL &&
-          entry.data.length().to_uint64() <= 0xFFFFUL else {
-          raise InvalidField("writer dense heap object exceeds its identifier")
-        }
-        let id = @buffer.Buffer::Buffer(size_hint=1 + heap_offset_size + 2)
-        id.write_byte(b'\x00')
-        write_uint_width(id, offset.to_uint64(), heap_offset_size)
-        id.write_uint16_le(entry.data.length().to_uint16())
-        ids.push(id.to_bytes())
-        writer_write_bytes(buffer, entry.data)
-      }
-    }
-  }
-  guard buffer.length() <= block_size else {
-    raise InvalidField("writer dense heap block is too small")
-  }
-  writer_write_zeros(buffer, block_size - buffer.length())
-  (patched_zeroed_checksum(buffer.to_bytes(), checksum_offset), ids)
 }
 
 ///|
@@ -6906,16 +6882,19 @@ fn writer_heap_indirect_block_size(
   block_offset_size : Int32,
   table_width : Int32,
   rows : Int32,
+  filtered~ : Bool = false,
+  length_size~ : Int32 = 8,
 ) -> Int32 raise Hdf5Error {
   guard rows > 0 &&
     table_width > 0 &&
     rows.to_int64() * table_width.to_int64() <= 0x7FFFFFFFL else {
     raise InvalidArgument("writer fractal heap indirect block is too large")
   }
+  let entry_size = offset_size + (if filtered { length_size + 4 } else { 0 })
   5 +
   offset_size +
   block_offset_size +
-  rows * table_width * offset_size +
+  rows * table_width * entry_size +
   metadata_checksum_size
 }
 
@@ -6927,18 +6906,21 @@ fn encode_writer_heap_indirect_block(
   table_width : Int32,
   rows : Int32,
   max_direct_rows : Int32,
-  direct_addresses : Array[UInt64],
+  direct_entries : Array[(UInt64, UInt64, UInt32)],
+  filtered~ : Bool = false,
+  length_size~ : Int32 = 8,
 ) -> Bytes raise Hdf5Error {
   guard rows > 0 &&
     table_width > 0 &&
     max_direct_rows > 0 &&
     rows <= max_direct_rows &&
-    direct_addresses.length() > 0 &&
-    direct_addresses.length() <= rows * table_width else {
+    direct_entries.length() > 0 &&
+    direct_entries.length() <= rows * table_width else {
     raise InvalidField("invalid writer fractal heap indirect block")
   }
   let entries = rows * table_width
-  let content_size = 5 + offset_size + block_offset_size + entries * offset_size
+  let entry_size = offset_size + (if filtered { length_size + 4 } else { 0 })
+  let content_size = 5 + offset_size + block_offset_size + entries * entry_size
   let buffer = @buffer.Buffer::Buffer(
     size_hint=content_size + metadata_checksum_size,
   )
@@ -6948,18 +6930,110 @@ fn encode_writer_heap_indirect_block(
   write_uint_width(buffer, 0UL, block_offset_size)
   let undefined = heap_undefined_address(offset_size)
   for index in 0..<entries {
-    let address = if index < direct_addresses.length() {
-      direct_addresses[index]
+    let (address, stored_size, filter_mask) = if index < direct_entries.length() {
+      direct_entries[index]
     } else {
-      undefined
+      (undefined, 0UL, 0U)
     }
     write_uint_width(buffer, address, offset_size)
+    if filtered {
+      write_uint_width(buffer, stored_size, length_size)
+      buffer.write_uint_le(filter_mask)
+    }
   }
   guard buffer.length() == content_size else {
     raise InvalidField("writer fractal heap indirect block size mismatch")
   }
   buffer.write_uint_le(metadata_checksum(buffer.to_bytes(), 0, buffer.length()))
   buffer.to_bytes()
+}
+
+///|
+fn writer_shuffle_metadata_block(
+  data : Bytes,
+  element_size : Int32,
+) -> Bytes raise Hdf5Error {
+  guard element_size > 0 && element_size <= data.length() else {
+    raise InvalidField("invalid metadata shuffle element size")
+  }
+  let elements = data.length() / element_size
+  let tail_start = elements * element_size
+  let output = FixedArray::make(data.length(), b'\x00')
+  for byte_index in 0..<element_size {
+    for element in 0..<elements {
+      output[byte_index * elements + element] = data[element * element_size +
+        byte_index]
+    }
+  }
+  for index in tail_start..<data.length() {
+    output[index] = data[index]
+  }
+  output.unsafe_reinterpret_as_bytes()
+}
+
+///|
+fn encode_metadata_heap_filters(
+  data : Bytes,
+  filters : Array[Filter],
+) -> Bytes raise Hdf5Error {
+  let expected_size = data.length()
+  let mut output = data
+  for filter in filters {
+    output = match filter.id {
+      1 => {
+        guard filter.parameters.length() == 1 && filter.parameters[0] <= 9U else {
+          raise InvalidField("invalid metadata deflate filter parameters")
+        }
+        @zlib.zlib(output[:], level=filter.parameters[0].reinterpret_as_int())
+      }
+      2 => {
+        guard filter.parameters.length() == 1 &&
+          filter.parameters[0] > 0U &&
+          filter.parameters[0] <= 0x7FFFFFFFU else {
+          raise InvalidField("invalid metadata shuffle filter parameters")
+        }
+        writer_shuffle_metadata_block(
+          output,
+          filter.parameters[0].reinterpret_as_int(),
+        )
+      }
+      3 => {
+        guard filter.parameters.length() == 0 else {
+          raise InvalidField("invalid metadata Fletcher32 filter parameters")
+        }
+        add_fletcher32(output)
+      }
+      6 =>
+        raise UnsupportedFeature(
+          "scale-offset cannot encode fractal heap metadata blocks",
+        )
+      _ =>
+        match filter.decoder {
+          Some(custom) => {
+            let encoded = custom.encode(
+              output,
+              filter.parameters,
+              0,
+              expected_size,
+            )
+            guard encoded.length() > 0 else {
+              raise InvalidField(
+                "custom filter produced an empty metadata block",
+              )
+            }
+            encoded
+          }
+          None =>
+            raise UnsupportedFeature(
+              "filter " + filter.id.to_string() + " is not supported",
+            )
+        }
+    }
+    guard output.length() > 0 && output.length() <= 0x7FFFFFFF else {
+      raise InvalidField("filtered metadata heap block has an invalid size")
+    }
+  }
+  output
 }
 
 ///|
@@ -6973,6 +7047,8 @@ fn encode_writer_dense_heap_storage(
   length_size~ : Int32 = 8,
   max_managed_size~ : Int32 = writer_dense_max_managed_size,
   table_width~ : Int32 = 4,
+  metadata_filters~ : Array[Filter] = [],
+  encoded_filters~ : Bytes = b"",
 ) -> (Bytes, Array[Bytes]) raise Hdf5Error {
   guard id_length > 1 &&
     id_length <= 255 &&
@@ -6984,6 +7060,11 @@ fn encode_writer_dense_heap_storage(
     id_length - 1 < offset_size + length_size else {
     raise InvalidField("invalid writer fractal heap configuration")
   }
+  guard (metadata_filters.length() == 0) == (encoded_filters.length() == 0) &&
+    encoded_filters.length() <= 65535 else {
+    raise InvalidField("invalid writer fractal heap filter pipeline")
+  }
+  let filtered = encoded_filters.length() > 0
   let block_offset_size = (max_heap_bits + 7) / 8
   let managed_offset_size = block_offset_size
   let ids : Array[Bytes] = []
@@ -7130,65 +7211,30 @@ fn encode_writer_dense_heap_storage(
       "writer fractal heap indirect block has too many rows",
     )
   }
-  let heap_header_size = writer_dense_heap_header_size(offset_size, length_size)
-  let mut block_start = heap_header_size
-  if use_indirect {
-    block_start = block_start +
-      writer_heap_indirect_block_size(
-        offset_size, block_offset_size, table_width, rows,
-      )
-  }
-  let block_offsets : Array[UInt64] = []
-  let block_addresses : Array[UInt64] = []
-  let mut heap_offset = 0UL
-  let mut relative = block_start
-  for size in block_sizes {
-    block_offsets.push(heap_offset)
-    block_addresses.push(heap_address + relative.to_uint64())
-    heap_offset = heap_offset + size.to_uint64()
-    relative = relative + size
-  }
-  let managed_space_size = heap_offset
-  let mut huge_relative = writer_align(relative)
-  let huge_addresses : Array[UInt64] = []
-  for entry_index in huge {
-    huge_relative = writer_align(huge_relative)
-    huge_addresses.push(heap_address + huge_relative.to_uint64())
-    huge_relative = huge_relative + entries[entry_index].data.length()
-  }
-  let huge_btree_relative = writer_align(huge_relative)
-  let huge_id_size = id_length - 1
-  let huge_record_size = offset_size + length_size * 2
-  let huge_records : Array[Bytes] = []
-  for index in 0..<huge.length() {
-    let entry_index = huge[index]
-    let record = @buffer.Buffer::Buffer(size_hint=huge_record_size)
-    write_uint_width(record, huge_addresses[index], offset_size)
-    write_uint_width(
-      record,
-      entries[entry_index].data.length().to_uint64(),
-      length_size,
-    )
-    write_uint_width(record, (index + 1).to_uint64(), length_size)
-    guard record.length() == huge_record_size else {
-      raise InvalidField("writer fractal heap huge record size mismatch")
-    }
-    huge_records.push(record.to_bytes())
-  }
-  let huge_btree_address = heap_address + huge_btree_relative.to_uint64()
-  let huge_btree = if huge.length() > 0 {
-    encode_writer_metadata_btree(
-      1,
-      writer_dense_btree_node_size,
-      huge_record_size,
-      huge_records,
-      huge_btree_address,
-      offset_size~,
+  let heap_header_size = writer_dense_heap_header_size(
+    offset_size,
+    length_size,
+    filter_info_size=encoded_filters.length(),
+  )
+  let indirect_block_size = if use_indirect {
+    writer_heap_indirect_block_size(
+      offset_size,
+      block_offset_size,
+      table_width,
+      rows,
+      filtered~,
       length_size~,
     )
   } else {
-    b""
+    0
   }
+  let block_offsets : Array[UInt64] = []
+  let mut managed_space_size = 0UL
+  for size in block_sizes {
+    block_offsets.push(managed_space_size)
+    managed_space_size = managed_space_size + size.to_uint64()
+  }
+  let huge_id_size = id_length - 1
   for index in managed {
     let block_index = block_of_entry[index]
     guard block_index >= 0 && block_index < block_count else {
@@ -7254,6 +7300,86 @@ fn encode_writer_dense_heap_storage(
       patched_zeroed_checksum(buffer.to_bytes(), checksum_offset),
     )
   }
+  let stored_blocks : Array[Bytes] = []
+  for block in direct_blocks {
+    stored_blocks.push(
+      if filtered {
+        encode_metadata_heap_filters(block, metadata_filters)
+      } else {
+        block
+      },
+    )
+  }
+  let mut relative = heap_header_size + indirect_block_size
+  let block_addresses : Array[UInt64] = []
+  let block_stored_sizes : Array[UInt64] = []
+  for block in stored_blocks {
+    guard block.length() > 0 else {
+      raise InvalidField("writer fractal heap stored direct block is empty")
+    }
+    block_addresses.push(heap_address + relative.to_uint64())
+    block_stored_sizes.push(block.length().to_uint64())
+    relative = relative + block.length()
+  }
+  let huge_blocks : Array[Bytes] = []
+  let mut huge_relative = writer_align(relative)
+  let huge_addresses : Array[UInt64] = []
+  for entry_index in huge {
+    let stored = if filtered {
+      encode_metadata_heap_filters(entries[entry_index].data, metadata_filters)
+    } else {
+      entries[entry_index].data
+    }
+    huge_relative = writer_align(huge_relative)
+    huge_addresses.push(heap_address + huge_relative.to_uint64())
+    huge_blocks.push(stored)
+    huge_relative = huge_relative + stored.length()
+  }
+  let huge_btree_relative = writer_align(huge_relative)
+  let huge_record_size = offset_size +
+    (if filtered { length_size * 3 + 4 } else { length_size * 2 })
+  let huge_records : Array[Bytes] = []
+  for index in 0..<huge.length() {
+    let entry_index = huge[index]
+    let record = @buffer.Buffer::Buffer(size_hint=huge_record_size)
+    write_uint_width(record, huge_addresses[index], offset_size)
+    write_uint_width(
+      record,
+      huge_blocks[index].length().to_uint64(),
+      length_size,
+    )
+    if filtered {
+      record.write_uint_le(0U)
+      write_uint_width(
+        record,
+        entries[entry_index].data.length().to_uint64(),
+        length_size,
+      )
+    }
+    write_uint_width(record, (index + 1).to_uint64(), length_size)
+    guard record.length() == huge_record_size else {
+      raise InvalidField("writer fractal heap huge record size mismatch")
+    }
+    huge_records.push(record.to_bytes())
+  }
+  let huge_btree_address = heap_address + huge_btree_relative.to_uint64()
+  let huge_btree = if huge.length() > 0 {
+    encode_writer_metadata_btree(
+      if filtered {
+        2
+      } else {
+        1
+      },
+      writer_dense_btree_node_size,
+      huge_record_size,
+      huge_records,
+      huge_btree_address,
+      offset_size~,
+      length_size~,
+    )
+  } else {
+    b""
+  }
   let root_address = if block_count == 0 {
     heap_undefined_address(offset_size)
   } else if use_indirect {
@@ -7286,37 +7412,51 @@ fn encode_writer_dense_heap_storage(
     huge_object_size=huge_data_size.to_uint64(),
     huge_objects=huge.length().to_uint64(),
     current_rows=rows,
+    filtered_root_size=if block_count > 0 && !use_indirect {
+      block_stored_sizes[0]
+    } else {
+      0UL
+    },
+    filtered_root_mask=0U,
+    encoded_filters~,
   )
   let output = @buffer.Buffer::Buffer(
     size_hint=heap_header_size +
-      (if use_indirect {
-        writer_heap_indirect_block_size(
-          offset_size, block_offset_size, table_width, rows,
-        )
-      } else {
-        0
-      }) +
-      managed_space_size.to_int() +
+      indirect_block_size +
+      (relative - heap_header_size - indirect_block_size) +
       huge_btree_relative +
       huge_btree.length(),
   )
   writer_write_bytes(output, header)
   if use_indirect {
+    let direct_entries : Array[(UInt64, UInt64, UInt32)] = []
+    for index in 0..<block_count {
+      direct_entries.push(
+        (block_addresses[index], block_stored_sizes[index], 0U),
+      )
+    }
     writer_write_bytes(
       output,
       encode_writer_heap_indirect_block(
-        heap_address, offset_size, block_offset_size, table_width, rows, max_direct_rows,
-        block_addresses,
+        heap_address,
+        offset_size,
+        block_offset_size,
+        table_width,
+        rows,
+        max_direct_rows,
+        direct_entries,
+        filtered~,
+        length_size~,
       ),
     )
   }
-  for block in direct_blocks {
+  for block in stored_blocks {
     writer_write_bytes(output, block)
   }
   writer_write_zeros(output, writer_align(output.length()) - output.length())
   for index in 0..<huge.length() {
     writer_write_zeros(output, writer_align(output.length()) - output.length())
-    writer_write_bytes(output, entries[huge[index]].data)
+    writer_write_bytes(output, huge_blocks[index])
   }
   writer_write_zeros(output, huge_btree_relative - output.length())
   writer_write_bytes(output, huge_btree)
@@ -7542,9 +7682,6 @@ fn encode_writer_metadata_btree(
 let writer_shared_max_managed_size : Int32 = writer_dense_max_managed_size
 
 ///|
-let writer_shared_table_size : Int32 = 38
-
-///|
 fn Hdf5Writer::shared_attribute_candidates(
   self : Hdf5Writer,
   objects : Array[WritableObject],
@@ -7660,29 +7797,11 @@ fn encode_writer_shared_heap(
   messages : Array[Bytes],
 ) -> (Bytes, Array[Bytes]) raise Hdf5Error {
   guard messages.length() > 0 else { return (b"", []) }
-  let heap_offset_size = 5
-  let direct_overhead = 4 + 1 + 8 + heap_offset_size + metadata_checksum_size
-  let mut data_size = direct_overhead
   for message in messages {
     guard message.length() <= writer_shared_max_managed_size else {
       raise InvalidField("writer shared message exceeds its managed heap")
     }
-    data_size = data_size + message.length()
   }
-  let block_size = writer_next_power_of_two(data_size, 1024)
-  let max_direct_size = writer_next_power_of_two(block_size, 65536)
-  let root_address = heap_address + 146UL
-  let header = encode_writer_dense_heap_header(
-    root_address,
-    8,
-    block_size,
-    block_size,
-    max_direct_size,
-    40,
-    messages.length(),
-    writer_shared_max_managed_size,
-    4,
-  )
   let entries = messages.map(data => {
     name: "",
     hash: 0U,
@@ -7691,40 +7810,48 @@ fn encode_writer_shared_heap(
     flags: b'\x00',
     shared_id: None,
   })
-  let (direct_block, ids) = encode_writer_dense_direct_block(
-    heap_address, block_size, heap_offset_size, entries,
+  encode_writer_dense_heap_storage(
+    entries,
+    heap_address,
+    8,
+    1024,
+    40,
+    max_managed_size=writer_shared_max_managed_size,
+    table_width=4,
   )
-  let buffer = @buffer.Buffer::Buffer(
-    size_hint=header.length() + direct_block.length(),
-  )
-  writer_write_bytes(buffer, header)
-  writer_write_bytes(buffer, direct_block)
-  (buffer.to_bytes(), ids)
 }
 
 ///|
-fn encode_writer_shared_table(
-  heap_address : UInt64,
-  count : Int32,
-  message_types : Int32,
-) -> Bytes {
-  let buffer = @buffer.Buffer::Buffer(size_hint=writer_shared_table_size)
+fn writer_shared_table_size(index_count : Int32) -> Int32 {
+  4 + index_count * (14 + 16) + metadata_checksum_size
+}
+
+///|
+fn encode_writer_shared_table(heaps : Array[WritableSharedHeap]) -> Bytes {
+  let buffer = @buffer.Buffer::Buffer(
+    size_hint=writer_shared_table_size(heaps.length()),
+  )
   writer_write_bytes(buffer, b"SMTB")
-  buffer.write_byte(b'\x00')
-  buffer.write_byte(b'\x00')
-  buffer.write_uint16_le(message_types.to_uint16())
-  buffer.write_uint_le(0U)
-  buffer.write_uint16_le(65535U.to_uint16())
-  buffer.write_uint16_le(0U.to_uint16())
-  buffer.write_uint16_le(count.to_uint16())
-  buffer.write_uint64_le(0xFFFFFFFFFFFFFFFFUL)
-  buffer.write_uint64_le(heap_address)
+  for heap in heaps {
+    buffer.write_byte(b'\x00')
+    buffer.write_byte(b'\x00')
+    buffer.write_uint16_le(heap.message_types.to_uint16())
+    buffer.write_uint_le(0U)
+    buffer.write_uint16_le(65535U.to_uint16())
+    buffer.write_uint16_le(0U.to_uint16())
+    buffer.write_uint16_le(heap.messages.length().to_uint16())
+    buffer.write_uint64_le(0xFFFFFFFFFFFFFFFFUL)
+    buffer.write_uint64_le(heap.address)
+  }
   buffer.write_uint_le(metadata_checksum(buffer.to_bytes(), 0, buffer.length()))
   buffer.to_bytes()
 }
 
 ///|
-fn encode_writer_superblock_extension(table_address : UInt64) -> Bytes {
+fn encode_writer_superblock_extension(
+  table_address : UInt64,
+  index_count : Int32,
+) -> Bytes {
   let buffer = @buffer.Buffer::Buffer(size_hint=40)
   buffer.write_byte(b'\x01')
   buffer.write_byte(b'\x00')
@@ -7738,7 +7865,7 @@ fn encode_writer_superblock_extension(table_address : UInt64) -> Bytes {
   writer_write_zeros(buffer, 3)
   buffer.write_byte(b'\x00')
   buffer.write_uint64_le(table_address)
-  buffer.write_byte(b'\x01')
+  buffer.write_byte(index_count.to_byte())
   writer_write_zeros(buffer, 6)
   buffer.to_bytes()
 }
@@ -9354,9 +9481,6 @@ fn assign_writable_addresses(
   }
   let shared = if has_shared_messages {
     let table_address = offset.to_uint64()
-    let heap_address = writer_align(
-      table_address.to_int() + writer_shared_table_size,
-    ).to_uint64()
     let attributes : Array[WritableSharedAttribute] = []
     let attribute_messages : Array[Bytes] = []
     let attribute_message_indices : Array[Int32] = []
@@ -9453,57 +9577,97 @@ fn assign_writable_addresses(
       filters.push({ path: candidate.path, data, id: b"", })
       filter_message_indices.push(message_index)
     }
-    let messages : Array[Bytes] = []
-    for fill in fill_messages {
-      messages.push(fill)
+    guard fill_messages.length() <= 65535 &&
+      filter_messages.length() <= 65535 &&
+      attribute_messages.length() <= 65535 else {
+      raise InvalidArgument("writer shared-message index has too many entries")
     }
-    for filter in filter_messages {
-      messages.push(filter)
+    let index_count = (if fill_messages.length() > 0 { 1 } else { 0 }) +
+      (if filter_messages.length() > 0 { 1 } else { 0 }) +
+      (if attribute_messages.length() > 0 { 1 } else { 0 })
+    let mut next_address = writer_align(
+      table_address.to_int() + writer_shared_table_size(index_count),
+    )
+    let heaps : Array[WritableSharedHeap] = []
+    let mut fill_ids : Array[Bytes] = []
+    if fill_messages.length() > 0 {
+      let heap_address = next_address.to_uint64()
+      let (heap_bytes, ids) = encode_writer_shared_heap(
+        heap_address, fill_messages,
+      )
+      fill_ids = ids
+      heaps.push({
+        message_types: 1 << 5,
+        address: heap_address,
+        messages: fill_messages,
+      })
+      next_address = writer_align(next_address + heap_bytes.length())
     }
-    for attribute in attribute_messages {
-      messages.push(attribute)
+    let mut filter_ids : Array[Bytes] = []
+    if filter_messages.length() > 0 {
+      let heap_address = next_address.to_uint64()
+      let (heap_bytes, ids) = encode_writer_shared_heap(
+        heap_address, filter_messages,
+      )
+      filter_ids = ids
+      heaps.push({
+        message_types: 1 << 0x0B,
+        address: heap_address,
+        messages: filter_messages,
+      })
+      next_address = writer_align(next_address + heap_bytes.length())
     }
-    guard messages.length() <= 65535 else {
-      raise InvalidArgument("writer has too many shared messages")
+    let mut attribute_ids : Array[Bytes] = []
+    if attribute_messages.length() > 0 {
+      let heap_address = next_address.to_uint64()
+      let (heap_bytes, ids) = encode_writer_shared_heap(
+        heap_address, attribute_messages,
+      )
+      attribute_ids = ids
+      heaps.push({
+        message_types: 1 << 0x0C,
+        address: heap_address,
+        messages: attribute_messages,
+      })
+      next_address = writer_align(next_address + heap_bytes.length())
     }
-    let (heap_bytes, ids) = encode_writer_shared_heap(heap_address, messages)
     let resolved_fills : Array[WritableSharedFill] = []
     for index in 0..<fills.length() {
       resolved_fills.push({
         path: fills[index].path,
         data: fills[index].data,
-        id: ids[fill_message_indices[index]],
+        id: fill_ids[fill_message_indices[index]],
       })
     }
     let resolved_filters : Array[WritableSharedFilter] = []
-    let filter_id_start = fill_messages.length()
     for index in 0..<filters.length() {
       resolved_filters.push({
         path: filters[index].path,
         data: filters[index].data,
-        id: ids[filter_id_start + filter_message_indices[index]],
+        id: filter_ids[filter_message_indices[index]],
       })
     }
     let resolved : Array[WritableSharedAttribute] = []
-    let attribute_id_start = fill_messages.length() + filter_messages.length()
     for index in 0..<attributes.length() {
       resolved.push({
         path: attributes[index].path,
         name: attributes[index].name,
         data: attributes[index].data,
-        id: ids[attribute_id_start + attribute_message_indices[index]],
+        id: attribute_ids[attribute_message_indices[index]],
       })
     }
-    offset = writer_align(heap_address.to_int() + heap_bytes.length())
+    offset = next_address
     Some({
       extension_address: 48UL,
       table_address,
-      heap_address,
+      heaps,
       fills: resolved_fills,
       filters: resolved_filters,
       attributes: resolved,
       message_types: shared_message_types,
-      message_count: messages.length(),
+      message_count: fill_messages.length() +
+      filter_messages.length() +
+      attribute_messages.length(),
     })
   } else {
     None
@@ -9667,87 +9831,65 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
   }
   let shared_payloads : Array[(UInt64, Bytes)] = []
   if layout.shared is Some(shared) {
-    let messages : Array[Bytes] = []
-    let fill_messages : Array[Bytes] = []
-    for fill in shared.fills {
-      if !fill_messages.contains(fill.data) {
-        fill_messages.push(fill.data)
-      }
+    let mut message_count = 0
+    let mut message_types = 0
+    for heap in shared.heaps {
+      message_count = message_count + heap.messages.length()
+      message_types = message_types | heap.message_types
     }
-    for message in fill_messages {
-      messages.push(message)
-    }
-    let filter_messages : Array[Bytes] = []
-    for filter in shared.filters {
-      if !filter_messages.contains(filter.data) {
-        filter_messages.push(filter.data)
-      }
-    }
-    for message in filter_messages {
-      messages.push(message)
-    }
-    let attribute_messages : Array[Bytes] = []
-    for attribute in shared.attributes {
-      if !attribute_messages.contains(attribute.data) {
-        attribute_messages.push(attribute.data)
-      }
-    }
-    for message in attribute_messages {
-      messages.push(message)
-    }
-    guard messages.length() == shared.message_count else {
+    guard message_count == shared.message_count &&
+      message_types == shared.message_types else {
       raise InvalidField("shared-message count changed during encoding")
     }
-    let table = encode_writer_shared_table(
-      shared.heap_address,
-      messages.length(),
-      shared.message_types,
-    )
-    let (heap_bytes, ids) = encode_writer_shared_heap(
-      shared.heap_address,
-      messages,
-    )
-    let expected_ids : Array[Bytes] = []
-    for message in fill_messages {
-      let fill = match shared.fills.search_by(fill => fill.data == message) {
-        Some(index) => shared.fills[index]
-        None => raise InvalidField("shared fill message disappeared")
-      }
-      expected_ids.push(fill.id)
-    }
-    for message in filter_messages {
-      let filter = match
-        shared.filters.search_by(filter => filter.data == message) {
-        Some(index) => shared.filters[index]
-        None => raise InvalidField("shared filter message disappeared")
-      }
-      expected_ids.push(filter.id)
-    }
-    for message in attribute_messages {
-      let attribute = match
-        shared.attributes.search_by(attribute => attribute.data == message) {
-        Some(index) => shared.attributes[index]
-        None => raise InvalidField("shared attribute message disappeared")
-      }
-      expected_ids.push(attribute.id)
-    }
-    guard ids.length() == expected_ids.length() else {
-      raise InvalidField("shared-message heap ID count changed during encoding")
-    }
-    for index in 0..<ids.length() {
-      guard ids[index] == expected_ids[index] else {
-        raise InvalidField("shared-message heap ID changed during encoding")
-      }
-    }
-    guard table.length() <=
-      shared.heap_address.to_int() - shared.table_address.to_int() else {
-      raise InvalidField("shared-message table overlaps its heap")
+    let table = encode_writer_shared_table(shared.heaps)
+    guard table.length().to_uint64() <=
+      shared.heaps[0].address - shared.table_address else {
+      raise InvalidField("shared-message table overlaps its first heap")
     }
     shared_payloads.push((shared.table_address, table))
-    shared_payloads.push((shared.heap_address, heap_bytes))
-    let end = writer_align(shared.heap_address.to_int() + heap_bytes.length())
-    if end > eof {
-      eof = end
+    for heap in shared.heaps {
+      let (heap_bytes, ids) = encode_writer_shared_heap(
+        heap.address,
+        heap.messages,
+      )
+      guard ids.length() == heap.messages.length() else {
+        raise InvalidField(
+          "shared-message heap ID count changed during encoding",
+        )
+      }
+      for index in 0..<heap.messages.length() {
+        let message = heap.messages[index]
+        let expected = if heap.message_types == 1 << 5 {
+          match shared.fills.search_by(fill => fill.data == message) {
+            Some(fill_index) => shared.fills[fill_index].id
+            None => raise InvalidField("shared fill message disappeared")
+          }
+        } else if heap.message_types == 1 << 0x0B {
+          match shared.filters.search_by(filter => filter.data == message) {
+            Some(filter_index) => shared.filters[filter_index].id
+            None => raise InvalidField("shared filter message disappeared")
+          }
+        } else {
+          match
+            shared.attributes.search_by(attribute => attribute.data == message) {
+            Some(attribute_index) => shared.attributes[attribute_index].id
+            None => raise InvalidField("shared attribute message disappeared")
+          }
+        }
+        guard ids[index] == expected else {
+          raise InvalidField("shared-message heap ID changed during encoding")
+        }
+      }
+      shared_payloads.push((heap.address, heap_bytes))
+      let end = writer_align(heap.address.to_int() + heap_bytes.length())
+      if end > eof {
+        eof = end
+      }
+    }
+    for index in 1..<shared.heaps.length() {
+      guard shared.heaps[index - 1].address < shared.heaps[index].address else {
+        raise InvalidField("shared-message heap order changed during encoding")
+      }
     }
   }
   let output = @buffer.Buffer::Buffer(size_hint=eof)
@@ -9769,7 +9911,10 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
     )
     writer_write_bytes(
       output,
-      encode_writer_superblock_extension(shared.table_address),
+      encode_writer_superblock_extension(
+        shared.table_address,
+        shared.heaps.length(),
+      ),
     )
   }
   for index in 0..<objects.length() {

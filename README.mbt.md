@@ -215,9 +215,8 @@ errors and 2 for invalid arguments.
 
 moon-hdf5 is not a drop-in replacement for libhdf5.
 
-- Not yet implemented: streaming output, free-space reclamation, multiple SOHM
-  tables/heaps, extended floating-point output, virtual datasets, SWMR and
-  parallel HDF5.
+- Not yet implemented: streaming output, free-space reclamation, extended
+  floating-point output, virtual datasets, SWMR and parallel HDF5.
 - Fixed boundaries: readers and writers are memory-resident at the API surface;
   editing is append-only; writer/patch references must target existing same-file
   objects; external raw data is resolver-only, contiguous and unfiltered; dense

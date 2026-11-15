@@ -40,9 +40,26 @@ priv struct FractalHeap {
   huge_btree_address : UInt64
   filter_len : Int32
   filters : Array[Filter]
+  encoded_filters : Bytes
   huge_id_size : Int32
   huge_ids_direct : Bool
   blocks : Array[FractalHeapBlock]
+}
+
+///|
+priv struct MetadataHeapFilters {
+  filters : Array[Filter]
+  encoded : Bytes
+}
+
+///|
+fn MetadataHeapFilters::empty() -> MetadataHeapFilters {
+  { filters: [], encoded: b"", }
+}
+
+///|
+fn MetadataHeapFilters::from_heap(heap : FractalHeap) -> MetadataHeapFilters {
+  { filters: heap.filters, encoded: heap.encoded_filters, }
 }
 
 ///|
@@ -580,6 +597,7 @@ fn parse_source_fractal_heap(
     huge_btree_address,
     filter_len: filter_info_size,
     filters,
+    encoded_filters,
     huge_id_size,
     huge_ids_direct,
     blocks: [],

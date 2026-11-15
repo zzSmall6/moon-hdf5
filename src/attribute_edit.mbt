@@ -180,6 +180,44 @@ fn Hdf5File::editable_attributes(
 }
 
 ///|
+fn Hdf5File::editable_dense_attribute_filters(
+  self : Hdf5File,
+  header : ObjectHeader,
+) -> MetadataHeapFilters raise Hdf5Error {
+  let offset_size = self.superblock.offset_size
+  let undefined = heap_undefined_address(offset_size)
+  for message in header.find(msg_attribute_info) {
+    let reader = Reader::new(message.data)
+    guard reader.read_u8() == b'\x00' else {
+      raise UnsupportedFeature("unsupported attribute info message version")
+    }
+    let flags = reader.read_u8().to_int()
+    guard (flags & 0xFC) == 0 && (flags & 3) != 2 else {
+      raise InvalidField("invalid attribute info flags")
+    }
+    if (flags & 1) != 0 {
+      reader.skip(2)
+    }
+    let heap_address = reader.read_uint_le(offset_size)
+    if heap_address == undefined {
+      continue
+    }
+    let heap = parse_fractal_heap(
+      self.bytes,
+      heap_address,
+      offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      custom_filters=self.custom_filters,
+    )
+    if heap.encoded_filters.length() > 0 {
+      return MetadataHeapFilters::from_heap(heap)
+    }
+  }
+  MetadataHeapFilters::empty()
+}
+
+///|
 fn editable_attribute_index(
   attributes : Array[EditableAttribute],
   name : String,
@@ -515,6 +553,8 @@ fn encode_editable_dense_storage(
   heap_address : UInt64,
   offset_size : Int32,
   length_size : Int32,
+  metadata_filters~ : Array[Filter] = [],
+  encoded_filters~ : Bytes = b"",
 ) -> (Bytes, Bytes, Bytes) raise Hdf5Error {
   guard writer_dense_entries_fit(entries) else {
     raise InvalidField("dense attribute metadata is not available")
@@ -532,6 +572,8 @@ fn encode_editable_dense_storage(
     max_heap_bits,
     offset_size~,
     length_size~,
+    metadata_filters~,
+    encoded_filters~,
   )
   let index_address = heap_address + heap_bytes.length().to_uint64()
   let records : Array[Bytes] = []
@@ -1038,6 +1080,7 @@ fn Hdf5File::write_rebuilt_attributes(
 ) -> Bytes raise Hdf5Error {
   let offset_size = self.superblock.offset_size
   let length_size = self.superblock.length_size
+  let metadata_filters = self.editable_dense_attribute_filters(header)
   let header_offset = address_to_offset(address, self.superblock.base_address)
   let plan = object_header_rewrite_plan(
     self.bytes,
@@ -1095,7 +1138,12 @@ fn Hdf5File::write_rebuilt_attributes(
       self.superblock.base_address,
     )
     let (heap_bytes, index_bytes, order_bytes) = encode_editable_dense_storage(
-      entries, heap_address, offset_size, length_size,
+      entries,
+      heap_address,
+      offset_size,
+      length_size,
+      metadata_filters=metadata_filters.filters,
+      encoded_filters=metadata_filters.encoded,
     )
     let start = append_contiguous_dense_metadata(
       tail,

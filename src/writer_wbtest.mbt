@@ -878,6 +878,112 @@ test "writer shares encoded filter pipelines through SOHM" {
 }
 
 ///|
+test "writer emits independent SOHM indexes and heaps by message type" {
+  let writer = Hdf5Writer::new()
+  writer.set_attribute_sharing(true)
+  writer.set_fill_sharing(true)
+  writer.set_filter_sharing(true)
+  writer.add_group("/mixed/attributes")
+  writer.add_attribute("/mixed/attributes", "first", [], UInt64Values([11UL]))
+  writer.add_attribute(
+    "/mixed/attributes",
+    "second",
+    [],
+    FixedStringValues(["shared index"], 12),
+  )
+  writer.add_chunked_dataset(
+    "/mixed/data",
+    [4UL],
+    [2U],
+    Int64Values([1L, 2L, 3L, 4L]),
+    fill_value=Int64Values([-9L]),
+    filters=[Shuffle, Deflate(4)],
+  )
+
+  let layout = assign_writable_addresses(
+    writer,
+    initial_writable_objects(writer),
+  ) catch {
+    error => abort("layout failed: " + error.message())
+  }
+  match layout.shared {
+    Some(shared) => {
+      assert_eq(shared.heaps.length(), 3)
+      assert_eq(shared.heaps[0].message_types, 1 << 5)
+      assert_eq(shared.heaps[1].message_types, 1 << 0x0B)
+      assert_eq(shared.heaps[2].message_types, 1 << 0x0C)
+      assert_true(shared.heaps[0].address != shared.heaps[1].address)
+      assert_true(shared.heaps[1].address != shared.heaps[2].address)
+      assert_true(shared.heaps[0].address < shared.heaps[1].address)
+      assert_true(shared.heaps[1].address < shared.heaps[2].address)
+      assert_eq(shared.heaps[0].messages.length(), 1)
+      assert_eq(shared.heaps[1].messages.length(), 1)
+      assert_eq(shared.heaps[2].messages.length(), 2)
+    }
+    None => abort("expected independent SOHM indexes")
+  }
+
+  let bytes = writer.encode() catch {
+    error => abort("encode failed: " + error.message())
+  }
+  let file = Hdf5File::parse(bytes) catch {
+    error => abort("parse failed: " + error.message())
+  }
+  assert_eq(integer_values(file.read_dataset("/mixed/data")), [1L, 2L, 3L, 4L])
+  let attributes = file.attributes("/mixed/attributes")
+  assert_eq(attributes.length(), 2)
+  match attributes.search_by(attribute => attribute.name == "first") {
+    Some(index) =>
+      match attributes[index].values {
+        Some(UnsignedIntegers(values)) => assert_eq(values, [11UL])
+        _ => abort("expected shared unsigned attribute")
+      }
+    None => abort("expected shared first attribute")
+  }
+  match attributes.search_by(attribute => attribute.name == "second") {
+    Some(index) =>
+      match attributes[index].values {
+        Some(Strings(values)) => assert_eq(values, ["shared index"])
+        _ => abort("expected shared fixed-string attribute")
+      }
+    None => abort("expected shared second attribute")
+  }
+}
+
+///|
+test "writer extends SOHM heaps with direct blocks and an indirect root" {
+  let writer = Hdf5Writer::new()
+  writer.set_attribute_sharing(true)
+  let first = "a".repeat(30000)
+  let second = "b".repeat(30000)
+  let third = "c".repeat(30000)
+  for (name, value) in [("first", first), ("second", second), ("third", third)] {
+    let group = "/large/" + name
+    writer.add_group(group)
+    writer.add_attribute(
+      group,
+      "payload",
+      [],
+      FixedStringValues([value], 30000),
+    )
+  }
+  let bytes = writer.encode() catch {
+    error => abort("encode failed: " + error.message())
+  }
+  assert_true(bytes.find(b"FHIB") is Some(_))
+  let file = Hdf5File::parse(bytes) catch {
+    error => abort("parse failed: " + error.message())
+  }
+  for (name, value) in [("first", first), ("second", second), ("third", third)] {
+    let attributes = file.attributes("/large/" + name)
+    match find_attribute(attributes, "payload").values {
+      Some(Strings(values)) => assert_eq(values, [value])
+      _ => abort("expected extended-heap fixed string")
+    }
+  }
+}
+
+///|
 test "writer references committed datatypes from datasets and attributes" {
   let writer = Hdf5Writer::new()
   let record_type = Datatype::write_compound([
@@ -2553,6 +2659,74 @@ test "writer dense attributes span multiple fractal heap direct blocks" {
     managed_size = managed_size + block.size.to_uint64()
   }
   assert_eq(managed_size, heap.managed_space_size)
+}
+
+///|
+test "writer encodes filtered dense heap blocks and huge objects" {
+  let entries : Array[WritableDenseHeapEntry] = []
+  for index in 0..<12 {
+    entries.push({
+      name: "filtered_" + index.to_string(),
+      hash: writer_name_hash("filtered_" + index.to_string()),
+      data: @utf8.encode(
+        "metadata-" + index.to_string() + "-" + "x".repeat(100),
+      ),
+      creation_order: index.to_uint64(),
+      flags: b'\x00',
+      shared_id: None,
+    })
+  }
+  let huge_value = @utf8.encode("h".repeat(70000))
+  entries.push({
+    name: "filtered_huge",
+    hash: writer_name_hash("filtered_huge"),
+    data: huge_value,
+    creation_order: 12UL,
+    flags: b'\x00',
+    shared_id: None,
+  })
+  let pipeline = b"\x02\x01\x01\x00\x00\x00\x01\x00\x06\x00\x00\x00"
+  let filters : Array[Filter] = [{ id: 1, parameters: [6U], decoder: None, }]
+  let (heap_bytes, ids) = encode_writer_dense_heap_storage(
+    entries,
+    0UL,
+    8,
+    1024,
+    40,
+    metadata_filters=filters,
+    encoded_filters=pipeline,
+  ) catch {
+    error => fail("encode filtered heap: " + error.message())
+  }
+  let heap = parse_fractal_heap(heap_bytes, 0UL, 8, 8, 0UL) catch {
+    error => fail("parse filtered heap: " + error.message())
+  }
+  assert_eq(heap.filter_len, pipeline.length())
+  assert_eq(heap.encoded_filters, pipeline)
+  assert_true(heap.blocks.length() > 0)
+  assert_true(heap.blocks[0].data.length() > heap_bytes.length())
+  for index in 0..<entries.length() {
+    let decoded = heap.get_data(ids[index]) catch {
+      error =>
+        fail(
+          "read filtered object " + index.to_string() + ": " + error.message(),
+        )
+    }
+    assert_eq(decoded, entries[index].data)
+  }
+  let huge = read_v2_btree_records(
+    heap_bytes,
+    heap.huge_btree_address,
+    8,
+    8,
+    0UL,
+    [2],
+    "filtered huge object v2 B-tree",
+  ) catch {
+    error => fail("read filtered huge B-tree: " + error.message())
+  }
+  assert_eq(huge.node_type, 2)
+  assert_eq(huge.records.length(), 1)
 }
 
 ///|

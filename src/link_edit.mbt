@@ -114,6 +114,30 @@ fn editable_link_storage(
 }
 
 ///|
+fn Hdf5File::editable_dense_link_filters(
+  self : Hdf5File,
+  header : ObjectHeader,
+) -> MetadataHeapFilters raise Hdf5Error {
+  if header.first(msg_symbol_table) is Some(_) {
+    return MetadataHeapFilters::empty()
+  }
+  let offset_size = self.superblock.offset_size
+  let (_, heap_address, _, _) = editable_link_storage(header, offset_size)
+  if heap_address == heap_undefined_address(offset_size) {
+    return MetadataHeapFilters::empty()
+  }
+  let heap = parse_fractal_heap(
+    self.bytes,
+    heap_address,
+    offset_size,
+    self.superblock.length_size,
+    self.superblock.base_address,
+    custom_filters=self.custom_filters,
+  )
+  MetadataHeapFilters::from_heap(heap)
+}
+
+///|
 fn editable_dense_links(
   bytes : Bytes,
   heap_address : UInt64,
@@ -122,9 +146,15 @@ fn editable_dense_links(
   length_size : Int32,
   base_address : UInt64,
   tracking : Bool,
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> Array[EditableLink] raise Hdf5Error {
   let heap = parse_fractal_heap(
-    bytes, heap_address, offset_size, length_size, base_address,
+    bytes,
+    heap_address,
+    offset_size,
+    length_size,
+    base_address,
+    custom_filters~,
   )
   let contents = read_v2_btree_records(
     bytes,
@@ -253,6 +283,7 @@ fn Hdf5File::editable_links(
       length_size,
       self.superblock.base_address,
       tracking,
+      custom_filters=self.custom_filters,
     )
   }
   guard name_index_address == heap_undefined_address(offset_size) &&
@@ -343,6 +374,8 @@ fn encode_editable_dense_links(
   heap_address : UInt64,
   offset_size : Int32,
   length_size : Int32,
+  metadata_filters~ : Array[Filter] = [],
+  encoded_filters~ : Bytes = b"",
 ) -> (Bytes, Bytes, Bytes) raise Hdf5Error {
   guard writer_dense_entries_fit(entries) else {
     raise InvalidField("dense link metadata is not available")
@@ -356,6 +389,8 @@ fn encode_editable_dense_links(
     32,
     offset_size~,
     length_size~,
+    metadata_filters~,
+    encoded_filters~,
   )
   let index_address = heap_address + heap_bytes.length().to_uint64()
   let records : Array[Bytes] = []
@@ -427,6 +462,7 @@ fn Hdf5File::write_rebuilt_links(
   let offset_size = self.superblock.offset_size
   let length_size = self.superblock.length_size
   let (existing_tracking, _, _, _) = editable_link_storage(header, offset_size)
+  let metadata_filters = self.editable_dense_link_filters(header)
   let mut max_creation_order = 0UL
   for link in links {
     if link.creation_order > max_creation_order {
@@ -459,7 +495,12 @@ fn Hdf5File::write_rebuilt_links(
       self.superblock.base_address,
     )
     let (heap_bytes, index_bytes, order_bytes) = encode_editable_dense_links(
-      entries, heap_address, offset_size, length_size,
+      entries,
+      heap_address,
+      offset_size,
+      length_size,
+      metadata_filters=metadata_filters.filters,
+      encoded_filters=metadata_filters.encoded,
     )
     let start = append_contiguous_dense_metadata(
       tail,

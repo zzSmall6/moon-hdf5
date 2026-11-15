@@ -33,10 +33,11 @@ echo "==> Writer compatibility"
 output=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-release.XXXXXX")
 symbol_compact=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-compact.XXXXXX")
 symbol_dense=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-dense.XXXXXX")
+filtered_links=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-filtered-links.XXXXXX")
 created=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created.XXXXXX")
 created8=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created8.XXXXXX")
 deleted=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-deleted.XXXXXX")
-trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"' EXIT HUP INT TERM
+trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$filtered_links" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"' EXIT HUP INT TERM
 moon run src/cmd/write_demo --target native -- "$output"
 
 python=${H5PY_PYTHON:-}
@@ -69,6 +70,15 @@ if [ "${SKIP_H5PY:-0}" = "1" ]; then
 else
   "$python" scripts/verify_symbol_table_edit.py "$symbol_compact" compact
   "$python" scripts/verify_symbol_table_edit.py "$symbol_dense" dense
+fi
+
+echo "==> Filtered link editing"
+moon run src/cmd/filtered_link_edit_demo --target native -- \
+  testdata/fractal_heap_advanced.h5 "$filtered_links"
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> Filtered link edit verification skipped (SKIP_H5PY=1)"
+else
+  "$python" scripts/verify_filtered_link_edit.py "$filtered_links"
 fi
 
 echo "==> Object creation"

@@ -264,16 +264,18 @@ Reserved indexes with no entries may omit their fractal heap; an index that
 claims entries must provide one. Attribute datatype/dataspace flags are resolved
 separately. Cycles, malformed indexes and checksum failures are rejected.
 
-The writer optionally emits one SOHM table and one managed-object heap for whole
-attributes, custom fills and encoded filter pipelines up to 65,535 bytes. Equal
-encoded fills, attributes and pipelines reuse one heap ID. Named committed
-datatypes are written as datatype objects and referenced through wrapper version
-3 storage type 2; datasets and attributes with matching encoded datatypes use the
-shared flag and target address. This path also works without a
-superblock-extension SOHM table.
+The writer optionally emits one SOHM master table with independent fill, filter
+and attribute indexes and managed-object heaps. Messages up to 65,535 bytes are
+shared; equal messages within one type reuse a heap ID. The heap encoder uses
+FHDB direct blocks and FHIB indirect roots when the managed objects exceed one
+64 KiB direct block. Named committed datatypes are written as datatype objects
+and referenced through wrapper version 3 storage type 2; datasets and attributes
+with matching encoded datatypes use the shared flag and target address. This path
+also works without a superblock-extension SOHM table.
 
-The remaining SOHM boundary is one table and one heap. Multiple tables, multiple
-heaps and heap extension across multiple blocks are not emitted.
+The remaining SOHM boundary is one master table, which is the only table the
+superblock format can reference. Independent indexes and heaps cover the shared
+message types emitted by this writer.
 
 ## Residual risks
 
@@ -283,9 +285,9 @@ heaps and heap extension across multiple blocks are not emitted.
   pipelines. Writing and patching require a registered encoder; overrides of
   built-in filter IDs are not accepted.
 - External raw data requires caller registration and caller-managed files.
-- SOHM output uses one compact single-block table and heap. Dense metadata output
-  supports multiple direct blocks and huge objects but does not emit a free-space
-  manager or tiny heap objects.
+- SOHM output uses one master table with typed indexes and multi-block heaps.
+  Dense metadata output supports multiple direct blocks and huge objects but does
+  not emit a free-space manager or tiny heap objects.
 - V2 B-tree output is bulk-built for a completed in-memory shape; arbitrary
   incremental insertion at interior coordinates is not exposed.
 - Value patching can allocate raw data only into existing writable layout or
@@ -328,7 +330,8 @@ heaps and heap extension across multiple blocks are not emitted.
   datasets. References and variable-length values nested in compound,
   fixed-array and sequence members are patched recursively. Version-4
   attribute targets must already exist, and external-file flags are rejected,
-  as are shared attribute messages and filtered fractal-heap storage. Attribute addition,
+  as are shared attribute messages and filtered fractal-heap storage for direct
+  value patching. Attribute addition,
   deletion and renaming use a rebuild path that supports v1/v2 object headers,
   compact/dense conversion, ordered-dense creation order, shared compact/dense
   attribute messages (rebuilt as local messages), 4-byte-address dense heaps and
@@ -336,8 +339,11 @@ heaps and heap extension across multiple blocks are not emitted.
   references nested in compound and fixed-array members.
   Added reference values must target existing same-file objects, datasets or
   attributes and use the file's address width. Registered custom filters can
-  decode existing dense metadata heaps; rebuilt heaps are unfiltered. Old
-  attribute metadata and global heaps are not reclaimed.
+  decode existing dense metadata heaps. Rebuilt dense heaps preserve the
+  existing filter pipeline and re-apply it to direct blocks and huge objects;
+  deflate, shuffle, Fletcher32 and registered custom encoders are supported,
+  while metadata scale-offset is rejected. Old attribute metadata and global
+  heaps are not reclaimed.
 - Link editing also accepts symbol-table groups and converts them to compact or
   dense link-message storage. Hard-link targets must already exist in the same
   bytes-backed file, while soft and external targets are stored without

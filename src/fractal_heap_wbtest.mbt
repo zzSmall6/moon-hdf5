@@ -25,6 +25,7 @@ fn test_fractal_heap(
     huge_btree_address: 0xFFFFFFFFFFFFFFFFUL,
     filter_len: 0,
     filters: [],
+    encoded_filters: b"",
     huge_id_size: if id_length - 1 < 8 {
       id_length - 1
     } else {
@@ -109,6 +110,7 @@ fn test_fractal_heap_with_checksums(
     huge_btree_address: 0xFFFFFFFFFFFFFFFFUL,
     filter_len: 0,
     filters: [],
+    encoded_filters: b"",
     huge_id_size: 7,
     huge_ids_direct: false,
     blocks: [],
@@ -252,6 +254,7 @@ fn test_filtered_fractal_heap(bytes : Bytes) -> FractalHeap {
     huge_btree_address: 0xFFFFFFFFFFFFFFFFUL,
     filter_len: 12,
     filters: [{ id: 1, parameters: [6U], decoder: None, }],
+    encoded_filters: b"\x01\x06\x00\x00\x0c\x00\x00\x00\x01\x00\x00\x00",
     huge_id_size: 7,
     huge_ids_direct: false,
     blocks: [],
@@ -333,6 +336,7 @@ test "fractal heap decodes directly accessed filtered huge objects" {
     huge_btree_address: 0xFFFFFFFFFFFFFFFFUL,
     filter_len: 12,
     filters: [{ id: 1, parameters: [6U], decoder: None, }],
+    encoded_filters: b"\x01\x06\x00\x00\x0c\x00\x00\x00\x01\x00\x00\x00",
     huge_id_size: 24,
     huge_ids_direct: true,
     blocks: [],

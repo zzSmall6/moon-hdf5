@@ -108,11 +108,11 @@ heap is rejected. Cycles, malformed indexes and bad checksums are rejected.
 The writer can emit:
 
 - whole attribute, custom fill and filter-pipeline messages through one SOHM
-  table and managed heap, interning equal encoded fills, attributes and
-  pipelines;
+  master table with one index and managed heap per message type, interning
+  equal messages within each type and extending heaps through FHIB roots;
 - named committed datatypes as ordinary datatype objects referenced through
   wrapper version 3 storage type 2;
-- the SMTB type mask for the message kinds actually emitted.
+- the SMTB index records for the message kinds actually emitted.
 
 Field-level attribute sharing is not emitted because every attribute the writer
 can represent fits the whole-message path.
@@ -344,6 +344,10 @@ resolve their targets against the existing hierarchy; region targets use the
 target dataset's dataspace, attribute targets must already exist, and new
 indirect-reference payloads use a second appended global heap. Reference slots
 and indirect payload addresses use the file's 4- or 8-byte address width.
+Dense rebuilds also preserve an existing fractal-heap filter pipeline and
+re-apply it to direct blocks and huge objects. This covers deflate, shuffle,
+Fletcher32 and registered custom encoders; metadata scale-offset remains
+unsupported. The link rebuild path uses the same filtered-heap encoder.
 
 The object's initial header chunk is replaced by an object-continuation message
 followed by NIL padding. Every non-attribute message from the original header and
