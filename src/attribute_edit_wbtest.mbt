@@ -150,6 +150,50 @@ test "adding variable-length sequence attributes appends a global heap" {
 }
 
 ///|
+test "adding nested variable-length attribute members appends one heap" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/values", [1UL], Int32Values([3]))
+  let file = Hdf5File::parse(writer.encode())
+  let text_type = Datatype::write_vlen_string()
+  let sequence_type = Datatype::write_vlen_sequence(
+    Datatype::write_integer(true, 4),
+  )
+  let aliases_type = Datatype::write_array(text_type, [2UL])
+  let record_type = Datatype::write_compound([
+    ("label", text_type),
+    ("history", sequence_type),
+    ("aliases", aliases_type),
+  ])
+  let first = Compound([
+    { name: "label", value: Text("first"), },
+    {
+      name: "history",
+      value: Sequence([SignedInteger(1L), SignedInteger(-2L)]),
+    },
+    { name: "aliases", value: Elements([Text("甲"), Text("")]), },
+  ])
+  let second = Compound([
+    { name: "label", value: Text("第二个"), },
+    { name: "history", value: Sequence([]), },
+    { name: "aliases", value: Elements([Text(""), Text("alias")]), },
+  ])
+  let added = file.add_attribute(
+    "/values",
+    "records",
+    [2UL],
+    StructuredValues(record_type, [first, second]),
+  ) catch {
+    error => fail("add nested vlen attributes: " + error.message())
+  }
+  let added_file = Hdf5File::parse(added)
+  match find_attribute(added_file.attributes("/values"), "records").values {
+    Some(Structured(values)) => assert_eq(values, [first, second])
+    _ => fail("expected nested variable-length attribute values")
+  }
+  assert_eq(integer_values(added_file.read_dataset("/values")), [3L])
+}
+
+///|
 test "attribute storage converts between compact and dense forms" {
   let writer = Hdf5Writer::new()
   writer.add_group("/dense")

@@ -462,6 +462,7 @@ fn editable_values_heap(
   match values {
     StructuredValues(datatype, items) =>
       for item in items {
+        collect_heap_structured_strings(strings, datatype, item)
         collect_heap_sequences(
           sequences,
           datatype,

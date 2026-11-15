@@ -455,9 +455,10 @@ These APIs accept groups, datasets and committed datatypes in bytes-backed
 up to eight attributes; larger collections are rebuilt as dense storage when
 every encoded attribute message is at most 65,535 bytes. Existing creation order
 is retained. Adding fixed-size values and variable-length UTF-8 strings or
-sequences is supported, as are legacy and version-4 object, region and
-attribute references. Reference targets must already exist in the same file;
-region targets must be datasets with a non-null dataspace, and version-4
+sequences is supported, including vlen strings and sequences nested in compound
+and array members, as are legacy and version-4 object, region and attribute
+references. Reference targets must already exist in the same file; region
+targets must be datasets with a non-null dataspace, and version-4
 attribute-reference names must name an existing attribute. New vlen and
 indirect-reference payloads use appended global-heap collections. Shared
 attribute messages are resolved and written back as local messages, leaving the
