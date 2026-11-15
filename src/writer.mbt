@@ -193,11 +193,6 @@ pub fn Datatype::write_vlen_sequence(
   guard !datatype_contains_vlen(base) else {
     raise InvalidArgument("writer variable-length sequence base is invalid")
   }
-  guard !datatype_contains_region_reference(base) else {
-    raise InvalidArgument(
-      "writer variable-length sequence base cannot contain region references",
-    )
-  }
   writer_datatype(9, 16, base_types=[base])
 }
 
@@ -918,25 +913,6 @@ fn validate_writer_datatype_name(
 }
 
 ///|
-fn datatype_contains_region_reference(datatype : Datatype) -> Bool {
-  if datatype.class == 7 &&
-    (datatype.reference_kind == 1 || datatype.reference_kind == 3) {
-    return true
-  }
-  for field in datatype.compound_members {
-    if datatype_contains_region_reference(field.datatype) {
-      return true
-    }
-  }
-  for base in datatype.base_types {
-    if datatype_contains_region_reference(base) {
-      return true
-    }
-  }
-  false
-}
-
-///|
 fn validate_writer_datatype(
   datatype : Datatype,
   depth : Int32,
@@ -1122,11 +1098,6 @@ fn validate_writer_datatype(
         guard !datatype_contains_vlen(base) else {
           raise InvalidArgument(
             "writer variable-length sequence base must be fixed-size",
-          )
-        }
-        guard !datatype_contains_region_reference(base) else {
-          raise InvalidArgument(
-            "writer variable-length sequence base cannot contain region references",
           )
         }
         validate_writer_datatype(base, depth + 1, reference_address_size~)

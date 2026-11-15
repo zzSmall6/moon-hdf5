@@ -448,16 +448,12 @@ fn editable_values_heap(
   values : Hdf5WriteValues,
   objects : Array[WritableObject],
   reference_address_size : Int32,
+  regions : Array[Bytes],
+  region_address : UInt64,
 ) -> WritableGlobalHeap raise Hdf5Error {
   let strings : Array[String] = []
   collect_heap_strings(strings, values)
-  let empty = {
-    address: 0UL,
-    region_address: 0UL,
-    strings,
-    regions: [],
-    sequences: [],
-  }
+  let empty = { address: 0UL, region_address, strings, regions, sequences: [], }
   let sequences : Array[Bytes] = []
   match values {
     StructuredValues(datatype, items) =>
@@ -474,7 +470,7 @@ fn editable_values_heap(
       }
     _ => ()
   }
-  { address: 0UL, region_address: 0UL, strings, regions: [], sequences, }
+  { address: 0UL, region_address, strings, regions, sequences, }
 }
 
 ///|
@@ -1193,15 +1189,13 @@ pub fn Hdf5File::add_attribute(
       _ => ()
     }
   }
-  let initial_heap = editable_values_heap(
-    values, objects, reference_address_size,
-  )
+  let regions : Array[Bytes] = []
   if has_references {
     match values {
       StructuredValues(datatype, items) =>
         for item in items {
           collect_heap_regions(
-            initial_heap.regions,
+            regions,
             datatype,
             item,
             objects,
@@ -1212,6 +1206,21 @@ pub fn Hdf5File::add_attribute(
       _ => ()
     }
   }
+  let region_address = if regions.length() > 0 {
+    let heap_payload = encode_heap_objects(regions)
+    let heap_offset = append_aligned_bytes_to_tail(
+      tail,
+      self.bytes.length(),
+      heap_payload,
+      "append an attribute region-reference heap",
+    )
+    file_offset_to_stored_address(heap_offset, self.superblock.base_address)
+  } else {
+    0UL
+  }
+  let initial_heap = editable_values_heap(
+    values, objects, reference_address_size, regions, region_address,
+  )
   let heap_address = if initial_heap.strings.length() > 0 ||
     initial_heap.sequences.length() > 0 {
     let heap_payload = encode_global_heap(initial_heap)
@@ -1220,18 +1229,6 @@ pub fn Hdf5File::add_attribute(
       self.bytes.length(),
       heap_payload,
       "append an attribute global heap",
-    )
-    file_offset_to_stored_address(heap_offset, self.superblock.base_address)
-  } else {
-    0UL
-  }
-  let region_address = if initial_heap.regions.length() > 0 {
-    let heap_payload = encode_region_heap(initial_heap)
-    let heap_offset = append_aligned_bytes_to_tail(
-      tail,
-      self.bytes.length(),
-      heap_payload,
-      "append an attribute region-reference heap",
     )
     file_offset_to_stored_address(heap_offset, self.superblock.base_address)
   } else {

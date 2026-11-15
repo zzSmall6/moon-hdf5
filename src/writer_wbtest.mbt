@@ -1421,6 +1421,85 @@ test "writer writes region references nested in structured values" {
 }
 
 ///|
+test "writer writes region references in variable-length sequence bases" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/source", [6UL], Int64Values([0L, 1L, 2L, 3L, 4L, 5L]))
+  let legacy = Datatype::write_region_reference()
+  let legacy_sequence = Datatype::write_vlen_sequence(legacy)
+  let version4 = Datatype::write_version4_region_reference()
+  let version4_sequence = Datatype::write_vlen_sequence(version4)
+  let legacy_values = [
+    Sequence([
+      RegionReference(Some("/source"), RegionPoints([[2UL], [5UL]])),
+      RegionReference(Some("/source"), RegionAll),
+    ]),
+    Sequence([]),
+  ]
+  writer.add_dataset(
+    "/legacy_sequences",
+    [2UL],
+    StructuredValues(legacy_sequence, legacy_values),
+  )
+  writer.add_dataset(
+    "/version4_sequences",
+    [1UL],
+    StructuredValues(version4_sequence, [
+      Sequence([
+        RegionReference(
+          Some("/source"),
+          RegionHyperslab([2UL], [2UL], [2UL], [1UL]),
+        ),
+        RegionReference(None, RegionEmpty),
+      ]),
+    ]),
+  )
+  writer.add_attribute(
+    "/legacy_sequences",
+    "prototype",
+    [2UL],
+    StructuredValues(legacy_sequence, legacy_values),
+  )
+
+  let file = Hdf5File::parse(writer.encode())
+  match file.read_dataset("/legacy_sequences").values {
+    Structured([Sequence([Reference(points), Reference(all)]), Sequence([])]) => {
+      assert_eq(writer_region_integer_values(file, points), [2L, 5L])
+      assert_eq(writer_region_integer_values(file, all), [
+        0L, 1L, 2L, 3L, 4L, 5L,
+      ])
+    }
+    _ => abort("expected legacy region-reference sequences")
+  }
+  match file.read_dataset("/version4_sequences").values {
+    Structured([Sequence([Reference(slab), Reference(null_ref)])]) => {
+      assert_eq(writer_region_integer_values(file, slab), [2L, 4L])
+      assert_true(file.resolve_region_reference(null_ref) is None)
+    }
+    _ => abort("expected version-4 region-reference sequences")
+  }
+  match
+    file
+    .attributes("/legacy_sequences")
+    .search_by(attribute => attribute.name == "prototype") {
+    Some(index) =>
+      match file.attributes("/legacy_sequences")[index].values {
+        Some(
+          Structured(
+            [Sequence([Reference(points), Reference(all)]), Sequence([])]
+          )
+        ) => {
+          assert_eq(writer_region_integer_values(file, points), [2L, 5L])
+          assert_eq(writer_region_integer_values(file, all), [
+            0L, 1L, 2L, 3L, 4L, 5L,
+          ])
+        }
+        _ => abort("expected legacy region-reference sequence attribute")
+      }
+    None => abort("expected prototype attribute")
+  }
+}
+
+///|
 test "writer round-trips version-4 references" {
   let writer = Hdf5Writer::new()
   writer.add_dataset("/target", [6UL], Int64Values([0L, 1L, 2L, 3L, 4L, 5L]))
@@ -1569,22 +1648,6 @@ test "writer validates version-4 reference inputs" {
       ),
     ),
   )
-
-  let sequence_region = try {
-    Datatype::write_vlen_sequence(Datatype::write_version4_region_reference())
-    |> ignore
-    None
-  } catch {
-    error => Some(error)
-  }
-  assert_eq(
-    sequence_region,
-    Some(
-      InvalidArgument(
-        "writer variable-length sequence base cannot contain region references",
-      ),
-    ),
-  )
 }
 
 ///|
@@ -1664,40 +1727,6 @@ test "writer validates region references" {
   assert_eq(
     out_of_bounds,
     Some(InvalidField("region point is outside the dataset")),
-  )
-
-  let vlen_region = try {
-    Datatype::write_vlen_sequence(Datatype::write_region_reference()) |> ignore
-    None
-  } catch {
-    error => Some(error)
-  }
-  assert_eq(
-    vlen_region,
-    Some(
-      InvalidArgument(
-        "writer variable-length sequence base cannot contain region references",
-      ),
-    ),
-  )
-
-  let nested_vlen_region = try {
-    let nested = Datatype::write_compound([
-      ("target", Datatype::write_region_reference()),
-      ("count", Datatype::write_integer(true, 4)),
-    ])
-    Datatype::write_vlen_sequence(nested) |> ignore
-    None
-  } catch {
-    error => Some(error)
-  }
-  assert_eq(
-    nested_vlen_region,
-    Some(
-      InvalidArgument(
-        "writer variable-length sequence base cannot contain region references",
-      ),
-    ),
   )
 }
 

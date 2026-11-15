@@ -265,7 +265,7 @@ let output = writer.encode()
   Committed datatypes use wrapper version 3 storage type 2 and are referenced by
   datasets and attributes with matching encoded datatypes.
 - Variable-length strings and sequences share a global heap. Sequence bases must
-  be fixed-size and cannot contain region references.
+  be fixed-size; legacy and version-4 region references may appear in a base.
 
 Version-4 references are opt-in per datatype; existing code keeps writing the
 legacy 8-byte object and 12-byte region forms:
@@ -600,9 +600,10 @@ the items below summarize the main user-visible gaps.
   short sources are zero-filled for the declared remainder.
 - **Numeric and string constraints:** numeric storage wider than 8 bytes and
   binary-float normalizations other than implied MSB are unsupported.
-- **Variable-length structures:** sequence bases must be fixed-size and cannot
-  contain region references. Custom variable-length string and sequence fills
-  are stored through the global heap.
+- **Variable-length structures:** writer sequence bases must be fixed-size. They
+  may contain legacy or version-4 region references when those targets already
+  exist. Custom variable-length string and sequence fills are stored through
+  the global heap.
 - **References:** support covers legacy object and dataset-region forms plus
   version-4 object, dataset-region and attribute forms. Version-4 references to
   external files are unsupported, and region and attribute targets must be in

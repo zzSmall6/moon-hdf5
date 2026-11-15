@@ -194,6 +194,73 @@ test "adding nested variable-length attribute members appends one heap" {
 }
 
 ///|
+test "adding region references in variable-length sequence attributes" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/source", [6UL], Int64Values([0L, 1L, 2L, 3L, 4L, 5L]))
+  let file = Hdf5File::parse(writer.encode())
+  let legacy_sequence = Datatype::write_vlen_sequence(
+    Datatype::write_region_reference(),
+  )
+  let legacy_values = [
+    Sequence([
+      RegionReference(Some("/source"), RegionPoints([[1UL], [4UL]])),
+      RegionReference(Some("/source"), RegionAll),
+    ]),
+    Sequence([]),
+  ]
+  let added = file.add_attribute(
+    "/source",
+    "legacy_regions",
+    [2UL],
+    StructuredValues(legacy_sequence, legacy_values),
+  ) catch {
+    error => fail("add legacy region sequence attribute: " + error.message())
+  }
+  let legacy_file = Hdf5File::parse(added)
+  match
+    find_attribute(legacy_file.attributes("/source"), "legacy_regions").values {
+    Some(
+      Structured([Sequence([Reference(points), Reference(all)]), Sequence([])])
+    ) => {
+      assert_eq(writer_region_integer_values(legacy_file, points), [1L, 4L])
+      assert_eq(writer_region_integer_values(legacy_file, all), [
+        0L, 1L, 2L, 3L, 4L, 5L,
+      ])
+    }
+    _ => fail("expected legacy region-reference sequence attribute")
+  }
+
+  let version4_sequence = Datatype::write_vlen_sequence(
+    Datatype::write_version4_region_reference(),
+  )
+  let version4_added = legacy_file.add_attribute(
+    "/source",
+    "version4_regions",
+    [1UL],
+    StructuredValues(version4_sequence, [
+      Sequence([
+        RegionReference(
+          Some("/source"),
+          RegionHyperslab([1UL], [2UL], [2UL], [1UL]),
+        ),
+        RegionReference(None, RegionEmpty),
+      ]),
+    ]),
+  ) catch {
+    error => fail("add version-4 region sequence attribute: " + error.message())
+  }
+  let version4_file = Hdf5File::parse(version4_added)
+  match
+    find_attribute(version4_file.attributes("/source"), "version4_regions").values {
+    Some(Structured([Sequence([Reference(slab), Reference(null_ref)])])) => {
+      assert_eq(writer_region_integer_values(version4_file, slab), [1L, 3L])
+      assert_true(version4_file.resolve_region_reference(null_ref) is None)
+    }
+    _ => fail("expected version-4 region-reference sequence attribute")
+  }
+}
+
+///|
 test "attribute storage converts between compact and dense forms" {
   let writer = Hdf5Writer::new()
   writer.add_group("/dense")
