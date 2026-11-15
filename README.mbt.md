@@ -1,57 +1,31 @@
 # moon-hdf5
 
-Pure MoonBit HDF5 reader and new-file writer for the HDF5 1.14.6 common-file
-profile. It has no native HDF5 dependency and runs on wasm and native targets.
+Pure MoonBit HDF5 reader and writer for the HDF5 1.14.6 common-file profile.
+It has no native HDF5 dependency and runs on wasm and native targets.
 
-moon-hdf5 implements a documented subset of HDF5. The
-[compatibility matrix](docs/compatibility.md) is the v1.0 delivery boundary;
-[design notes](docs/design.md) describe the implementation and
+This project implements a documented subset of HDF5. The
+[compatibility matrix](docs/compatibility.md) is the delivery boundary,
+[design notes](docs/design.md) cover implementation details, and
 [audit notes](docs/audit.md) record verification. Public APIs are listed in
 [`src/pkg.generated.mbti`](src/pkg.generated.mbti).
 
 ## Status
 
-- `Hdf5File` reads existing files without modification.
-- `Hdf5Writer` creates complete new files in memory.
-- `Hdf5Resolver` follows registered external links and reads resolver-backed
-  external raw data.
-- `patch_contiguous_dataset` replaces the values of an allocated contiguous
-  dataset, and `patch_dataset_values` also handles compact, unallocated
-  contiguous and filtered or unfiltered chunked storage, including variable-length
-  UTF-8 strings, fixed-base sequences, legacy same-file object or region
-  references, and same-file version-4 object, region or attribute references.
-  Both return a new byte image. Allocation is limited to raw
-  payloads that fit existing layout or chunk-index storage, including a missing
-  fixed-array data block, a missing extensible-array data or index/super block,
-  missing fixed- or extensible-array pages in an existing data block, and missing
-  v1 or v2 B-tree chunk records.
-- `patch_attribute_values` replaces the values of an existing inline or dense
-  fixed-size attribute, variable-length UTF-8 string attribute, fixed-base
-  variable-length sequence attribute, legacy same-file object- or
-  region-reference attribute, or same-file version-4 object-, region- or
-  attribute-reference attribute on a group or dataset while preserving its
-  name, creation order, datatype and storage location. Variable-length,
-  region-reference and indirect version-4 values receive a newly appended
-  global heap.
-- `add_attribute`, `rename_attribute` and `delete_attribute` update the
-  attributes of an existing bytes-backed file, preserving creation order and
-  switching between compact and dense attribute storage as the collection
-  crosses the writer threshold. New attributes can contain fixed-size values,
-  variable-length UTF-8 strings or sequences, and legacy or version-4 object,
-  region and attribute references, including references nested in compound and
-  fixed-array members.
-- `add_hard_link`, `add_soft_link`, `add_external_link`, `rename_link` and
-  `delete_link` rebuild a group's complete link collection on bytes-backed
-  files, including symbol-table groups, preserving creation order and switching
-  between compact and dense storage as needed.
-- `add_group`, `add_dataset`, `add_chunked_dataset` and `add_external_dataset`
-  append new objects to bytes-backed files, including contiguous or finite
-  or resizable chunked values, built-in chunk filters, external raw-data slots,
-  fill values, and variable-length strings, sequences and reference values,
-  including members nested in compound, fixed-array and fixed-base sequence
-  datatypes.
-  `delete_object` removes every hard link to an object so aliases cannot keep it
-  reachable.
+- `Hdf5File` reads existing files without modification. `Hdf5Writer` creates
+  complete new files in memory. `Hdf5Resolver` follows registered external
+  links and resolver-backed raw-data sources.
+- Reading covers superblocks v0–v3, compact/contiguous/chunked storage, built-in
+  and registered custom filters, dense and shared metadata, structured and
+  variable-length values, references, and bounded chunk/selection iterators.
+- Writing covers groups, datasets, attributes, links, committed datatypes,
+  filters, fills, dense/SOHM metadata, nested variable-length and reference
+  values, compact/contiguous/chunked/external storage, and resizable datasets.
+- Existing-file editing covers value and attribute patching, attribute and link
+  add/rename/delete, object creation/deletion, and append-only metadata rebuilds.
+  Every editing API returns a new byte image.
+
+See [Compatibility](docs/compatibility.md) for the exact supported and rejected
+cases.
 
 ## Installation
 
@@ -62,43 +36,7 @@ moon add Zz04321/moon-hdf5@0.1.0
 moon update
 ```
 
-The package targets `wasm` by default. To build this repository from source
-instead, use the commands in [Quick Start](#quick-start).
-
-## Capabilities
-
-- Superblocks v0–v3, 4- and 8-byte addresses, compact and dense groups and
-  attributes, hard/soft/external links, and every named hard-link path.
-- Compact, contiguous and chunked datasets; v1 B-tree, single-chunk, implicit,
-  fixed-array, extensible-array and v2 B-tree indexes.
-- Deflate, shuffle, Fletcher32, integer scale-offset and f32/f64 decimal
-  scale-offset, including per-chunk filter masks.
-- Caller-registered encoders and decoders for third-party dataset chunk
-  filters.
-- Signed and unsigned fixed-point integers of arbitrary width (wider values are
-  returned as `BigInt` in either byte order), IEEE float16/32/64, explicit- or
-  implied-MSB extended binary floats such as x87 80-bit storage, strings,
-  compound, enum, array, time, bitfield, opaque, sequence, reference and complex
-  values.
-- Hyperslab and ordered-point reads, metadata-only reads, bounded-memory chunk
-  iteration, legacy and version-4 object/region references, and version-4
-  attribute-reference reads.
-- SOHM reading and optional writing: shared attributes, filter pipelines,
-  datatype/dataspace fields, fills and named committed datatypes.
-- New-file output for groups, datasets, attributes, links, committed datatypes,
-  filters, fills, references, compact datasets, contiguous external raw-data
-  slots and one or more unlimited dataset dimensions.
-- Value replacement for fixed-size compact, allocated or unallocated contiguous
-  and filtered or unfiltered chunked datasets in a bytes-backed file, including
-  undefined slots in existing chunk indexes and creation of a missing
-  fixed-array data block under an existing FAHD, missing extensible-array data
-  blocks, and missing EAIB or EASB index structures.
-- Attribute addition, deletion and renaming for v1 and v2 object headers, with
-  automatic compact/dense rebuilding, retained creation order and appended
-  metadata in a bytes-backed file.
-- Hard, soft and external link addition, renaming and deletion for v2
-  link-message groups, with compact/dense rebuilding, retained creation order,
-  4- and 8-byte addresses and multi-block or huge dense heap objects.
+The package targets `wasm` by default.
 
 ## Quick Start
 
@@ -114,7 +52,7 @@ moon run src/cmd/main --target native -- testdata/basic_v0.h5
 
 ## Reading
 
-Imports for the examples below are in
+Imports for the examples are shown in
 [`src/cmd/main/moon.pkg`](src/cmd/main/moon.pkg).
 
 ```moonbit nocheck
@@ -132,81 +70,36 @@ let attributes = file.attributes("/group/values")
 let nodes = file.walk()
 ```
 
-`read_dataset_metadata` does not load values. Selections support compact,
-contiguous and chunked storage, and only intersecting chunks are decoded.
-`chunk_iterator` returns edge-clipped tiles with memory bounded by one tile plus
-the intersecting storage chunk. For a large hyperslab or point selection, use
-`selection_iterator` to process the result in bounded pages.
+`read_dataset_metadata` does not load values. Use `chunk_iterator` for
+bounded-memory chunk processing and `selection_iterator` for large hyperslab or
+point selections. Simple values use `Integers`, `UnsignedIntegers`, `Floats`,
+`Strings` or `Enums`; other datatypes use recursive `Structured` values.
+
+References are returned as encoded bytes. `Hdf5File` resolves same-file targets;
+`Hdf5Resolver` can also follow version-4 references and external links into
+registered sources.
 
 ```moonbit nocheck
-///|
-let chunks = file.chunk_iterator("/matrix", [1UL, 2UL])
-while chunks.next() is Some(chunk) {
-  chunk.offset |> ignore
-  chunk.values |> ignore
-}
-
-///|
-let pages = file.selection_iterator(
-  "/matrix",
-  @lib.Hyperslab([0UL, 0UL], [1024UL, 1024UL], [1UL, 1UL]),
-  4096,
-)
-while pages.next() is Some(page) {
-  page.offset |> ignore
-  page.values |> ignore
-}
-
 ///|
 let resolver = @lib.Hdf5Resolver::new(bytes)
 resolver.add_source("other-file.h5", @fs.read_file_to_bytes("other-file.h5"))
 let remote = resolver.read_dataset("/experiment/remote_counts")
 
-///|
-// Resolve reference values stored in the root or a registered external file.
 let object = resolver.resolve_object_reference(reference_bytes)
 let region = resolver.read_region_reference(region_bytes)
 let attribute = resolver.read_attribute_reference(attribute_bytes)
 ```
 
-Simple values use `Integers`, `UnsignedIntegers`, `Floats`, `Strings` or
-`Enums`; other datatypes use recursive `Structured` values. Legacy and
-version-4 references are returned as encoded bytes and can be resolved with
-`resolve_object_reference`, `resolve_region_reference`,
-`read_region_reference`, `resolve_attribute_reference` or
-`read_attribute_reference`. The `Hdf5File` methods resolve same-file targets;
-the matching `Hdf5Resolver` methods also follow version-4 references into
-registered external HDF5 sources.
-
-`Hdf5Resolver` follows hard, soft and external links across registered
-`Hdf5Source` values, rejects cycles and reports unregistered targets. It also
-reads contiguous, unfiltered external raw-data slots and resolves version-4
-object, region and attribute references stored in one registered source that
-target another. `Hdf5File` intentionally leaves external targets, external raw
-data and external-file references unresolved.
-
-Third-party dataset chunk filters use `Hdf5CustomFilter` with
-`Hdf5File::with_custom_filter` or `Hdf5Resolver::add_custom_filter`. Decoders
-receive the stored bytes, filter parameters, element width and expected decoded
-size. Built-in filter IDs cannot be replaced, duplicate IDs are rejected, and a
-decoder must return exactly the expected number of bytes.
-
-For writing, register the filter with `Hdf5Writer::add_custom_filter`, implement
-`encode`, and add `Custom(id, parameters)` to a dataset pipeline. `encode` is an
-optional trait method: decoder-only implementations remain source compatible and
-raise `UnsupportedFeature` if used for output. IDs at or above 256 are written
-with the filter name; override `name` to select a stable registered name instead
-of the generated `custom-filter-<id>` value. Registered custom filters can also
-be re-encoded by `patch_dataset_values`.
+Third-party chunk filters use `Hdf5CustomFilter` with
+`Hdf5File::with_custom_filter` or `Hdf5Resolver::add_custom_filter`. Built-in
+filter IDs cannot be overridden, duplicate IDs are rejected, and decoders must
+return exactly the expected byte count.
 
 ## Writing
 
 ```moonbit nocheck
 ///|
 let writer = @lib.Hdf5Writer::new()
-writer.set_attribute_sharing(true)
-writer.set_fill_sharing(true)
-writer.set_filter_sharing(true)
 
 let record = @lib.Datatype::write_compound([
   ("id", @lib.Datatype::write_integer(true, 4)),
@@ -227,12 +120,6 @@ writer.add_dataset(
     ]),
   ]),
 )
-writer.add_attribute(
-  "/experiment/records",
-  "unit",
-  [],
-  @lib.FixedStringValues(["items"], 8),
-)
 writer.add_chunked_dataset(
   "/experiment/codes",
   [6UL],
@@ -241,273 +128,73 @@ writer.add_chunked_dataset(
   fill_value=@lib.Int64Values([-1L]),
   filters=[@lib.Shuffle, @lib.Deflate(6), @lib.Fletcher32],
 )
-writer.add_extensible_dataset(
-  "/experiment/series",
-  [0UL, 2UL],
-  [None, Some(2UL)],
-  [2U, 2U],
-  @lib.Int64Values([]),
-  fill_value=@lib.Int64Values([-1L]),
+writer.add_attribute(
+  "/experiment/records",
+  "unit",
+  [],
+  @lib.FixedStringValues(["items"], 8),
 )
-writer.append_dataset(
-  "/experiment/series",
-  [2UL, 2UL],
-  @lib.Int64Values([1L, 2L, 3L, 4L]),
-)
-writer.add_soft_link("/experiment", "latest", "/experiment/series")
+writer.add_soft_link("/experiment", "latest", "/experiment/records")
 
 let output = writer.encode()
 ```
 
-- `add_dataset` writes contiguous storage. `add_chunked_dataset`,
-  `add_extensible_dataset` and `resize_dataset` cover finite and multi-unlimited
-  chunked storage. One unlimited dimension uses an extensible-array index;
-  multiple unlimited dimensions use a v2 B-tree. `append_dataset` appends a
-  block at the trailing corner of every unlimited axis, growing each such axis
-  by the block extent.
-- `add_compact_dataset` stores values inline in the object header, up to 65,535
-  encoded bytes. Compact datasets support the same fixed-size and
-  variable-length values as contiguous datasets but cannot be resized.
-- `write_dataset_slab` writes a rectangular block at arbitrary coordinates.
-  Finite datasets require the slab to fit their current shape; extensible
-  datasets grow unlimited axes to the slab's trailing edge and fill gaps with
-  the dataset fill value.
-- `add_external_dataset` stores raw bytes in caller-managed external files. Slot
-  sizes must match the dataset byte count; the writer does not create those
-  files.
-- `add_custom_filter` registers a third-party chunk filter before datasets that
-  reference it. Use `Custom(id, parameters)` in the pipeline; the trait's
-  optional `encode` supplies transformed bytes and `name` supplies the v2
-  pipeline name for IDs at or above 256.
-- Numeric output covers signed and unsigned 1–8-byte integers plus IEEE
-  float16/32/64 in either byte order. `Float16Values` and
-  `Datatype::write_float(2)` write half-precision values.
-- Dense link and attribute collections support 9–65,535 records. Managed heap
-  objects up to 65,535 bytes are packed into one or more FHDB direct blocks,
-  using an FHIB indirect root when needed; larger encoded objects use huge heap
-  IDs and a type-1 v2 B-tree. Name and creation-order indexes use multi-level
-  v2 B-trees, so large collections span multiple leaf and internal nodes.
-  Larger sets remain compact and use OCHK continuation chunks.
-- Whole attributes, fills and encoded filter pipelines up to 65,535 bytes use one
-  SOHM table and heap. Equal fills, attributes and pipelines reuse one heap ID.
-  Committed datatypes use wrapper version 3 storage type 2 and are referenced by
-  datasets and attributes with matching encoded datatypes.
-- Variable-length strings and sequences share a global heap. Nested descriptors,
-  reference slots and heap addresses use the file's address width through
-  `write_vlen_string_with_address_size`,
-  `write_vlen_sequence_with_address_size`,
-  `write_object_reference_with_address_size` and
-  `write_region_reference_with_address_size`. Sequence bases must be fixed-size;
-  legacy and version-4 region references may appear in a base.
+Dataset creation options:
 
-Version-4 references are opt-in per datatype; existing code keeps writing the
-legacy 8-byte object and 12-byte region forms:
+- `add_dataset`: contiguous storage.
+- `add_compact_dataset`: inline object-header storage, up to 65,535 bytes.
+- `add_chunked_dataset`: finite fixed-array chunks or resizable chunks via
+  `maximum_dimensions`.
+- `add_extensible_dataset`, `resize_dataset`, `append_dataset` and
+  `write_dataset_slab`: in-memory resizing, append and rectangular writes.
+- `add_external_dataset`: unfiltered external raw-data slots; the caller creates
+  the external files.
+
+Fixed-size values support Shuffle, deflate, Fletcher32 and scale-offset.
+Variable-length values support Shuffle/deflate and must use fixed-size sequence
+bases. Nested variable-length and reference members are encoded recursively.
+Register custom encoders with `Hdf5Writer::add_custom_filter` before adding a
+dataset that uses `Custom(id, parameters)`.
+
+Version-4 references are opt-in per datatype; legacy references remain the
+writer default. Use the `Datatype::write_version4_*_reference` constructors for
+version-4 object, region or attribute references. The writer emits same-file
+targets only.
+
+## Editing Existing Files
 
 ```moonbit nocheck
 ///|
-let object_type = @lib.Datatype::write_version4_object_reference()
-let region_type = @lib.Datatype::write_version4_region_reference()
-let attribute_type = @lib.Datatype::write_version4_attribute_reference()
-writer.add_dataset(
-  "/experiment/object_refs",
-  [2UL],
-  @lib.StructuredValues(object_type, [
-    @lib.ObjectReference(Some("/experiment/counts")),
-    @lib.ObjectReference(None),
-  ]),
-)
-writer.add_dataset(
-  "/experiment/attribute_refs",
-  [1UL],
-  @lib.StructuredValues(attribute_type, [
-    @lib.AttributeReference(Some("/experiment/records"), "unit"),
-  ]),
-)
-```
-
-The writer emits 18-byte reference slots in its 8-byte-address output. Region
-and attribute payloads are stored in a dedicated global heap. References to
-external files are rejected with `UnsupportedFeature`.
-
-### Patching compact, contiguous and chunked values
-
-```moonbit nocheck
-///|
-let original = @fs.read_file_to_bytes("data.h5")
-let file = @lib.Hdf5File::parse(original)
+let file = @lib.Hdf5File::parse(@fs.read_file_to_bytes("data.h5"))
 let patched = file.patch_dataset_values(
   "/group/values",
   @lib.Int64Values([10L, 20L, 30L, 40L]),
 )
-@fs.write_bytes_to_file("patched.h5", patched)
-```
-
-`patch_dataset_values` accepts compact, allocated or unallocated contiguous, or
-filtered or unfiltered chunked storage in a bytes-backed `Hdf5File`;
-`patch_contiguous_dataset` remains the strict allocated-contiguous-only form.
-The replacement must have exactly the declared shape and a compatible fixed-size
-datatype, including little- and big-endian numeric data, a variable-length
-UTF-8 string or fixed-base sequence datatype, a legacy object-reference datatype
-whose slot width matches the file address size, or a legacy region-reference
-datatype whose slot width is the file address size plus four bytes. Version-4
-object, region and attribute references are accepted in their 18-byte same-file
-form. Compact payloads stay inline with their object-header
-checksum recomputed. Allocated contiguous payloads and chunks are overwritten in
-place, with chunk edge padding preserved. An unallocated contiguous payload is
-appended at the next aligned file offset; the layout address and stored size,
-containing checksum, file end-of-file address and superblock checksum are
-updated.
-
-Variable-length UTF-8 string and fixed-base sequence datasets may use compact,
-contiguous or chunked storage. New values are deduplicated into one global heap
-collection whose size is a multiple of 4096 bytes; it is appended at an
-8-byte-aligned file offset before any newly placed chunk or index payload, and
-only the fixed-size global-heap references in the dataset values are rewritten.
-Empty strings and empty sequences use null heap references and all-empty patches
-append no collection. Sequence bases and nested compound or array members may
-themselves contain variable-length values; all nested heap objects are encoded
-recursively. Reference-bearing bases use the same same-file rules as other
-nested references. Chunked
-variable-length data supports unfiltered storage, Shuffle or deflate;
-Fletcher32 and scale-offset are rejected. The patcher does not create a missing
-fixed-array data block or extensible-array metadata for a variable-length
-dataset, and old global heaps remain unreferenced because reclamation is
-append-only.
-
-Legacy object references are patched by resolving every non-null path against
-the objects already present in the file and writing the target object-header
-address in file address-width bytes; null values are zero-filled. Groups,
-datasets and committed datatypes are valid targets.
-
-Legacy region references store a target-dataset address followed by an encoded
-selection. Patching resolves each non-null target in the same file, requires an
-existing dataset with a non-null dataspace, and appends the target address plus
-its empty, all, point, hyperslab or block selection as a deduplicated global
-heap object. The fixed slot contains the heap address and one-based object
-index; null references are zero-filled.
-
-Version-4 object references are written as direct same-file address tokens.
-Version-4 region references append a token-size byte, target-dataset address,
-selection length and rank, and encoded selection to a global heap. Version-4
-attribute references append the target object address and UTF-8 attribute name,
-and the target attribute must already exist. All three forms use zero-filled
-null slots and reject external-file flags. Compound, array and fixed-size
-sequence values are traversed recursively; references whose slot width does not
-match the file address layout remain unsupported.
-
-Filtered chunks are decoded with their existing filter mask and re-encoded with
-the built-in pipeline, including big-endian scale-offset values. Encodings that
-fit the original stored size are overwritten in place. Larger encodings are
-appended at the next aligned file offset, and the chunk address, stored size,
-file end-of-file address and affected checksums are updated. Relocation is
-append-only and does not reclaim the old chunk bytes.
-
-Missing chunks may stay unallocated only when their patched values equal the
-dataset fill value. A non-fill missing chunk is allocated only when the active
-index already exposes a writable slot, such as the single-chunk layout or a
-fixed- or extensible-array entry in an existing block or page. If a fixed-array
-header exists but its data block is missing, patching appends an FADB with
-undefined entries, installs its address in the FAHD, and refreshes both
-checksums before allocating chunks. The new chunk starts from the fill element,
-receives the patched values and filters, and updates the slot address, stored
-size and filter mask.
-When an EAIB direct pointer or an EASB block pointer is undefined, patching
-appends an EADB with undefined entries, installs the new block address in the
-owning EAIB or EASB, and refreshes that block's checksum. A paged EADB also
-sets its page bits in the existing EASB bitmap. If the EAIB address is
-undefined, patching builds a new EAIB and any required direct EASB/EADB
-hierarchy. It derives `maximum_set` from the highest non-fill chunk when needed,
-then updates the EAHD index address, maximum set, secondary/data block counts
-and sizes, realized-element count and checksum. An undefined EASB pointer is
-repaired by appending an EASB, linking it into the EAIB and initializing its
-child EADBs, bitmap and checksums.
-An unallocated fixed-array page is first initialized to undefined entries, then
-its page checksum, bitmap bit and FADB checksum are written. An unallocated
-extensible-array page follows the same entry and page-checksum steps, but sets
-its EASB bitmap bit and refreshes the EASB checksum instead. Missing v1 or v2
-B-tree chunk records are appended at aligned file offsets. The patcher then
-rebuilds the complete chunk index from the final chunk addresses, stored sizes,
-masks and coordinates. V1 trees use the indexed-storage K from the superblock,
-including a non-default K carried by the superblock-extension B-tree K message,
-regenerate sibling links and emit termination keys with the datatype storage
-size. V2 trees preserve their node size and split/merge thresholds. The rebuild
-updates the layout address, object-header checksum and superblock EOF.
-Attributes, links and other metadata are preserved; external storage and
-external-file version-4 references are rejected. Variable-length strings and
-sequences, legacy same-file object and region references, same-file version-4
-object, region and attribute references, and references or variable-length
-values nested in compound, array and sequence members are accepted. Chunked
-datasets containing variable-length values retain the Shuffle/deflate
-restriction, and the dataset shape and chunk grid are never changed. The
-operation returns a complete new byte image.
-
-`patch_attribute_values` targets an existing attribute on any resolvable object.
-Inline attribute messages are rewritten inside their object-header chunk, and
-dense attributes are updated through the managed fractal-heap object referenced
-by the name or creation-order index. The attribute message, name, creation order,
-datatype and index records stay unchanged; only the value bytes and the
-containing object-header or direct-block checksum are refreshed. Compact, dense,
-ordered-dense, big-endian numeric, variable-length UTF-8 string, fixed-base
-sequence, legacy object- or region-reference and version-4 object-, region- or
-attribute-reference attributes are supported. Variable-length, region-reference
-and indirect version-4 values append an aligned global heap collection, rewrite
-the fixed-size global-heap references in the attribute message and update the
-superblock EOF; all-empty values need no global heap. Shared attribute messages,
-filtered fractal-heap storage, external-file version-4 references and nested
-variable-length datatypes are rejected. Compound, fixed-array and fixed-base
-sequence members are traversed recursively. Legacy same-file object references
-are accepted when their slot width matches the file address size; legacy region
-references are accepted when their slot width is the address size plus four
-bytes and every target is an existing dataset with a non-null dataspace.
-Version-4 references use the same same-file target rules and validate
-referenced attributes before writing.
-
-### Adding, renaming and deleting attributes
-
-```moonbit nocheck
-///|
-let original = @fs.read_file_to_bytes("data.h5")
-let file = @lib.Hdf5File::parse(original)
-let added = file.add_attribute(
+let with_attribute = @lib.Hdf5File::parse(patched).add_attribute(
   "/group/values",
   "units",
   [],
   @lib.FixedStringValues(["items"], 8),
 )
-let renamed = @lib.Hdf5File::parse(added).rename_attribute(
-  "/group/values", "units", "label",
+let edited = @lib.Hdf5File::parse(with_attribute).add_soft_link(
+  "/group", "latest", "/group/values",
 )
-let deleted = @lib.Hdf5File::parse(renamed).delete_attribute(
-  "/group/values", "label",
-)
-@fs.write_bytes_to_file("edited.h5", deleted)
+@fs.write_bytes_to_file("edited.h5", edited)
 ```
 
-These APIs accept groups, datasets and committed datatypes in bytes-backed
-`Hdf5File` images and return a complete new image. Compact storage is used for
-up to eight attributes; larger collections are rebuilt as dense storage,
-including multiple direct heap blocks and huge objects when needed. Existing
-creation order is retained. Adding fixed-size values and variable-length UTF-8
-strings or sequences is supported, including vlen strings and sequences nested
-in compound and array members, as are legacy and version-4 object, region and
-attribute references. Reference targets must already exist in the same file;
-region targets must be datasets with a non-null dataspace, and version-4
-attribute-reference names must name an existing attribute. New vlen and
-indirect-reference payloads use appended global-heap collections. Shared
-attribute messages are resolved and written back as local messages, leaving the
-other shared-message objects in the file untouched. Dense rebuilding and
-reference slots use the file's address and length widths, including
-4-byte-address files. The object's initial header chunk is replaced by a
-continuation message and the rebuilt messages are appended at an aligned EOF.
-Old attribute metadata remains unreferenced because no free-space reclamation is
-performed.
+- `patch_dataset_values` handles compact, contiguous and chunked datasets,
+  including variable-length values and same-file references. The replacement
+  must keep the dataset's shape and a compatible datatype.
+- `patch_contiguous_dataset` is the strict allocated-contiguous-only form.
+- `patch_attribute_values` replaces existing attribute values without changing
+  names, creation order or storage form when the record can be updated in place.
+- `add_attribute`, `rename_attribute`, `delete_attribute`, `add_*_link`,
+  `rename_link` and `delete_link` rebuild compact/dense collections as needed.
+- `add_group`, dataset creation APIs and `delete_object` append objects and
+  attach or detach links through the same rebuild path.
 
-Run the larger example and verify it independently with h5py:
-
-```sh
-moon run src/cmd/write_demo --target native -- output.h5
-python scripts/verify_writer_output.py output.h5
-```
+Editing is append-only. Allocations are limited to existing writable layout or
+chunk-index storage, and superseded metadata or data remains unreferenced.
 
 ## Command Line
 
@@ -525,71 +212,22 @@ errors and 2 for invalid arguments.
 
 ## Limitations
 
-moon-hdf5 is a documented subset, not a drop-in replacement for libhdf5. The
-[compatibility matrix](docs/compatibility.md) is the authoritative boundary.
-The notes below group user-visible gaps by whether they are unfinished work or
-fixed design boundaries.
+moon-hdf5 is not a drop-in replacement for libhdf5.
 
-### Remaining implementation work
+- Not yet implemented: streaming output, free-space reclamation, custom encoders
+  for appended chunked datasets, multiple SOHM tables/heaps, extended
+  floating-point output, virtual datasets, SWMR and parallel HDF5.
+- Fixed boundaries: readers and writers are memory-resident at the API surface;
+  editing is append-only; writer/patch references must target existing same-file
+  objects; external raw data is resolver-only, contiguous and unfiltered; dense
+  collections are limited to 9–65,535 records; four-byte structured values with
+  variable-length custom fills are rejected for HDF5 1.14.6 interoperability.
+- Detection of unsupported input is not exhaustive. Unsupported structures
+  raise `UnsupportedFeature`; malformed input raises `InvalidField` or
+  `UnexpectedEof`.
 
-- **Streaming and reclamation:** readers and writers remain memory-resident at
-  the API boundary. `Hdf5File::parse`, `Hdf5Writer::encode`, patch results and a
-  single selection allocate complete byte images; use `chunk_iterator` or
-  `selection_iterator` for bounded reads. Streaming output and free-space
-  reclamation are not implemented, so edits append data and leave superseded
-  metadata and raw bytes unreferenced.
-- **Creation and metadata extensions:** appended chunked datasets accept only
-  built-in filters, not caller-registered custom encoders. Only one SOHM
-  table/heap is written and heap blocks are not extended. Multiple SOHM
-  tables/heaps, a free-space manager, tiny dense heap objects and virtual
-  datasets remain unimplemented.
-- **Format and datatype coverage:** extended floating-point output and
-  scale-offset outside 32/64-bit floats are absent. Virtual datasets, SWMR and
-  parallel HDF5 are outside the profile. Detection of unsupported input is not
-  exhaustive; unsupported layouts, indexes, datatypes and unregistered filters
-  normally raise `UnsupportedFeature`, while unsupported attribute datatypes
-  fail the read instead of returning empty values.
-- **External storage:** only contiguous, unfiltered, fixed-size external raw
-  data is supported. It requires `Hdf5Resolver` plus caller-registered,
-  caller-managed files; remote URLs, filtered or chunked external layouts and
-  automatic external-file creation are unsupported, and short sources are
-  zero-filled.
-- **High-level semantics:** netCDF-4 and MATLAB metadata are read as HDF5
-  structures, not as complete netCDF-4 or MATLAB semantics.
-
-### Design boundaries
-
-- **Append-only mutation:** attribute and link edits rebuild complete
-  collections, and object creation attaches through that link rebuild path.
-  Symbol-table groups are converted to compact or dense link-message storage.
-  Value patching can allocate only into existing writable layout or index
-  storage; filtered chunk re-encoding and relocated chunks append at an aligned
-  EOF.
-- **Writer profile and filters:** output uses superblock v3 and v2 object
-  headers. Fixed-size values accept Shuffle, deflate, Fletcher32 and
-  scale-offset with the pipeline restrictions in the compatibility matrix;
-  variable-length values accept Shuffle or deflate. Dense collections are
-  limited to 9–65,535 records. Sequence bases must be fixed-size.
-  `append_dataset` writes at the trailing corner, while `write_dataset_slab`
-  handles arbitrary placement.
-- **Same-file targets:** writing and patching accept existing same-file
-  reference targets only. The writer does not emit external-file references,
-  external version-4 flags are unsupported, and an object target with no named
-  hard link resolves with a null path.
-- **HDF5 1.14.6 interoperability:** custom fills for structured values that
-  contain variable-length members require eight-byte file addresses; four-byte
-  files reject them rather than emit a fill size that HDF5 cannot reopen safely.
-  h5py 3.13.0/HDF5 1.14.6 also cannot reliably convert the second slot of some
-  legacy four-byte reference arrays; MoonBit validates the raw slots, and the
-  release verifier checks the supported subset.
-- **Rebuild fallbacks:** shared attribute messages are flattened into local
-  messages, dense metadata-heap filters are not retained when rebuilt, and
-  symbol-table creation order falls back to traversal order. These operations
-  preserve values but can change storage placement.
-
-Unsupported structures raise `UnsupportedFeature`; malformed input raises
-`InvalidField` or `UnexpectedEof`; invalid caller input raises
-`InvalidArgument`.
+The [compatibility matrix](docs/compatibility.md) is the authoritative list of
+supported variants and boundaries.
 
 ## Development
 
@@ -603,10 +241,9 @@ H5PY_PYTHON=/path/to/python ./scripts/release_check.sh
 ```
 
 `scripts/release_check.sh` runs formatting, documentation and package checks,
-both test targets, the writer demo and independent h5py verification. The
-baseline is h5py 3.13.0 with HDF5 1.14.6. Set `SKIP_H5PY=1` to omit Python
-interoperability checks. Fixture regeneration is documented in
-[testdata/README.md](testdata/README.md).
+both test targets, writer demos and independent h5py verification. The baseline
+is h5py 3.13.0 with HDF5 1.14.6. Set `SKIP_H5PY=1` to omit Python checks.
+Fixture regeneration is documented in [testdata/README.md](testdata/README.md).
 
 ## License
 
