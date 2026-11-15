@@ -374,13 +374,16 @@ pointers all honor the file's 4- or 8-byte address width, including files whose
 symbol-table name offsets use the 8-byte length width alongside 4-byte object
 addresses. Hard-link targets are resolved to an existing object before
 rebuilding; soft and external targets are stored without resolution. Rebuilding
-preserves creation order where it exists and never deletes target objects.
-When a version 1 object header cannot hold an eight-byte-aligned continuation
-message for the rebuilt link messages, its initial chunk is upgraded in place to
-a version 2 `OHDR` that continues into a checksummed `OCHK` chunk. Object
-creation and object deletion are outside this path. Link edits are append-only
-and leave the previous compact messages, dense heap, symbol tables and indexes
-unreferenced because no free-space manager is written.
+preserves creation order where it exists. When a version 1 object header cannot
+hold an eight-byte-aligned continuation message for the rebuilt link messages,
+its initial chunk is upgraded in place to a version 2 `OHDR` that continues into
+a checksummed `OCHK` chunk. Object creation uses the same attachment path.
+`delete_object` walks reachable groups and removes every hard link whose target
+address is the requested object, so hard aliases cannot keep it reachable;
+soft/external links remain and may dangle, and the root is rejected. Link edits
+and deletion are append-only and leave the previous compact messages, dense
+heap, symbol tables and indexes unreferenced because no free-space manager is
+written.
 
 `add_group` and `add_dataset` append new objects at an aligned EOF and then use
 the same link rebuild path to attach them to an existing parent. A new object
@@ -394,8 +397,8 @@ heap or target-resolution plan and are rejected by this entry point, as are
 chunked, filtered and external creation, fill values and maximum dimensions.
 The parent may use link messages or a symbol table; symbol-table parents are
 converted during attachment. Created objects participate in later attribute,
-link and object-creation edits. Object deletion and free-space reclamation are
-not implemented.
+link and object-creation edits. Object deletion is available as hard-link
+removal; physical free-space reclamation is not implemented.
 
 ## Errors and verification
 

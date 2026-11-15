@@ -9,8 +9,8 @@ The MoonBit release checks pass on the current worktree with the stable
 MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
 `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 385 tests passed;
-- native: 385 tests passed;
+- wasm: 387 tests passed;
+- native: 387 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output remain
   covered by prior h5py 3.13.0/HDF5 1.14.6 verification, and the new v1 B-tree
@@ -39,6 +39,10 @@ MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
   for nested objects, 4-byte symbol-table parents and subsequent attribute and
   link edits; the mixed 4/8 release demo is independently re-read by h5py
   3.13.0/HDF5 1.14.6;
+- object deletion removes every hard link to the target while preserving other
+  objects and dangling soft links; MoonBit tests cover dataset/group aliases and
+  root rejection, and a symbol-table release demo is independently re-read by
+  h5py 3.13.0/HDF5 1.14.6;
 - variable-length UTF-8 string and fixed-base sequence dataset patching is
   covered for compact, contiguous, unallocated contiguous, chunked, Shuffle and
   deflate storage, including empty and repeated values and back-to-back patches;
@@ -300,15 +304,17 @@ heaps and heap extension across multiple blocks are not emitted.
 - Link editing also accepts symbol-table groups and converts them to compact or
   dense link-message storage. Hard-link targets must already exist in the same
   bytes-backed file, while soft and external targets are stored without
-  resolution. Object deletion, external-target creation and free-space
-  reclamation are not performed. Compact, dense and symbol-table
-  link metadata is rebuilt from the final link set, so old link messages,
-  heaps, symbol tables and indexes remain unreferenced.
+  resolution. `delete_object` removes every hard link to the resolved object,
+  leaves soft/external links untouched and rejects the root group;
+  external-target creation and physical free-space reclamation are not
+  performed. Compact, dense and symbol-table link metadata is rebuilt from the
+  final link set, so old link messages, heaps, symbol tables and indexes remain
+  unreferenced.
 - Object creation appends empty groups or fixed-size contiguous datasets.
   Variable-length and reference dataset values, chunked, filtered or external
-  creation, fill values, maximum dimensions and object deletion are not
-  supported. New parents can be edited afterwards, and old parent link metadata
-  remains unreferenced because no free-space reclamation is written.
+  creation, fill values and maximum dimensions are not supported. New parents
+  can be edited afterwards, and old parent link metadata remains unreferenced
+  because no free-space reclamation is written.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB
@@ -490,3 +496,9 @@ heaps and heap extension across multiple blocks are not emitted.
   rebuild path, and remain editable afterwards. MoonBit tests cover nested
   creation, 4-byte symbol-table parents and later attribute/link edits; release
   demo output is independently re-read by h5py 3.13.0/HDF5 1.14.6.
+- 2026-11-15: `delete_object` removes every hard link that names an object so
+  aliases cannot keep it reachable, while soft/external links are left dangling
+  and the root group is rejected. MoonBit tests cover dataset/group aliases and
+  root rejection; a symbol-table release demo is independently re-read by h5py
+  3.13.0/HDF5 1.14.6. Superseded object storage remains unreferenced because
+  writes are append-only.

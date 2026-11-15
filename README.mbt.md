@@ -45,7 +45,8 @@ moon-hdf5 implements a documented subset of HDF5. The
   files, including symbol-table groups, preserving creation order and switching
   between compact and dense storage as needed.
 - `add_group` and `add_dataset` append new groups or fixed-size contiguous
-  datasets to bytes-backed files. Object deletion remains unsupported.
+  datasets to bytes-backed files. `delete_object` removes every hard link to an
+  object so aliases cannot keep it reachable.
 
 ## Installation
 
@@ -532,9 +533,10 @@ the items below summarize the main user-visible gaps.
   while `add_attribute`, `rename_attribute` and `delete_attribute` rebuild the
   complete attribute collection and the link operations rebuild the complete
   link collection. Symbol-table groups are converted to compact or dense
-  link-message groups when edited. Streaming output and object deletion are
-  unsupported. Multi-unlimited resizing and v2 B-tree output are rebuilt for the
-  current in-memory shape.
+  link-message groups when edited. Streaming output is unsupported, and
+  append-only edits do not reclaim superseded metadata or raw data.
+  Multi-unlimited resizing and v2 B-tree output are rebuilt for the current
+  in-memory shape.
 - **Attribute editing:** supported on bytes-backed files with v1 or v2 object
   headers. Shared attribute messages are resolved and rebuilt as local messages;
   added reference values must target existing same-file objects, datasets or
@@ -554,9 +556,8 @@ the items below summarize the main user-visible gaps.
   address widths including mixed 4-byte-address/8-byte-length files, and writes
   multi-block or huge dense metadata when required. Version 1 object headers are
   upgraded in place to version 2 when a version 1 continuation cannot be
-  eight-byte aligned. Object deletion is not handled by link editing. Conversion
-  is append-only and old link metadata remains unreferenced because no free-space
-  reclamation is written.
+  eight-byte aligned. Conversion is append-only and old link metadata remains
+  unreferenced because no free-space reclamation is written.
 - **Object creation:** `add_group` creates empty groups below an existing group.
   `add_dataset` creates fixed-size contiguous datasets from numeric, fixed-string,
   complex and fixed-size structured values. New objects use version 2 object
@@ -564,9 +565,13 @@ the items below summarize the main user-visible gaps.
   parents for later attributes, links, groups and datasets. Existing symbol-table
   parents are converted by the link rebuild path. Variable-length and reference
   dataset values, chunked/filtered/external creation, fill values, maximum
-  dimensions and object deletion are unsupported. Creation is append-only and
-  leaves superseded parent metadata unreferenced because no free-space manager is
-  written.
+  dimensions are unsupported. Creation is append-only and leaves superseded
+  parent metadata unreferenced because no free-space manager is written.
+- **Object deletion:** `delete_object` resolves an object and removes every hard
+  link that names its object header, including links in other groups. Soft and
+  external links are left untouched and may dangle. The root group cannot be
+  deleted. Deletion is implemented as unlink and does not reclaim the object
+  header, attributes or raw data.
 - **Value patching:** allocation is limited to an unallocated contiguous payload,
   an undefined slot already represented by the single-chunk layout or a
   fixed-/extensible-array entry, a missing fixed-array data block, a missing

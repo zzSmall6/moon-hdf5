@@ -81,6 +81,67 @@ test "links can be added renamed and deleted" {
 }
 
 ///|
+test "object deletion removes every hard link and leaves soft links dangling" {
+  let writer = Hdf5Writer::new()
+  writer.add_group("/tree")
+  writer.add_dataset("/tree/value", [2UL], UInt64Values([7UL, 8UL]))
+  writer.add_dataset("/keep", [], UInt64Values([42UL]))
+  let file = Hdf5File::parse(writer.encode())
+  let aliased = file.add_hard_link("/", "tree_alias", "/tree/value")
+  let duplicated = Hdf5File::parse(aliased).add_hard_link(
+    "/tree", "inner_alias", "/tree/value",
+  )
+  let soft = Hdf5File::parse(duplicated).add_soft_link(
+    "/", "value_soft", "/tree/value",
+  )
+  let edited = Hdf5File::parse(soft).delete_object("/tree/value")
+  let deleted = Hdf5File::parse(edited)
+  assert_eq(unsigned_values(deleted.read_dataset("/keep")), [42UL])
+  for path in ["/tree/value", "/tree_alias", "/tree/inner_alias", "/value_soft"] {
+    let missing = try {
+      ignore(deleted.resolve(path))
+      None
+    } catch {
+      error => Some(error)
+    }
+    assert_true(missing is Some(_))
+  }
+  let root_links = deleted.links(
+    deleted.object_header_at(deleted.root_address()),
+  )
+  assert_true(root_links.any(link => link.name == "value_soft"))
+  assert_eq(
+    deleted
+    .links(deleted.object_header_at(deleted.resolve("/tree").address))
+    .map(link => link.name),
+    [],
+  )
+}
+
+///|
+test "object deletion removes group aliases and rejects the root" {
+  let writer = Hdf5Writer::new()
+  writer.add_group("/tree/child")
+  writer.add_dataset("/tree/child/value", [], UInt64Values([1UL]))
+  writer.add_dataset("/keep", [], UInt64Values([2UL]))
+  let file = Hdf5File::parse(writer.encode())
+  let aliased = file.add_hard_link("/", "tree_alias", "/tree")
+  let deleted = Hdf5File::parse(aliased).delete_object("/tree_alias") catch {
+    error => fail("delete aliased group: " + error.message())
+  }
+  let parsed = Hdf5File::parse(deleted)
+  assert_eq(parsed.walk().map(node => node.path), ["/keep"])
+  assert_eq(unsigned_values(parsed.read_dataset("/keep")), [2UL])
+  let root = try {
+    ignore(parsed.delete_object("/"))
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(root, Some(InvalidArgument("the root group cannot be deleted")))
+}
+
+///|
 test "link editing converts between compact and dense storage" {
   let writer = Hdf5Writer::new()
   writer.add_group("/many")

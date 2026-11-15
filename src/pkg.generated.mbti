@@ -284,6 +284,7 @@ pub fn Hdf5File::attributes(Self, String) -> Array[Attribute] raise Hdf5Error
 pub fn Hdf5File::chunk_iterator(Self, String, Array[UInt64]) -> DatasetChunkIterator raise Hdf5Error
 pub fn Hdf5File::delete_attribute(Self, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::delete_link(Self, String, String) -> Bytes raise Hdf5Error
+pub fn Hdf5File::delete_object(Self, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::parse(Bytes) -> Self raise Hdf5Error
 pub fn Hdf5File::parse_source(&Hdf5Source) -> Self raise Hdf5Error
 pub fn Hdf5File::patch_attribute_values(Self, String, String, Hdf5WriteValues) -> Bytes raise Hdf5Error

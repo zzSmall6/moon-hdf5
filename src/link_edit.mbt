@@ -684,3 +684,60 @@ pub fn Hdf5File::delete_link(
   }
   self.write_rebuilt_links(address, header, rebuilt, @buffer.Buffer::Buffer())
 }
+
+///|
+/// Deletes an object by removing every hard link that names it.
+///
+/// HDF5 has no separate object-deletion operation: an object becomes
+/// unreachable when its final hard link is removed. This function also removes
+/// hard links in other groups so aliases cannot keep the object reachable.
+/// Soft and external links are left untouched and may subsequently dangle. The
+/// root group cannot be deleted. Metadata and raw data from the deleted object
+/// remain in the append-only file until free-space reclamation is available.
+pub fn Hdf5File::delete_object(
+  self : Hdf5File,
+  path : String,
+) -> Bytes raise Hdf5Error {
+  guard self.source is None else {
+    raise InvalidArgument("object deletion requires a bytes-backed Hdf5File")
+  }
+  let target = self.resolve(path)
+  guard target.address != self.root_address() else {
+    raise InvalidArgument("the root group cannot be deleted")
+  }
+  let group_addresses = [self.root_address()]
+  for node in self.walk() {
+    if node.kind == Group && !group_addresses.contains(node.address) {
+      group_addresses.push(node.address)
+    }
+  }
+  let mut bytes = self.bytes
+  let mut removed = false
+  for address in group_addresses {
+    let file = Hdf5File::parse(bytes)
+    let header = file.object_header_at(address)
+    guard object_kind(header) == Group else { continue }
+    let links = file.editable_links(header)
+    let rebuilt : Array[EditableLink] = []
+    for link in links {
+      if link.link.cache_type == 0U &&
+        link.link.object_header_address == target.address {
+        removed = true
+      } else {
+        rebuilt.push(link)
+      }
+    }
+    if rebuilt.length() != links.length() {
+      bytes = file.write_rebuilt_links(
+        address,
+        header,
+        rebuilt,
+        @buffer.Buffer::Buffer(),
+      )
+    }
+  }
+  guard removed else {
+    raise InvalidArgument("object has no removable hard link: " + path)
+  }
+  bytes
+}
