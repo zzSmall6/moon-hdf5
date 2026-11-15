@@ -168,3 +168,77 @@ test "writer emits wide time bitfield and enum values" {
     _ => abort("expected wide enum values")
   }
 }
+
+///|
+fn wide_float_bits(value : Double) -> UInt64 {
+  value.reinterpret_as_uint64()
+}
+
+///|
+test "writer emits and patches x87 extended floating-point values" {
+  let writer = Hdf5Writer::new()
+  let values : Array[DatasetValue] = [
+    FloatingPoint(1.5),
+    FloatingPoint(-2.25),
+    FloatingPoint(0.125),
+    FloatingPoint(0.0),
+    FloatingPoint(-0.0),
+    FloatingPoint(0x7FF0000000000000UL.reinterpret_as_double()),
+    FloatingPoint(0xFFF0000000000000UL.reinterpret_as_double()),
+    FloatingPoint(0x7FF8000000000000UL.reinterpret_as_double()),
+    FloatingPoint(1UL.reinterpret_as_double()),
+    FloatingPoint(-0x7FF0000000000000UL.reinterpret_as_double()),
+  ]
+  let sizes = [10, 16]
+  for size in sizes {
+    for little_endian in [true, false] {
+      let datatype = Datatype::write_float_with_order(size, little_endian)
+      writer.add_dataset(
+        "/x87_" + size.to_string() + (if little_endian { "_le" } else { "_be" }),
+        [values.length().to_uint64()],
+        StructuredValues(datatype, values),
+      )
+    }
+  }
+  let encoded = writer.encode()
+  let file = Hdf5File::parse(encoded)
+  for size in sizes {
+    for little_endian in [true, false] {
+      let path = "/x87_" +
+        size.to_string() +
+        (if little_endian { "_le" } else { "_be" })
+      let actual = wide_float_values(file.read_dataset(path).values)
+      assert_eq(actual.length(), values.length())
+      assert_eq(wide_float_bits(actual[0]), 0x3FF8000000000000UL)
+      assert_eq(wide_float_bits(actual[1]), 0xC002000000000000UL)
+      assert_eq(wide_float_bits(actual[2]), 0x3FC0000000000000UL)
+      assert_eq(wide_float_bits(actual[3]), 0UL)
+      assert_eq(wide_float_bits(actual[4]), 0x8000000000000000UL)
+      assert_eq(wide_float_bits(actual[5]), 0x7FF0000000000000UL)
+      assert_eq(wide_float_bits(actual[6]), 0xFFF0000000000000UL)
+      assert_true(actual[7].is_nan())
+      assert_eq(wide_float_bits(actual[8]), 1UL)
+      assert_eq(wide_float_bits(actual[9]), 0xFFF0000000000000UL)
+    }
+  }
+
+  let patch_type = Datatype::write_float_with_order(10, true)
+  let target = Hdf5File::parse(encoded)
+  let replacement : Array[DatasetValue] = []
+  for index in 0..<values.length() {
+    replacement.push(values[index])
+  }
+  replacement[0] = FloatingPoint(-0.5)
+  replacement[1] = FloatingPoint(0x7FF0000000000000UL.reinterpret_as_double())
+  replacement[2] = FloatingPoint(0x8000000000000000UL.reinterpret_as_double())
+  let patched = target.patch_dataset_values(
+    "/x87_10_le",
+    StructuredValues(patch_type, replacement),
+  )
+  let patched_values = wide_float_values(
+    Hdf5File::parse(patched).read_dataset("/x87_10_le").values,
+  )
+  assert_eq(wide_float_bits(patched_values[0]), 0xBFE0000000000000UL)
+  assert_eq(wide_float_bits(patched_values[1]), 0x7FF0000000000000UL)
+  assert_eq(wide_float_bits(patched_values[2]), 0x8000000000000000UL)
+}

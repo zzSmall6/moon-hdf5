@@ -166,11 +166,13 @@ Fixed-point storage wider than 8 bytes is decoded without truncation into
 `BigInt` values, including bit offsets and both byte orders. Extended binary
 floating layouts, including x87 80-bit storage and explicit- or implied-MSB
 normalization, are converted to `Double`. The writer emits wide integers through
-`BigIntegerValues` and structured `BigInteger`/`BigTime`/`BigBitfield` values;
-extended floating-point output remains outside the writer boundary. Attribute
-value decoding propagates unsupported datatype errors instead of reporting an
-empty value. HDF5 2.0 datatype-message v5 is accepted as forward-compatibility
-evidence and is outside the 1.14.6 baseline.
+`BigIntegerValues` and structured `BigInteger`/`BigTime`/`BigBitfield` values.
+It also emits x87 80-bit values through `Datatype::write_float(10|16)` and
+structured `FloatingPoint` values, including patch writes, subnormals, signed
+zero, infinities and NaNs in either byte order. Extended values retain `Double`
+precision. Attribute value decoding propagates unsupported datatype errors
+instead of reporting an empty value. HDF5 2.0 datatype-message v5 is accepted as
+forward-compatibility evidence and is outside the 1.14.6 baseline.
 
 ## Writer findings
 

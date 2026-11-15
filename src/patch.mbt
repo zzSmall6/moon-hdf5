@@ -20,8 +20,12 @@ fn datatype_semantically_equal(left : Datatype, right : Datatype) -> Bool {
     left.enum_members.length() != right.enum_members.length() {
     return false
   }
-  if left.class == 1 && !is_ieee_float_layout(right) {
-    return false
+  if left.class == 1 {
+    let compatible = (is_ieee_float_layout(left) && is_ieee_float_layout(right)) ||
+      (is_x87_float_layout(left) && is_x87_float_layout(right))
+    if !compatible {
+      return false
+    }
   }
   for index in 0..<left.base_types.length() {
     if !datatype_semantically_equal(

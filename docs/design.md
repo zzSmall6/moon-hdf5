@@ -429,6 +429,12 @@ converted during attachment. Created objects participate in later attribute,
 link and object-creation edits. Object deletion is available as hard-link
 removal; physical free-space reclamation is not implemented.
 
+Structured floating-point datatypes accept IEEE float16/32/64 and x87 80-bit
+extended values stored in 10 or 16 bytes. Extended values use explicit-integer
+MSB normalization, support both byte orders, and are encoded from `Double` with
+their exponent range and signed zero preserved. The same encoder is used for
+new datasets, attributes, chunks and in-place value patches.
+
 ## Errors and verification
 
 Unsupported structures raise `UnsupportedFeature`; malformed metadata normally

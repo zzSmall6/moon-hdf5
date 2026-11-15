@@ -332,6 +332,22 @@ fn is_ieee_float_layout(datatype : Datatype) -> Bool {
 }
 
 ///|
+/// Recognizes the x87 80-bit extended layout used by HDF5 1.14.6 for
+/// `long double`, including 16-byte storage with six trailing padding bytes.
+fn is_x87_float_layout(datatype : Datatype) -> Bool {
+  (datatype.size == 10 || datatype.size == 16) &&
+  datatype.float_sign_position == 79 &&
+  datatype.float_exponent_position == 64 &&
+  datatype.float_exponent_size == 15 &&
+  datatype.float_mantissa_position == 0 &&
+  datatype.float_mantissa_size == 63 &&
+  datatype.float_exponent_bias == 16383 &&
+  datatype.float_normalization == 2 &&
+  datatype.bit_offset == 0 &&
+  datatype.bit_precision == 80
+}
+
+///|
 fn double_power_of_two(exponent : Int32) -> Double {
   if exponent > 1023 {
     0x7FF0000000000000UL.reinterpret_as_double()
@@ -382,6 +398,23 @@ fn big_significand_to_double(
   } else {
     top = significand.shl(52 - highest).to_uint64()
     scale = scale - (52 - highest)
+  }
+  if scale < -1074 {
+    let shift = -1074 - scale
+    if shift >= 54 {
+      top = 0UL
+    } else {
+      let truncated = top >> shift
+      let remainder = top & ((1UL << shift) - 1UL)
+      let halfway = 1UL << (shift - 1)
+      top = if remainder > halfway ||
+        (remainder == halfway && (truncated & 1UL) != 0UL) {
+        truncated + 1UL
+      } else {
+        truncated
+      }
+    }
+    scale = -1074
   }
   let magnitude = top.to_double() * double_power_of_two(scale)
   if negative {

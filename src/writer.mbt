@@ -119,10 +119,57 @@ pub fn Datatype::write_float_with_order(
   size : Int32,
   little_endian : Bool,
 ) -> Datatype raise Hdf5Error {
-  guard size == 2 || size == 4 || size == 8 else {
+  guard size == 2 || size == 4 || size == 8 || size == 10 || size == 16 else {
     raise InvalidArgument("writer floating-point datatype width is invalid")
   }
-  writer_datatype(1, size, little_endian~)
+  let datatype = writer_datatype(1, size, little_endian~)
+  match size {
+    2 =>
+      {
+        ..datatype,
+        float_sign_position: 15,
+        float_exponent_position: 10,
+        float_exponent_size: 5,
+        float_mantissa_position: 0,
+        float_mantissa_size: 10,
+        float_exponent_bias: 15,
+        float_normalization: 2,
+      }
+    4 =>
+      {
+        ..datatype,
+        float_sign_position: 31,
+        float_exponent_position: 23,
+        float_exponent_size: 8,
+        float_mantissa_position: 0,
+        float_mantissa_size: 23,
+        float_exponent_bias: 127,
+        float_normalization: 2,
+      }
+    8 =>
+      {
+        ..datatype,
+        float_sign_position: 63,
+        float_exponent_position: 52,
+        float_exponent_size: 11,
+        float_mantissa_position: 0,
+        float_mantissa_size: 52,
+        float_exponent_bias: 1023,
+        float_normalization: 2,
+      }
+    _ =>
+      {
+        ..datatype,
+        float_sign_position: 79,
+        float_exponent_position: 64,
+        float_exponent_size: 15,
+        float_mantissa_position: 0,
+        float_mantissa_size: 63,
+        float_exponent_bias: 16383,
+        float_normalization: 2,
+        bit_precision: 80,
+      }
+  }
 }
 
 ///|
@@ -1036,7 +1083,10 @@ fn validate_writer_datatype(
       }
     }
     1 => {
-      guard datatype.size == 2 || datatype.size == 4 || datatype.size == 8 else {
+      guard datatype.size == 2 ||
+        datatype.size == 4 ||
+        datatype.size == 8 ||
+        is_x87_float_layout(datatype) else {
         raise InvalidArgument("writer floating-point datatype is unsupported")
       }
     }
@@ -3140,6 +3190,77 @@ fn encode_float_datatype(size : Int32, little_endian~ : Bool = true) -> Bytes {
 }
 
 ///|
+fn encode_x87_float_datatype(size : Int32, little_endian~ : Bool) -> Bytes {
+  let buffer = @buffer.Buffer::Buffer(size_hint=20)
+  buffer.write_byte(b'\x11')
+  buffer.write_byte(if little_endian { b'\x20' } else { b'\x21' })
+  buffer.write_byte(b'\x4f')
+  buffer.write_byte(b'\x00')
+  buffer.write_uint_le(size.reinterpret_as_uint())
+  buffer.write_uint16_le(0)
+  buffer.write_uint16_le(80)
+  buffer.write_byte(b'\x40')
+  buffer.write_byte(b'\x0f')
+  buffer.write_byte(b'\x00')
+  buffer.write_byte(b'\x3f')
+  buffer.write_uint_le(16383U)
+  buffer.to_bytes()
+}
+
+///|
+fn writer_x87_fields(number : Double) -> (UInt32, UInt64) {
+  let bits = number.reinterpret_as_uint64()
+  let sign = ((bits >> 63) & 1UL).to_uint() << 15
+  let exponent = ((bits >> 52) & 0x7FFUL).to_int()
+  let fraction = bits & 0xFFFFFFFFFFFFFUL
+  if exponent == 0x7FF {
+    let significand = if fraction == 0UL {
+      1UL << 63
+    } else {
+      (1UL << 63) | (fraction << 11)
+    }
+    return (sign | 0x7FFFU, significand)
+  }
+  if exponent == 0 && fraction == 0UL {
+    return (sign, 0UL)
+  }
+  if exponent == 0 {
+    let mut highest = 51
+    while highest > 0 && (fraction & (1UL << highest)) == 0UL {
+      highest = highest - 1
+    }
+    let unbiased = highest - 1074
+    let extended_exponent = unbiased + 16383
+    let significand = fraction << (63 - highest)
+    return (sign | extended_exponent.reinterpret_as_uint(), significand)
+  }
+  let extended_exponent = exponent - 1023 + 16383
+  let significand = (1UL << 63) | (fraction << 11)
+  (sign | extended_exponent.reinterpret_as_uint(), significand)
+}
+
+///|
+fn encode_x87_float_value(
+  buffer : @buffer.Buffer,
+  number : Double,
+  size : Int32,
+  little_endian : Bool,
+) -> Unit {
+  let (sign_exponent, significand) = writer_x87_fields(number)
+  if little_endian {
+    buffer.write_uint64_le(significand)
+    buffer.write_uint16_le(sign_exponent.to_uint16())
+    writer_write_zeros(buffer, size - 10)
+  } else {
+    writer_write_zeros(buffer, size - 10)
+    buffer.write_uint16_be(sign_exponent.to_uint16())
+    for shift in [56, 48, 40, 32, 24, 16, 8, 0] {
+      buffer.write_byte(((significand >> shift) & 0xFFUL).to_byte())
+    }
+  }
+}
+
+///|
 fn writer_float16_bits(value : Float) -> UInt32 {
   let bits = value.reinterpret_as_uint()
   let sign = (bits >> 16) & 0x8000U
@@ -3209,7 +3330,17 @@ fn encode_writer_datatype(
         little_endian=datatype.little_endian,
       )
     1 =>
-      encode_float_datatype(datatype.size, little_endian=datatype.little_endian)
+      if datatype.size == 10 || datatype.size == 16 {
+        encode_x87_float_datatype(
+          datatype.size,
+          little_endian=datatype.little_endian,
+        )
+      } else {
+        encode_float_datatype(
+          datatype.size,
+          little_endian=datatype.little_endian,
+        )
+      }
     2 => {
       let buffer = @buffer.Buffer::Buffer(size_hint=12)
       buffer.write_byte(b'\x12')
@@ -3424,7 +3555,14 @@ fn encode_structured_value(
     1 =>
       match value {
         FloatingPoint(number) =>
-          if datatype.size == 2 {
+          if datatype.size == 10 || datatype.size == 16 {
+            encode_x87_float_value(
+              buffer,
+              number,
+              datatype.size,
+              datatype.little_endian,
+            )
+          } else if datatype.size == 2 {
             let bits = writer_float16_bits(Float::from_double(number)).to_uint16()
             if datatype.little_endian {
               buffer.write_uint16_le(bits)

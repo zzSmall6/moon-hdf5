@@ -34,10 +34,11 @@ output=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-release.XXXXXX")
 symbol_compact=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-compact.XXXXXX")
 symbol_dense=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-dense.XXXXXX")
 filtered_links=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-filtered-links.XXXXXX")
+extended_floats=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-extended-floats.XXXXXX")
 created=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created.XXXXXX")
 created8=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created8.XXXXXX")
 deleted=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-deleted.XXXXXX")
-trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$filtered_links" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"' EXIT HUP INT TERM
+trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"' EXIT HUP INT TERM
 moon run src/cmd/write_demo --target native -- "$output"
 
 python=${H5PY_PYTHON:-}
@@ -79,6 +80,14 @@ if [ "${SKIP_H5PY:-0}" = "1" ]; then
   echo "==> Filtered link edit verification skipped (SKIP_H5PY=1)"
 else
   "$python" scripts/verify_filtered_link_edit.py "$filtered_links"
+fi
+
+echo "==> Extended floating-point output"
+moon run src/cmd/extended_float_demo --target native -- "$extended_floats"
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> Extended floating-point verification skipped (SKIP_H5PY=1)"
+else
+  "$python" scripts/verify_extended_float_output.py "$extended_floats"
 fi
 
 echo "==> Object creation"
