@@ -356,7 +356,9 @@ fn created_values_need_objects(values : Hdf5WriteValues) -> Bool {
 ///
 /// The fixed-array chunk index and chunk payloads are appended at aligned EOF
 /// offsets. Built-in Shuffle, deflate, Fletcher32 and scale-offset filters are
-/// supported; custom filters cannot be registered on this entry point.
+/// supported; custom filters cannot be registered on this entry point. When
+/// `maximum_dimensions` contains `None`, the dataset uses an extensible-array
+/// index for one unlimited axis or a v2 B-tree for multiple unlimited axes.
 pub fn Hdf5File::add_chunked_dataset(
   self : Hdf5File,
   parent_path : String,
@@ -365,6 +367,7 @@ pub fn Hdf5File::add_chunked_dataset(
   chunk_dimensions : Array[UInt32],
   values : Hdf5WriteValues,
   fill_value? : Hdf5WriteValues,
+  maximum_dimensions? : Array[UInt64?],
   filters~ : Array[Hdf5WriteFilter] = [],
 ) -> Bytes raise Hdf5Error {
   validate_editable_link_name(name)
@@ -395,7 +398,18 @@ pub fn Hdf5File::add_chunked_dataset(
       raise InvalidArgument("chunk dimension is invalid")
     }
   }
-  chunk_grid(dimensions, chunk_dimensions) |> ignore
+  let (encoded_maximum, unlimited_axes) = match maximum_dimensions {
+    Some(maximum) =>
+      validate_extensible_dimensions(dimensions, maximum, chunk_dimensions)
+    None => (dimensions.copy(), [])
+  }
+  let grid_dimensions = dimensions.copy()
+  for axis in 0..<grid_dimensions.length() {
+    if !unlimited_axes.contains(axis) {
+      grid_dimensions[axis] = encoded_maximum[axis]
+    }
+  }
+  chunk_grid(grid_dimensions, chunk_dimensions) |> ignore
   validate_writer_chunk_size(
     chunk_dimensions,
     writer_value_element_size(values),
@@ -475,12 +489,17 @@ pub fn Hdf5File::add_chunked_dataset(
   let chunk_dataset : WritableDataset = {
     path: "/",
     dimensions: dimensions.copy(),
-    maximum_dimensions: dimensions.copy(),
+    maximum_dimensions: encoded_maximum,
     values: copy_write_values(values),
-    storage: WritableChunked(
-      chunk_dimensions.copy(),
-      copy_write_filters(filters),
-    ),
+    storage: if unlimited_axes.length() == 0 {
+      WritableChunked(chunk_dimensions.copy(), copy_write_filters(filters))
+    } else {
+      WritableExtensible(
+        chunk_dimensions.copy(),
+        copy_write_filters(filters),
+        unlimited_axes.copy(),
+      )
+    },
     fill_value: copied_fill,
     chunk_filter_masks: [],
   }
@@ -489,18 +508,46 @@ pub fn Hdf5File::add_chunked_dataset(
     tail.length(),
     "append chunked dataset storage",
   )
-  let storage = encode_fixed_array_storage(
-    storage_start,
-    chunk_dataset,
-    heap,
-    objects,
-    custom_filters,
-    offset_size~,
-    length_size~,
-    base_address=self.superblock.base_address,
-    reference_address_size=offset_size,
-    vlen_address_size=offset_size,
-  )
+  let storage = if unlimited_axes.length() == 0 {
+    encode_fixed_array_storage(
+      storage_start,
+      chunk_dataset,
+      heap,
+      objects,
+      custom_filters,
+      offset_size~,
+      length_size~,
+      base_address=self.superblock.base_address,
+      reference_address_size=offset_size,
+      vlen_address_size=offset_size,
+    )
+  } else if unlimited_axes.length() == 1 {
+    encode_extensible_array_storage(
+      storage_start,
+      chunk_dataset,
+      heap,
+      objects,
+      custom_filters,
+      offset_size~,
+      length_size~,
+      base_address=self.superblock.base_address,
+      reference_address_size=offset_size,
+      vlen_address_size=offset_size,
+    )
+  } else {
+    encode_btree_v2_chunk_storage(
+      storage_start,
+      chunk_dataset,
+      heap,
+      objects,
+      custom_filters,
+      offset_size~,
+      length_size~,
+      base_address=self.superblock.base_address,
+      reference_address_size=offset_size,
+      vlen_address_size=offset_size,
+    )
+  }
   ignore(
     append_aligned_bytes_to_tail(
       tail,
@@ -518,11 +565,16 @@ pub fn Hdf5File::add_chunked_dataset(
       "chunk index address exceeds the file address width",
     )
   }
+  let dataspace = if unlimited_axes.length() > 0 {
+    encode_dataspace(dimensions, maximum_dimensions=encoded_maximum)
+  } else {
+    encode_dataspace(dimensions)
+  }
   let messages : Array[RebuiltObjectMessage] = [
     {
       msg_type: msg_dataspace,
       flags: b'\x00',
-      data: encode_dataspace(dimensions),
+      data: dataspace,
       creation_order: 0UL,
     },
     {
@@ -562,6 +614,8 @@ pub fn Hdf5File::add_chunked_dataset(
       storage_address,
       chunk_dimensions,
       encoded.element_size,
+      extensible=unlimited_axes.length() == 1,
+      btree_v2=unlimited_axes.length() > 1,
       offset_size~,
     ),
     creation_order: 0UL,

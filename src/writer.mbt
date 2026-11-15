@@ -5122,15 +5122,22 @@ fn writer_write_extensible_entry(
   entries : Array[EncodedChunkEntry],
   index : Int64,
   filtered : Bool,
+  offset_size~ : Int32,
+  base_address~ : UInt64,
 ) -> Unit raise Hdf5Error {
   let allocated = index < entries.length().to_int64() &&
     entries[index.to_int()].allocated
-  buffer.write_uint64_le(
+  write_uint_width(
+    buffer,
     if allocated {
-      entries[index.to_int()].address
+      file_offset_to_stored_address(
+        entries[index.to_int()].address,
+        base_address,
+      )
     } else {
       0xFFFFFFFFFFFFFFFFUL
     },
+    offset_size,
   )
   if filtered {
     let size = if allocated { entries[index.to_int()].data.length() } else { 0 }
@@ -5153,13 +5160,24 @@ fn writer_extensible_data_block_length(
   count : Int64,
   entry_size : Int32,
   page_bits : Int32,
+  offset_size : Int32,
+  block_offset_size : Int32,
 ) -> Int64 {
   let page_size = 1L << page_bits
   if count <= page_size {
-    18L + count * entry_size.to_int64() + 4L
+    6L +
+    offset_size.to_int64() +
+    block_offset_size.to_int64() +
+    count * entry_size.to_int64() +
+    4L
   } else {
     let pages = (count + page_size - 1L) / page_size
-    18L + 4L + count * entry_size.to_int64() + pages * 4L
+    6L +
+    offset_size.to_int64() +
+    block_offset_size.to_int64() +
+    4L +
+    count * entry_size.to_int64() +
+    pages * 4L
   }
 }
 
@@ -5172,6 +5190,9 @@ fn encode_writer_extensible_data_block(
   block_offset : UInt64,
   filtered : Bool,
   page_bits : Int32,
+  offset_size~ : Int32,
+  block_offset_size~ : Int32 = 4,
+  base_address~ : UInt64,
 ) -> Bytes raise Hdf5Error {
   let page_size = 1L << page_bits
   let paged = count > page_size
@@ -5179,8 +5200,12 @@ fn encode_writer_extensible_data_block(
   writer_write_bytes(block, b"EADB")
   block.write_byte(b'\x00')
   block.write_byte(if filtered { b'\x01' } else { b'\x00' })
-  block.write_uint64_le(header_address)
-  block.write_uint_le(block_offset.to_uint())
+  write_uint_width(
+    block,
+    file_offset_to_stored_address(header_address, base_address),
+    offset_size,
+  )
+  write_uint_width(block, block_offset, block_offset_size)
   if paged {
     block.write_uint_le(metadata_checksum(block.to_bytes(), 0, block.length()))
   }
@@ -5199,6 +5224,8 @@ fn encode_writer_extensible_data_block(
         entries,
         entry_start + page_start + offset.to_int64(),
         filtered,
+        offset_size~,
+        base_address~,
       )
     }
     writer_write_bytes(block, page_buffer.to_bytes())
@@ -5221,6 +5248,11 @@ fn encode_extensible_array_storage(
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
   custom_filters : Array[&Hdf5CustomFilter],
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+  base_address~ : UInt64 = 0UL,
+  reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
 ) -> Bytes raise Hdf5Error {
   let (_, filters, unlimited_axes) = match dataset.storage {
     WritableExtensible(dimensions, filters, axes) => (dimensions, filters, axes)
@@ -5231,9 +5263,16 @@ fn encode_extensible_array_storage(
       "extensible-array storage requires one unlimited dimension",
     )
   }
-  let entries = encode_dataset_chunks(dataset, heap, objects, custom_filters)
+  let entries = encode_dataset_chunks(
+    dataset,
+    heap,
+    objects,
+    custom_filters,
+    reference_address_size~,
+    vlen_address_size~,
+  )
   let filtered = filters.length() > 0
-  let entry_size = if filtered { 14 } else { 8 }
+  let entry_size = if filtered { offset_size + 6 } else { offset_size }
   let max_bits = 32
   let index_elements = 4
   let min_elements = 16
@@ -5242,11 +5281,12 @@ fn encode_extensible_array_storage(
   let first_super = 2 * array_log2(min_pointers)
   let levels = 1 + max_bits - array_log2(min_elements)
   let direct_count = 2 * (min_pointers - 1)
-  let header_length = 72
+  let header_length = 12 + length_size * 6 + offset_size + 4
   let index_address = start + header_length.to_uint64()
-  let index_length = 14 +
+  let index_length = 6 +
+    offset_size +
     index_elements * entry_size +
-    (direct_count + levels - first_super) * 8 +
+    (direct_count + levels - first_super) * offset_size +
     4
   let direct_addresses = Array::make(direct_count, 0xFFFFFFFFFFFFFFFFUL)
   let block_addresses : Array[UInt64] = []
@@ -5287,7 +5327,7 @@ fn encode_extensible_array_storage(
           (direct_start.to_int64() + block_index.to_int64()) * count).reinterpret_as_uint64(),
         )
         let block_length = writer_extensible_data_block_length(
-          count, entry_size, page_bits,
+          count, entry_size, page_bits, offset_size, 4,
         )
         data_block_count = data_block_count + 1L
         data_block_size = data_block_size + block_length
@@ -5316,7 +5356,12 @@ fn encode_extensible_array_storage(
       let addresses = Array::make(blocks.to_int(), 0xFFFFFFFFFFFFFFFFUL)
       let super_address = metadata_end.to_uint64()
       super_addresses[level - first_super] = super_address
-      let super_length = 18L + blocks * bitmap_bytes + blocks * 8L + 4L
+      let super_length = 6L +
+        offset_size.to_int64() +
+        4L +
+        blocks * bitmap_bytes +
+        blocks * offset_size.to_int64() +
+        4L
       secondary_block_count = secondary_block_count + 1L
       secondary_block_size = secondary_block_size + super_length
       metadata_end = writer_align(metadata_end + super_length.to_int())
@@ -5341,7 +5386,7 @@ fn encode_extensible_array_storage(
             }
           }
           let block_length = writer_extensible_data_block_length(
-            count, entry_size, page_bits,
+            count, entry_size, page_bits, offset_size, 4,
           )
           data_block_count = data_block_count + 1L
           data_block_size = data_block_size + block_length
@@ -5390,29 +5435,54 @@ fn encode_extensible_array_storage(
       maximum_set = (index + 1).to_uint64()
     }
   }
-  header.write_uint64_le(secondary_block_count.reinterpret_as_uint64())
-  header.write_uint64_le(secondary_block_size.reinterpret_as_uint64())
-  header.write_uint64_le(data_block_count.reinterpret_as_uint64())
-  header.write_uint64_le(data_block_size.reinterpret_as_uint64())
-  header.write_uint64_le(maximum_set)
-  header.write_uint64_le(realized_elements.reinterpret_as_uint64())
-  header.write_uint64_le(index_address)
+  write_uint_width(
+    header,
+    secondary_block_count.reinterpret_as_uint64(),
+    length_size,
+  )
+  write_uint_width(
+    header,
+    secondary_block_size.reinterpret_as_uint64(),
+    length_size,
+  )
+  write_uint_width(
+    header,
+    data_block_count.reinterpret_as_uint64(),
+    length_size,
+  )
+  write_uint_width(header, data_block_size.reinterpret_as_uint64(), length_size)
+  write_uint_width(header, maximum_set, length_size)
+  write_uint_width(
+    header,
+    realized_elements.reinterpret_as_uint64(),
+    length_size,
+  )
+  write_uint_width(header, index_address, offset_size)
   header.write_uint_le(metadata_checksum(header.to_bytes(), 0, header.length()))
 
   let index = @buffer.Buffer::Buffer(size_hint=index_length)
   writer_write_bytes(index, b"EAIB")
   index.write_byte(b'\x00')
   index.write_byte(if filtered { b'\x01' } else { b'\x00' })
-  index.write_uint64_le(start)
+  write_uint_width(
+    index,
+    file_offset_to_stored_address(start, base_address),
+    offset_size,
+  )
   for entry_index in 0..<index_elements {
     let allocated = entry_index < entries.length() &&
       entries[entry_index].allocated
-    index.write_uint64_le(
+    write_uint_width(
+      index,
       if allocated {
-        entries[entry_index].address
+        file_offset_to_stored_address(
+          entries[entry_index].address,
+          base_address,
+        )
       } else {
         0xFFFFFFFFFFFFFFFFUL
       },
+      offset_size,
     )
     if filtered {
       let size = if allocated { entries[entry_index].data.length() } else { 0 }
@@ -5430,10 +5500,26 @@ fn encode_extensible_array_storage(
     }
   }
   for address in direct_addresses {
-    index.write_uint64_le(address)
+    write_uint_width(
+      index,
+      if address == 0xFFFFFFFFFFFFFFFFUL {
+        address
+      } else {
+        file_offset_to_stored_address(address, base_address)
+      },
+      offset_size,
+    )
   }
   for address in super_addresses {
-    index.write_uint64_le(address)
+    write_uint_width(
+      index,
+      if address == 0xFFFFFFFFFFFFFFFFUL {
+        address
+      } else {
+        file_offset_to_stored_address(address, base_address)
+      },
+      offset_size,
+    )
   }
   index.write_uint_le(metadata_checksum(index.to_bytes(), 0, index.length()))
 
@@ -5455,6 +5541,9 @@ fn encode_extensible_array_storage(
         block_offsets[block_index],
         filtered,
         page_bits,
+        offset_size~,
+        block_offset_size=4,
+        base_address~,
       ),
     )
   }
@@ -5471,13 +5560,27 @@ fn encode_extensible_array_storage(
     writer_write_bytes(super_block, b"EASB")
     super_block.write_byte(b'\x00')
     super_block.write_byte(if filtered { b'\x01' } else { b'\x00' })
-    super_block.write_uint64_le(start)
-    super_block.write_uint_le(
-      super_starts[planned_index].reinterpret_as_uint64().to_uint(),
+    write_uint_width(
+      super_block,
+      file_offset_to_stored_address(start, base_address),
+      offset_size,
+    )
+    write_uint_width(
+      super_block,
+      super_starts[planned_index].reinterpret_as_uint64(),
+      4,
     )
     writer_write_bytes(super_block, super_bitmaps[planned_index])
     for address in super_block_addresses[planned_index] {
-      super_block.write_uint64_le(address)
+      write_uint_width(
+        super_block,
+        if address == 0xFFFFFFFFFFFFFFFFUL {
+          address
+        } else {
+          file_offset_to_stored_address(address, base_address)
+        },
+        offset_size,
+      )
     }
     super_block.write_uint_le(
       metadata_checksum(super_block.to_bytes(), 0, super_block.length()),
@@ -5505,6 +5608,9 @@ fn encode_extensible_array_storage(
           block_index.to_int64() * super_counts[planned_index]).reinterpret_as_uint64(),
           filtered,
           page_bits,
+          offset_size~,
+          block_offset_size=4,
+          base_address~,
         ),
       )
     }
@@ -5720,19 +5826,26 @@ fn writer_btree_record(
   coordinates : Array[UInt64],
   filtered : Bool,
   size_width : Int32,
-) -> Bytes {
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+  base_address~ : UInt64 = 0UL,
+) -> Bytes raise Hdf5Error {
   let buffer = @buffer.Buffer::Buffer(
-    size_hint=8 +
+    size_hint=offset_size +
       (if filtered { size_width + 4 } else { 0 }) +
-      8 * coordinates.length(),
+      length_size * coordinates.length(),
   )
-  buffer.write_uint64_le(entry.address)
+  write_uint_width(
+    buffer,
+    file_offset_to_stored_address(entry.address, base_address),
+    offset_size,
+  )
   if filtered {
     writer_write_uint_width(buffer, entry.data.length().to_uint64(), size_width)
     writer_write_uint_width(buffer, entry.filter_mask.to_uint64(), 4)
   }
   for coordinate in coordinates {
-    buffer.write_uint64_le(coordinate)
+    write_uint_width(buffer, coordinate, length_size)
   }
   buffer.to_bytes()
 }
@@ -5763,8 +5876,13 @@ fn encode_writer_btree_header(
   node_size : Int32,
   record_size : Int32,
   client : Int32,
-) -> Bytes {
-  let buffer = @buffer.Buffer::Buffer(size_hint=38)
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+  base_address~ : UInt64 = 0UL,
+) -> Bytes raise Hdf5Error {
+  let buffer = @buffer.Buffer::Buffer(
+    size_hint=16 + offset_size + 2 + length_size + 4,
+  )
   writer_write_bytes(buffer, b"BTHD")
   buffer.write_byte(b'\x00')
   buffer.write_byte(client.to_byte())
@@ -5773,9 +5891,17 @@ fn encode_writer_btree_header(
   buffer.write_uint16_le(depth.to_uint16())
   buffer.write_byte(writer_btree_v2_split_percent.to_byte())
   buffer.write_byte(writer_btree_v2_merge_percent.to_byte())
-  buffer.write_uint64_le(root)
+  write_uint_width(
+    buffer,
+    if root == 0xFFFFFFFFFFFFFFFFUL {
+      root
+    } else {
+      file_offset_to_stored_address(root, base_address)
+    },
+    offset_size,
+  )
   buffer.write_uint16_le(root_count.to_uint16())
-  buffer.write_uint64_le(total)
+  write_uint_width(buffer, total, length_size)
   buffer.write_uint_le(metadata_checksum(buffer.to_bytes(), 0, buffer.length()))
   buffer.to_bytes()
 }
@@ -5789,6 +5915,8 @@ fn encode_writer_btree_node(
   count_width : Int32,
   total_widths : Array[Int32],
   client : Int32,
+  offset_size~ : Int32 = 8,
+  base_address~ : UInt64 = 0UL,
 ) -> Bytes raise Hdf5Error {
   let buffer = @buffer.Buffer::Buffer(size_hint=node_size)
   writer_write_bytes(buffer, if node.depth == 0 { b"BTLF" } else { b"BTIN" })
@@ -5803,7 +5931,11 @@ fn encode_writer_btree_node(
   if node.depth > 0 {
     for child_index in node.children {
       let child = nodes[child_index]
-      buffer.write_uint64_le(child.address)
+      write_uint_width(
+        buffer,
+        file_offset_to_stored_address(child.address, base_address),
+        offset_size,
+      )
       writer_write_uint_width(
         buffer,
         child.records.length().to_uint64(),
@@ -5833,6 +5965,11 @@ fn encode_btree_v2_chunk_storage(
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
   custom_filters : Array[&Hdf5CustomFilter],
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+  base_address~ : UInt64 = 0UL,
+  reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
 ) -> Bytes raise Hdf5Error {
   let (chunk_dimensions, filters, unlimited_axes) = match dataset.storage {
     WritableExtensible(chunks, pipeline, axes) => (chunks, pipeline, axes)
@@ -5843,7 +5980,14 @@ fn encode_btree_v2_chunk_storage(
       "v2 B-tree storage requires multiple unlimited dimensions",
     )
   }
-  let entries = encode_dataset_chunks(dataset, heap, objects, custom_filters)
+  let entries = encode_dataset_chunks(
+    dataset,
+    heap,
+    objects,
+    custom_filters,
+    reference_address_size~,
+    vlen_address_size~,
+  )
   let grid_dimensions = dataset.dimensions.copy()
   for axis in 0..<grid_dimensions.length() {
     if !unlimited_axes.contains(axis) {
@@ -5875,11 +6019,11 @@ fn encode_btree_v2_chunk_storage(
   } else {
     0
   }
-  let record_size = 8 +
+  let record_size = offset_size +
     (if filtered { size_width + 4 } else { 0 }) +
-    8 * dataset.dimensions.length()
+    length_size * dataset.dimensions.length()
   let (capacities, total_widths, count_width) = writer_btree_capacities(
-    writer_btree_v2_node_size, record_size, 8,
+    writer_btree_v2_node_size, record_size, offset_size,
   )
   let indices : Array[Int32] = []
   let coordinates : Array[Array[UInt64]] = []
@@ -5890,11 +6034,19 @@ fn encode_btree_v2_chunk_storage(
       indices.push(index)
       coordinates.push(coordinate)
       placeholder.push(
-        writer_btree_record(entries[index], coordinate, filtered, size_width),
+        writer_btree_record(
+          entries[index],
+          coordinate,
+          filtered,
+          size_width,
+          offset_size~,
+          length_size~,
+          base_address~,
+        ),
       )
     }
   }
-  let header_length = 38
+  let header_length = 16 + offset_size + 2 + length_size + 4
   let node_count = if placeholder.length() == 0 {
     0
   } else {
@@ -5926,6 +6078,9 @@ fn encode_btree_v2_chunk_storage(
         coordinates[entry_index],
         filtered,
         size_width,
+        offset_size~,
+        length_size~,
+        base_address~,
       ),
     )
   }
@@ -5959,6 +6114,9 @@ fn encode_btree_v2_chunk_storage(
     writer_btree_v2_node_size,
     record_size,
     client,
+    offset_size~,
+    length_size~,
+    base_address~,
   )
   let total_chunks = address.to_int() - start.to_int()
   let output = @buffer.Buffer::Buffer(size_hint=total_chunks)
@@ -5977,6 +6135,8 @@ fn encode_btree_v2_chunk_storage(
         count_width,
         total_widths,
         client,
+        offset_size~,
+        base_address~,
       ),
     )
   }

@@ -46,9 +46,10 @@ moon-hdf5 implements a documented subset of HDF5. The
   between compact and dense storage as needed.
 - `add_group`, `add_dataset`, `add_chunked_dataset` and `add_external_dataset`
   append new objects to bytes-backed files, including contiguous or finite
-  chunked values, built-in chunk filters, external raw-data slots, fill values,
-  variable-length strings and top-level object references. `delete_object`
-  removes every hard link to an object so aliases cannot keep it reachable.
+  or resizable chunked values, built-in chunk filters, external raw-data slots,
+  fill values, variable-length strings and top-level object references.
+  `delete_object` removes every hard link to an object so aliases cannot keep it
+  reachable.
 
 ## Installation
 
@@ -570,13 +571,15 @@ the items below summarize the main user-visible gaps.
   Existing symbol-table parents are converted by the link rebuild path.
   `add_dataset` accepts a fill value. `add_chunked_dataset` creates finite
   fixed-array chunk indexes with built-in Shuffle, deflate, Fletcher32 and
-  scale-offset filters; `add_external_dataset` writes unfiltered fixed-size
-  external raw-data slots. Both accept fill values, and all addresses, lengths,
-  chunk-index slots and external-data heap fields follow the file widths.
-  Variable-length or reference members nested in structured values, resizable
-  maximum dimensions, custom-appended-filter registration and virtual storage
-  remain unsupported. Creation is append-only and leaves superseded parent
-  metadata unreferenced because no free-space manager is written.
+  scale-offset filters. Passing `maximum_dimensions` with one `None` creates an
+  extensible-array index, while multiple `None` values create a v2 B-tree; HDF5
+  can then resize the dataset up to those maxima. `add_external_dataset` writes
+  unfiltered fixed-size external raw-data slots. Both accept fill values, and
+  all addresses, lengths, chunk-index slots and external-data heap fields follow
+  the file widths. Variable-length or reference members nested in structured
+  values, custom-appended-filter registration and virtual storage remain
+  unsupported. Creation is append-only and leaves superseded parent metadata
+  unreferenced because no free-space manager is written.
 - **Object deletion:** `delete_object` resolves an object and removes every hard
   link that names its object header, including links in other groups. Soft and
   external links are left untouched and may dangle. The root group cannot be

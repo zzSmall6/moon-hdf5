@@ -78,6 +78,26 @@ fn run(args : Array[String]) -> Int32 {
       @lib.VariableStringValues(["moon", "数据", "", "moon"]),
       filters=[Deflate(3)],
     )
+    edited = @lib.Hdf5File::parse(edited).add_chunked_dataset(
+      "/created_root",
+      "resizable",
+      [4UL, 3UL],
+      [2U, 3U],
+      @lib.Int32Values([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+      maximum_dimensions=[None, Some(3UL)],
+      fill_value=@lib.Int32Values([-1]),
+      filters=[Shuffle, Deflate(4)],
+    )
+    edited = @lib.Hdf5File::parse(edited).add_chunked_dataset(
+      "/created_root",
+      "growable",
+      [3UL, 4UL],
+      [2U, 2U],
+      @lib.UInt16Values([1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U]),
+      maximum_dimensions=[None, None],
+      fill_value=@lib.UInt16Values([99U]),
+      filters=[Deflate(3)],
+    )
     let external_path = args[2] + ".external.bin"
     @fs.write_bytes_to_file(
       external_path,

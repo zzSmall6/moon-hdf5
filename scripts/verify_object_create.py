@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Verify groups and datasets created in an existing file with h5py."""
 
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import h5py
@@ -59,9 +61,11 @@ def verify(path: Path) -> None:
             "chunked",
             "chunked_labels",
             "external",
+            "growable",
             "labels",
             "numbers",
             "references",
+            "resizable",
         ]
         assert sorted(handle["group/created_leaf"]) == ["fixed"]
         assert handle["created_root"].attrs["note"] == 11
@@ -97,6 +101,25 @@ def verify(path: Path) -> None:
             "",
             "moon",
         ]
+        resizable = handle["created_root/resizable"]
+        assert resizable.shape == (4, 3)
+        assert resizable.maxshape == (None, 3)
+        assert resizable.chunks == (2, 3)
+        assert resizable.fillvalue == -1
+        assert resizable.shuffle
+        assert resizable.compression == "gzip"
+        np.testing.assert_array_equal(
+            resizable[:], np.arange(12, dtype=np.int32).reshape(4, 3)
+        )
+        growable = handle["created_root/growable"]
+        assert growable.shape == (3, 4)
+        assert growable.maxshape == (None, None)
+        assert growable.chunks == (2, 2)
+        assert growable.fillvalue == 99
+        assert growable.compression == "gzip"
+        np.testing.assert_array_equal(
+            growable[:], np.arange(1, 13, dtype=np.uint16).reshape(3, 4)
+        )
         external = handle["created_root/external"]
         external_path = str(path) + ".external.bin"
         assert external.external == [(external_path, 4, 24)]
@@ -154,6 +177,21 @@ def verify(path: Path) -> None:
     for address in (dataset_address, leaf_dataset_address):
         messages = message_types(data, address, offset_size, length_size)
         assert set(messages) >= {0x01, 0x03, 0x08}
+    with tempfile.TemporaryDirectory() as directory:
+        resized_path = Path(directory) / "resized.h5"
+        shutil.copyfile(path, resized_path)
+        with h5py.File(resized_path, "r+") as handle:
+            resizable = handle["created_root/resizable"]
+            resizable.resize((5, 3))
+            resizable[4, :] = [12, 13, 14]
+            assert resizable.shape == (5, 3)
+            np.testing.assert_array_equal(
+                resizable[4, :], [12, 13, 14]
+            )
+            growable = handle["created_root/growable"]
+            growable.resize((5, 4))
+            assert growable.shape == (5, 4)
+            np.testing.assert_array_equal(growable[4, :], [99, 99, 99, 99])
     Path(str(path) + ".external.bin").unlink(missing_ok=True)
     print(
         f"Verified {path} with h5py {h5py.__version__} "

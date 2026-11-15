@@ -12,9 +12,8 @@ post-v1.0 extension. HDF5 2.0 datatype fixtures are forward-compatibility
 evidence, not part of the 1.14.6 baseline.
 
 Outside the profile: virtual datasets, SWMR, parallel HDF5, in-file object
-storage reclamation, chunked/filtered/external or resizable dataset creation,
-metadata editing beyond object creation/deletion, attribute and link
-add/delete/rename, and value patching; netCDF-4/MATLAB high-level semantics; and
+storage reclamation, metadata editing beyond object creation/deletion, and
+attribute and link add/delete/rename; netCDF-4/MATLAB high-level semantics; and
 extended floating-point output.
 
 The release gate is `scripts/release_check.sh`: formatting, documentation and
@@ -66,7 +65,7 @@ through its NumPy dtype bridge.
 | --- | --- | --- |
 | Framing | Superblock v3 and v2 object headers with OCHK continuations | Older output formats are not selected |
 | Groups and attributes | Compact/dense collections, creation order, continued headers, inline/dense attributes, compact/dense link editing and symbol-table conversion | Dense limits below |
-| Object creation | `add_group`, contiguous `add_dataset`, finite fixed-array `add_chunked_dataset` with built-in filters, and unfiltered `add_external_dataset` in bytes-backed files, including numeric, fixed-string, complex, fixed-size structured, variable-length UTF-8 string and object-reference values; fill values; 4-/8-byte descriptors, reference slots, chunk-index fields and external-data heap fields; appended global heaps; v1/v2 parent headers and symbol-table parents | No nested variable-length/reference structured values, resizable maximum dimensions, custom filters on appended chunked datasets, filtered external storage or virtual storage; no free-space reclamation |
+| Object creation | `add_group`, contiguous `add_dataset`, finite fixed-array or resizable `add_chunked_dataset` with built-in filters, and unfiltered `add_external_dataset` in bytes-backed files, including numeric, fixed-string, complex, fixed-size structured, variable-length UTF-8 string and object-reference values; fill values; 4-/8-byte descriptors, reference slots, chunk-index fields and external-data heap fields; extensible-array indexes for one unlimited axis and v2 B-tree indexes for multiple unlimited axes; appended global heaps; v1/v2 parent headers and symbol-table parents | No nested variable-length/reference structured values, custom filters on appended chunked datasets, filtered external storage or virtual storage; no free-space reclamation |
 | Dense metadata | 9–65,535 records; FRHP/FHDB direct blocks, FHIB indirect roots, managed and huge heap objects with a type-1 huge-object v2 B-tree, multi-level BTHD/BTIN/BTLF type 6/9 indexes; optional one SOHM table/heap | No free-space manager; one SOHM table/heap without block extension; larger compact sets use OCHK |
 | Datasets | Compact, contiguous, external raw data, paged fixed-array, extensible-array and v2 B-tree chunks; new contiguous, finite fixed-array chunked and unfiltered external datasets | No virtual storage; compact payloads are limited to 65,535 bytes; external storage is unfiltered fixed-size only |
 | Numeric values | int/uint 1–8,191 bytes through `BigIntegerValues` or structured `BigInteger`/`BigTime`/`BigBitfield` values, in either byte order, plus IEEE float16/32/64 | Extended floating-point output is absent; scale-offset is limited to 32/64-bit floats |

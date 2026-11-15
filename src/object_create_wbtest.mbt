@@ -476,3 +476,76 @@ test "chunked and external creation validate filters and slots" {
     Some(InvalidArgument("external data slots do not match the dataset size")),
   )
 }
+
+///|
+test "resizable datasets can be created with maximum dimensions" {
+  let cases : Array[(String, Int32)] = [
+    ("testdata/symbol_table_32.h5", 4),
+    ("testdata/references.h5", 8),
+  ]
+  for (fixture, offset_size) in cases {
+    let file = Hdf5File::parse(@fs.read_file_to_bytes(fixture))
+    let one_axis = file.add_chunked_dataset(
+      "/group",
+      "resizable",
+      [4UL, 3UL],
+      [2U, 3U],
+      Int32Values([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+      maximum_dimensions=[None, Some(3UL)],
+      fill_value=Int32Values([-1]),
+      filters=[Shuffle, Deflate(4)],
+    ) catch {
+      error => fail("create one-axis resizable dataset: " + error.message())
+    }
+    let many_axes = Hdf5File::parse(one_axis).add_chunked_dataset(
+      "/group",
+      "growable",
+      [3UL, 4UL],
+      [2U, 2U],
+      UInt16Values([1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U]),
+      maximum_dimensions=[None, None],
+      fill_value=UInt16Values([99U]),
+      filters=[Deflate(3)],
+    ) catch {
+      error => fail("create multi-axis resizable dataset: " + error.message())
+    }
+    let edited = Hdf5File::parse(many_axes) catch {
+      error => fail("parse created file: " + error.message())
+    }
+    assert_eq(edited.superblock.offset_size, offset_size)
+    let one_metadata = edited.read_dataset_metadata("/group/resizable") catch {
+      error => fail("read one-axis metadata: " + error.message())
+    }
+    assert_eq(one_metadata.dataspace.maximum_dimensions.length(), 2)
+    assert_eq(
+      one_metadata.dataspace.maximum_dimensions[0],
+      0xFFFFFFFFFFFFFFFFUL,
+    )
+    assert_eq(one_metadata.dataspace.maximum_dimensions[1], 3UL)
+    assert_eq(one_metadata.layout.kind(), Chunked)
+    let many_metadata = edited.read_dataset_metadata("/group/growable") catch {
+      error => fail("read multi-axis metadata: " + error.message())
+    }
+    assert_eq(many_metadata.dataspace.maximum_dimensions, [
+      0xFFFFFFFFFFFFFFFFUL, 0xFFFFFFFFFFFFFFFFUL,
+    ])
+    let one_values = edited.read_dataset("/group/resizable") catch {
+      error => fail("read one-axis values: " + error.message())
+    }
+    match one_values.values {
+      Integers(values) =>
+        assert_eq(values, [0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L])
+      _ => fail("expected one-axis resizable integer values")
+    }
+    let many_values = edited.read_dataset("/group/growable") catch {
+      error => fail("read multi-axis values: " + error.message())
+    }
+    match many_values.values {
+      UnsignedIntegers(values) =>
+        assert_eq(values, [
+          1UL, 2UL, 3UL, 4UL, 5UL, 6UL, 7UL, 8UL, 9UL, 10UL, 11UL, 12UL,
+        ])
+      _ => fail("expected multi-axis resizable values")
+    }
+  }
+}
