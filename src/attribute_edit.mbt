@@ -620,58 +620,31 @@ fn encode_editable_dense_storage(
     }
     order_records.push(order_record.to_bytes())
   }
-  let node_size = writer_next_power_of_two(
-    10 + records.length() * record_size,
-    512,
-  )
-  let btree_header_size = (22 + offset_size + length_size).to_uint64()
-  let node_address = index_address + btree_header_size
-  let btree_header = encode_writer_dense_btree_header(
+  let index_bytes = encode_writer_metadata_btree(
     8,
-    node_size,
+    writer_dense_btree_node_size,
     record_size,
-    node_address,
-    records.length(),
+    records,
+    index_address,
     offset_size~,
     length_size~,
-  )
-  let btree_node = encode_writer_dense_btree_node(
-    8, node_size, record_size, records,
   )
   let heap_bytes = @buffer.Buffer::Buffer(
     size_hint=heap_header.length() + direct_block.length(),
   )
   writer_write_bytes(heap_bytes, heap_header)
   writer_write_bytes(heap_bytes, direct_block)
-  let index_bytes = @buffer.Buffer::Buffer(
-    size_hint=btree_header.length() + btree_node.length(),
-  )
-  writer_write_bytes(index_bytes, btree_header)
-  writer_write_bytes(index_bytes, btree_node)
   let order_index_address = index_address + index_bytes.length().to_uint64()
-  let order_node_size = writer_next_power_of_two(
-    10 + order_records.length() * 13,
-    512,
-  )
-  let order_node_address = order_index_address + btree_header_size
-  let order_header = encode_writer_dense_btree_header(
+  let order_bytes = encode_writer_metadata_btree(
     9,
-    order_node_size,
+    writer_dense_btree_node_size,
     13,
-    order_node_address,
-    order_records.length(),
+    order_records,
+    order_index_address,
     offset_size~,
     length_size~,
   )
-  let order_node = encode_writer_dense_btree_node(
-    9, order_node_size, 13, order_records,
-  )
-  let order_bytes = @buffer.Buffer::Buffer(
-    size_hint=order_header.length() + order_node.length(),
-  )
-  writer_write_bytes(order_bytes, order_header)
-  writer_write_bytes(order_bytes, order_node)
-  (heap_bytes.to_bytes(), index_bytes.to_bytes(), order_bytes.to_bytes())
+  (heap_bytes.to_bytes(), index_bytes, order_bytes)
 }
 
 ///|

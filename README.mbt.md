@@ -269,8 +269,9 @@ let output = writer.encode()
   float16/32/64 in either byte order. `Float16Values` and
   `Datatype::write_float(2)` write half-precision values.
 - Dense link and attribute collections support 9–65,535 records with encoded
-  heap objects up to 65,535 bytes. Larger sets remain compact and use OCHK
-  continuation chunks.
+  heap objects up to 65,535 bytes. Name and creation-order indexes use
+  multi-level v2 B-trees, so large collections span multiple leaf and internal
+  nodes. Larger sets remain compact and use OCHK continuation chunks.
 - Whole attributes, fills and encoded filter pipelines up to 65,535 bytes use one
   SOHM table and heap. Equal fills, attributes and pipelines reuse one heap ID.
   Committed datatypes use wrapper version 3 storage type 2 and are referenced by
@@ -600,10 +601,11 @@ the items below summarize the main user-visible gaps.
   scale-offset are rejected for them. Registered custom filters can be combined
   with built-in filters and participate in per-chunk masks and shared pipelines.
 - **Dense and shared metadata:** dense output is limited to 9–65,535 records
-  with encoded heap objects up to 65,535 bytes, one direct FHDB block and one
-  leaf per index. Indirect/huge heap blocks and a free-space manager are not
-  emitted. One SOHM table and heap are written; multiple tables, multiple heaps
-  and heap extension across blocks are not.
+  with encoded heap objects up to 65,535 bytes and one direct FHDB block. Name
+  and creation-order indexes use multi-level BTHD/BTIN/BTLF v2 B-trees.
+  Indirect/huge heap blocks and a free-space manager are not emitted. One SOHM
+  table and heap are written; multiple tables, multiple heaps and heap extension
+  across blocks are not.
 - **External raw data:** only contiguous, unfiltered, fixed-size storage is
   supported. It requires `Hdf5Resolver` and caller-registered, caller-managed
   files; `Hdf5File` alone cannot dereference it. Remote URLs, filtered/chunked

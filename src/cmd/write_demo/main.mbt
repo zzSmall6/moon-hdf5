@@ -985,6 +985,14 @@ fn run(args : Array[String]) -> Int32 {
         UInt64Values([(index + 100).to_uint64()]),
       )
     }
+    writer.add_group("/metadata/large_dense")
+    for index in 0..<1400 {
+      writer.add_dataset(
+        "/metadata/large_dense/link_" + index.to_string(),
+        [],
+        UInt64Values([index.to_uint64()]),
+      )
+    }
     writer.add_attribute(
       "/metadata/dense",
       "dense_text",

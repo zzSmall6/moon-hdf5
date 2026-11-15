@@ -149,10 +149,10 @@ dense-metadata, global-heap, external-slot and raw-data addresses are assigned
 before checksummed output is written.
 
 The writer emits a v3 superblock and v2 object headers. Large compact headers use
-checksummed OCHK continuations. Dense collections use one FHDB direct block,
-one BTHD/BTLF leaf per index and type 6/9 creation-order indexes. They are limited
-to 9–65,535 records with encoded heap objects up to 65,535 bytes; indirect/huge
-blocks and a free-space manager are not emitted.
+checksummed OCHK continuations. Dense collections use one FHDB direct block and
+multi-level BTHD/BTIN/BTLF name and type 6/9 creation-order indexes. They are
+limited to 9–65,535 records with encoded heap objects up to 65,535 bytes;
+indirect/huge heap blocks and a free-space manager are not emitted.
 
 Compact datasets embed their payload in the data-layout message and enforce the
 65,535-byte limit before encoding. In-place patching locates compact payloads
@@ -437,3 +437,10 @@ heaps and heap extension across multiple blocks are not emitted.
   tests cover datasets, attributes, filtered chunks and recursive heap objects;
   h5py 3.13.0/HDF5 1.14.6 independently reads the writer demo's nested vlen
   datasets and attributes.
+- 2026-11-15: dense writer name and creation-order indexes now build multi-level
+  v2 B-trees with BTIN internal nodes instead of sizing every index to one
+  BTLF leaf. New writes and dense attribute rebuilding share the same balanced
+  encoder, including 4-byte address and length widths. A 1,400-link dense group
+  and a 2,500-attribute collection are independently re-read by h5py
+  3.13.0/HDF5 1.14.6; MoonBit tests exercise link and attribute indexes whose
+  roots are internal nodes.

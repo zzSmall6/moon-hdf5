@@ -6080,6 +6080,9 @@ let writer_dense_max_managed_size : Int32 = 65535
 let writer_dense_max_records : Int32 = 65535
 
 ///|
+let writer_dense_btree_node_size : Int32 = 512
+
+///|
 fn encode_dense_storage_info(
   group : Bool,
   max_creation_order : UInt64,
@@ -6494,12 +6497,79 @@ fn encode_writer_dense_shared_ids(
 }
 
 ///|
-fn encode_writer_dense_btree_header(
+priv struct WriterMetadataBTreeShape {
+  capacities : Array[Int32]
+  count_widths : Array[Int32]
+  total_widths : Array[Int32]
+  depth : Int32
+}
+
+///|
+fn writer_metadata_btree_shape(
+  record_size : Int32,
+  node_size : Int32,
+  offset_size : Int32,
+  count : Int32,
+) -> WriterMetadataBTreeShape raise Hdf5Error {
+  guard record_size > 0 &&
+    node_size > 10 &&
+    offset_size >= 1 &&
+    offset_size <= 8 &&
+    count >= 0 else {
+    raise InvalidField("invalid writer metadata B-tree shape")
+  }
+  let leaf_capacity = (node_size - 10) / record_size
+  guard leaf_capacity > 0 && leaf_capacity <= 65535 else {
+    raise InvalidField("writer metadata B-tree leaf capacity is out of range")
+  }
+  let capacities : Array[Int32] = [leaf_capacity]
+  let count_widths : Array[Int32] = [0]
+  let total_widths : Array[Int32] = [0]
+  let totals : Array[UInt64] = [leaf_capacity.to_uint64()]
+  let mut depth = 0
+  while totals[depth] < count.to_uint64() {
+    guard depth < 31 else {
+      raise InvalidArgument("writer metadata B-tree needs too many levels")
+    }
+    let level = depth + 1
+    let count_width = metadata_count_width(capacities[level - 1].to_uint64())
+    let total_width = if level > 1 {
+      metadata_count_width(totals[level - 1])
+    } else {
+      0
+    }
+    let pointer_size = offset_size + count_width + total_width
+    let capacity = (node_size - 10 - pointer_size) /
+      (record_size + pointer_size)
+    guard capacity > 0 && capacity <= 65535 else {
+      raise InvalidField(
+        "writer metadata B-tree internal capacity is out of range",
+      )
+    }
+    guard totals[level - 1] <=
+      (0xFFFFFFFFFFFFFFFFUL - capacity.to_uint64()) / (capacity + 1).to_uint64() else {
+      raise InvalidArgument("writer metadata B-tree subtree count overflow")
+    }
+    let total = totals[level - 1] * (capacity + 1).to_uint64() +
+      capacity.to_uint64()
+    capacities.push(capacity)
+    count_widths.push(count_width)
+    total_widths.push(total_width)
+    totals.push(total)
+    depth = level
+  }
+  { capacities, count_widths, total_widths, depth, }
+}
+
+///|
+fn encode_writer_metadata_btree_header(
   node_type : Int32,
   node_size : Int32,
   record_size : Int32,
   root_address : UInt64,
-  record_count : Int32,
+  root_count : Int32,
+  depth : Int32,
+  total : UInt64,
   offset_size~ : Int32 = 8,
   length_size~ : Int32 = 8,
 ) -> Bytes {
@@ -6509,32 +6579,53 @@ fn encode_writer_dense_btree_header(
   buffer.write_byte(node_type.to_byte())
   buffer.write_uint_le(node_size.reinterpret_as_uint())
   buffer.write_uint16_le(record_size.to_uint16())
-  buffer.write_uint16_le(0)
+  buffer.write_uint16_le(depth.to_uint16())
   buffer.write_byte(b'\x64')
   buffer.write_byte(b'\x28')
   write_uint_width(buffer, root_address, offset_size)
-  buffer.write_uint16_le(record_count.to_uint16())
-  write_uint_width(buffer, record_count.to_uint64(), length_size)
+  buffer.write_uint16_le(root_count.to_uint16())
+  write_uint_width(buffer, total, length_size)
   buffer.write_uint_le(metadata_checksum(buffer.to_bytes(), 0, buffer.length()))
   buffer.to_bytes()
 }
 
 ///|
-fn encode_writer_dense_btree_node(
+fn encode_writer_metadata_btree_node(
+  node : WriterBTreeV2Node,
+  nodes : Array[WriterBTreeV2Node],
+  shape : WriterMetadataBTreeShape,
   node_type : Int32,
   node_size : Int32,
   record_size : Int32,
-  records : Array[Bytes],
+  offset_size : Int32,
 ) -> Bytes raise Hdf5Error {
   let buffer = @buffer.Buffer::Buffer(size_hint=node_size)
-  writer_write_bytes(buffer, b"BTLF")
+  writer_write_bytes(buffer, if node.depth == 0 { b"BTLF" } else { b"BTIN" })
   buffer.write_byte(b'\x00')
   buffer.write_byte(node_type.to_byte())
-  for record in records {
+  for record in node.records {
     guard record.length() == record_size else {
       raise InvalidField("writer dense B-tree record size mismatch")
     }
     writer_write_bytes(buffer, record)
+  }
+  if node.depth > 0 {
+    for child_index in node.children {
+      let child = nodes[child_index]
+      writer_write_uint_width(buffer, child.address, offset_size)
+      writer_write_uint_width(
+        buffer,
+        child.records.length().to_uint64(),
+        shape.count_widths[node.depth],
+      )
+      if node.depth > 1 {
+        writer_write_uint_width(
+          buffer,
+          child.total,
+          shape.total_widths[node.depth],
+        )
+      }
+    }
   }
   guard buffer.length() + metadata_checksum_size <= node_size else {
     raise InvalidField("writer dense B-tree node is too small")
@@ -6542,6 +6633,80 @@ fn encode_writer_dense_btree_node(
   buffer.write_uint_le(metadata_checksum(buffer.to_bytes(), 0, buffer.length()))
   writer_write_zeros(buffer, node_size - buffer.length())
   buffer.to_bytes()
+}
+
+///|
+fn encode_writer_metadata_btree(
+  node_type : Int32,
+  node_size : Int32,
+  record_size : Int32,
+  records : Array[Bytes],
+  start_address : UInt64,
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+) -> Bytes raise Hdf5Error {
+  let header_size = 22 + offset_size + length_size
+  if records.length() == 0 {
+    return encode_writer_metadata_btree_header(
+      node_type,
+      node_size,
+      record_size,
+      heap_undefined_address(offset_size),
+      0,
+      0,
+      0UL,
+      offset_size~,
+      length_size~,
+    )
+  }
+  guard records.length() <= 0x7FFFFFFF else {
+    raise InvalidArgument("writer metadata B-tree has too many records")
+  }
+  let shape = writer_metadata_btree_shape(
+    record_size,
+    node_size,
+    offset_size,
+    records.length(),
+  )
+  let nodes : Array[WriterBTreeV2Node] = []
+  let root = writer_btree_build_node(
+    records,
+    shape.depth,
+    shape.capacities,
+    nodes,
+  )
+  guard nodes[root].records.length() <= 65535 else {
+    raise InvalidArgument("writer metadata B-tree root has too many records")
+  }
+  for index in 0..<nodes.length() {
+    nodes[index].address = start_address +
+      header_size.to_uint64() +
+      node_size.to_uint64() * index.to_uint64()
+  }
+  let header = encode_writer_metadata_btree_header(
+    node_type,
+    node_size,
+    record_size,
+    nodes[root].address,
+    nodes[root].records.length(),
+    shape.depth,
+    records.length().to_uint64(),
+    offset_size~,
+    length_size~,
+  )
+  let output = @buffer.Buffer::Buffer(
+    size_hint=header_size + node_size * nodes.length(),
+  )
+  writer_write_bytes(output, header)
+  for node in nodes {
+    writer_write_bytes(
+      output,
+      encode_writer_metadata_btree_node(
+        node, nodes, shape, node_type, node_size, record_size, offset_size,
+      ),
+    )
+  }
+  output.to_bytes()
 }
 
 ///|
@@ -6874,75 +7039,35 @@ fn Hdf5Writer::encode_dense_metadata(
     }
     order_records.push(order_record.to_bytes())
   }
-  let node_size = writer_next_power_of_two(
-    10 + records.length() * record_size,
-    512,
-  )
-  let node_address = index_address + 38UL
-  let btree_header = encode_writer_dense_btree_header(
+  let index_bytes = encode_writer_metadata_btree(
     if group {
       5
     } else {
       8
     },
-    node_size,
-    record_size,
-    node_address,
-    records.length(),
-  )
-  let btree_node = encode_writer_dense_btree_node(
-    if group {
-      5
-    } else {
-      8
-    },
-    node_size,
+    writer_dense_btree_node_size,
     record_size,
     records,
+    index_address,
   )
   let heap_bytes = @buffer.Buffer::Buffer(
     size_hint=heap_header.length() + direct_block.length(),
   )
   writer_write_bytes(heap_bytes, heap_header)
   writer_write_bytes(heap_bytes, direct_block)
-  let index_bytes = @buffer.Buffer::Buffer(
-    size_hint=btree_header.length() + btree_node.length(),
-  )
-  writer_write_bytes(index_bytes, btree_header)
-  writer_write_bytes(index_bytes, btree_node)
   let order_index_address = index_address + index_bytes.length().to_uint64()
-  let order_node_size = writer_next_power_of_two(
-    10 + order_records.length() * order_record_size,
-    512,
-  )
-  let order_node_address = order_index_address + 38UL
-  let order_header = encode_writer_dense_btree_header(
+  let order_bytes = encode_writer_metadata_btree(
     if group {
       6
     } else {
       9
     },
-    order_node_size,
-    order_record_size,
-    order_node_address,
-    order_records.length(),
-  )
-  let order_node = encode_writer_dense_btree_node(
-    if group {
-      6
-    } else {
-      9
-    },
-    order_node_size,
+    writer_dense_btree_node_size,
     order_record_size,
     order_records,
+    order_index_address,
   )
-  let order_bytes = @buffer.Buffer::Buffer(
-    size_hint=order_header.length() + order_node.length(),
-  )
-  writer_write_bytes(order_bytes, order_header)
-  writer_write_bytes(order_bytes, order_node)
-  (heap_bytes.to_bytes(), index_bytes.to_bytes(), order_bytes.to_bytes())
+  (heap_bytes.to_bytes(), index_bytes, order_bytes)
 }
 
 ///|

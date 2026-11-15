@@ -243,6 +243,60 @@ test "writer uses dense links and attributes above the compact threshold" {
 }
 
 ///|
+fn writer_test_btree_depth(
+  bytes : Bytes,
+  address : UInt64,
+) -> Int32 raise Hdf5Error {
+  let start = source_address_to_offset(address, 0UL).to_int()
+  let reader = Reader::at(bytes, start)
+  guard reader.read_bytes(4) == b"BTHD" else {
+    raise InvalidField("expected a v2 B-tree header")
+  }
+  reader.skip(1 + 1 + 4 + 2)
+  reader.read_u16_le().to_int()
+}
+
+///|
+test "writer dense metadata spans multiple B-tree nodes" {
+  let writer = Hdf5Writer::new()
+  writer.add_group("/large")
+  for index in 0..<1200 {
+    writer.add_dataset(
+      "/large/link_" + index.to_string(),
+      [],
+      UInt64Values([index.to_uint64()]),
+    )
+  }
+  for index in 0..<600 {
+    writer.add_attribute(
+      "/large",
+      "attr_" + index.to_string(),
+      [],
+      UInt64Values([(index + 1000).to_uint64()]),
+    )
+  }
+  let bytes = writer.encode()
+  let file = Hdf5File::parse(bytes)
+  let object = file.resolve("/large")
+  let header = parse_object_header(bytes, object.address, 8, 8, 0UL)
+  assert_eq(file.links(header).length(), 1200)
+  let attributes = file.attributes("/large")
+  assert_eq(attributes.length(), 600)
+  assert_eq(attributes[0].name, "attr_0")
+  assert_eq(attributes[599].name, "attr_599")
+  assert_eq(unsigned_values(file.read_dataset("/large/link_1199")), [1199UL])
+  for message_type in [msg_link_info, msg_attribute_info] {
+    let reader = Reader::new(header.find(message_type)[0].data)
+    assert_eq(reader.read_u8(), b'\x00')
+    assert_eq(reader.read_u8(), b'\x03')
+    reader.skip(if message_type == msg_link_info { 8 } else { 2 })
+    reader.skip(8)
+    let index_address = reader.read_uint_le(8)
+    assert_true(writer_test_btree_depth(bytes, index_address) > 0)
+  }
+}
+
+///|
 test "writer indexes dense links and attributes by creation order" {
   let writer = Hdf5Writer::new()
   writer.add_group("/ordered")
@@ -1836,7 +1890,9 @@ test "writer enforces exact dense metadata limits" {
   assert_true(writer_dense_entries_fit(Array::make(9, at_limit)))
   assert_true(!writer_dense_entries_fit(Array::make(9, over_limit)))
 
-  let btree_header = encode_writer_dense_btree_header(8, 1024, 17, 0UL, 65535)
+  let btree_header = encode_writer_metadata_btree_header(
+    8, 1024, 17, 0UL, 65535, 0, 65535UL,
+  )
   let reader = Reader::new(btree_header)
   reader.skip(24)
   assert_eq(reader.read_u16_le(), 65535)

@@ -612,6 +612,10 @@ def verify_file(path: Path) -> None:
             assert dense[f"value_{index}"][()] == np.uint64(index)
             assert dense.attrs[f"dense_attr_{index}"] == np.uint64(index + 100)
         assert dense.attrs["dense_text"] == "密集属性"
+        large_dense = handle["metadata/large_dense"]
+        assert len(large_dense) == 1400
+        for index in (0, 699, 1399):
+            assert large_dense[f"link_{index}"][()] == np.uint64(index)
         ordered = handle["metadata/ordered"]
         assert ordered.id.get_create_plist().get_link_creation_order() == 3
         assert ordered.id.get_create_plist().get_attr_creation_order() == 3

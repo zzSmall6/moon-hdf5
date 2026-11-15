@@ -64,7 +64,7 @@ through its NumPy dtype bridge.
 | --- | --- | --- |
 | Framing | Superblock v3 and v2 object headers with OCHK continuations | Older output formats are not selected |
 | Groups and attributes | Compact/dense collections, creation order, continued headers, inline/dense attributes | Dense limits below |
-| Dense metadata | 9–65,535 records with encoded objects up to 65,535 bytes; FRHP/FHDB, BTHD/BTLF and type 6/9 indexes; optional one SOHM table/heap | One direct block and leaf per index; no huge/indirect blocks or free-space manager; larger compact sets use OCHK |
+| Dense metadata | 9–65,535 records with encoded objects up to 65,535 bytes; FRHP/FHDB, multi-level BTHD/BTIN/BTLF type 6/9 indexes; optional one SOHM table/heap | One direct heap block; no huge/indirect heap blocks or free-space manager; larger compact sets use OCHK |
 | Datasets | Compact, contiguous, external raw data, paged fixed-array, extensible-array and v2 B-tree chunks | No virtual storage; compact payloads are limited to 65,535 bytes; external storage is unfiltered fixed-size only |
 | Numeric values | int/uint 1–8,191 bytes through `BigIntegerValues` or structured `BigInteger`/`BigTime`/`BigBitfield` values, in either byte order, plus IEEE float16/32/64 | Extended floating-point output is absent; scale-offset is limited to 32/64-bit floats |
 | Strings and structures | Fixed/vlen UTF-8; compound, enum, array, time, bitfield, opaque, references, complex and sequences; `Datatype::write_vlen_string` can be nested in structured values | Complex output is little-endian canonical `r`/`i`; written sequence bases are fixed-size but may contain region references |
