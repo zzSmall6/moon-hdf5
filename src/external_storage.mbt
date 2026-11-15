@@ -71,7 +71,7 @@ fn parse_external_data_slots(
   )
   let slots : Array[ExternalDataSlot] = []
   for _ in 0..<used {
-    let name_offset = reader.read_uint_le(offset_size)
+    let name_offset = reader.read_uint_le(length_size)
     let file_offset = reader.read_uint_le(length_size)
     let data_size = reader.read_uint_le(length_size)
     guard data_size > 0UL else {

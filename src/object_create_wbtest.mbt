@@ -81,6 +81,7 @@ test "fixed-size datasets can be created and read" {
     "matrix",
     [2UL, 3UL],
     Int32Values([1, 2, 3, 4, 5, 6]),
+    fill_value=Int32Values([-1]),
   ) catch {
     error => fail("create dataset: " + error.message())
   }
@@ -90,6 +91,8 @@ test "fixed-size datasets can be created and read" {
   let metadata = created_file.read_dataset_metadata("/existing/matrix")
   assert_eq(metadata.dataspace.dimensions, [2UL, 3UL])
   assert_eq(metadata.layout.kind(), Contiguous)
+  let header = created_file.object_header_at(node.address)
+  assert_true(header.first(msg_fill_value) is Some(_))
   match created_file.read_dataset("/existing/matrix").values {
     Integers(values) => assert_eq(values, [1L, 2L, 3L, 4L, 5L, 6L])
     _ => fail("expected integer dataset values")
@@ -304,5 +307,172 @@ test "dataset creation rejects invalid references and shapes" {
   assert_eq(
     mismatched,
     Some(InvalidArgument("writer value count does not match dataspace")),
+  )
+}
+
+///|
+test "chunked and filtered datasets can be created with file-width indexes" {
+  let cases : Array[(String, String, Int32)] = [
+    ("testdata/symbol_table_32.h5", "/group/values", 4),
+    ("testdata/references.h5", "/group/child", 8),
+  ]
+  for (fixture, second_target, reference_size) in cases {
+    let file = Hdf5File::parse(@fs.read_file_to_bytes(fixture))
+    let chunked = file.add_chunked_dataset(
+      "/group",
+      "chunked",
+      [4UL, 3UL],
+      [2U, 3U],
+      UInt32Values([0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U]),
+      fill_value=UInt32Values([99U]),
+      filters=[Shuffle, Deflate(6)],
+    ) catch {
+      error => fail("create chunked dataset: " + error.message())
+    }
+    let names = Hdf5File::parse(chunked).add_chunked_dataset(
+      "/group",
+      "chunked_names",
+      [4UL],
+      [2U],
+      VariableStringValues(["moon", "数据", "", "moon"]),
+      filters=[Deflate(3)],
+    ) catch {
+      error => fail("create chunked string dataset: " + error.message())
+    }
+    let references = Hdf5File::parse(names).add_chunked_dataset(
+      "/group",
+      "chunked_references",
+      [3UL],
+      [2U],
+      ObjectReferenceValues([Some("/matrix"), None, Some(second_target)]),
+    ) catch {
+      error => fail("create chunked reference dataset: " + error.message())
+    }
+    let edited = Hdf5File::parse(references)
+    let metadata = edited.read_dataset_metadata("/group/chunked")
+    assert_eq(metadata.dataspace.dimensions, [4UL, 3UL])
+    assert_eq(metadata.layout.kind(), Chunked)
+    assert_eq(metadata.layout.chunk_dimensions, [2U, 3U])
+    let header = edited.object_header_at(
+      edited.resolve("/group/chunked").address,
+    )
+    assert_true(header.first(msg_filter_pipeline) is Some(_))
+    match edited.read_dataset("/group/chunked").values {
+      UnsignedIntegers(values) =>
+        assert_eq(values, [
+          0UL, 1UL, 2UL, 3UL, 4UL, 5UL, 6UL, 7UL, 8UL, 9UL, 10UL, 11UL,
+        ])
+      _ => fail("expected chunked integer values")
+    }
+    match edited.read_dataset("/group/chunked_names").values {
+      Strings(values) => assert_eq(values, ["moon", "数据", "", "moon"])
+      _ => fail("expected chunked variable-length strings")
+    }
+    let refs = match edited.read_dataset("/group/chunked_references").values {
+      Structured(values) => values
+      _ => fail("expected chunked object references")
+    }
+    let matrix_bytes = match refs[0] {
+      Reference(bytes) => bytes
+      _ => fail("expected object-reference bytes")
+    }
+    assert_eq(matrix_bytes.length(), reference_size)
+    assert_eq(
+      edited.resolve_object_reference(matrix_bytes).unwrap().path,
+      Some("/matrix"),
+    )
+    assert_eq(refs[1], Reference(Bytes::make(reference_size, b'\x00')))
+  }
+}
+
+///|
+test "external raw-data datasets can be created with file-width metadata" {
+  let cases : Array[(String, Int32)] = [
+    ("testdata/symbol_table_32.h5", 4),
+    ("testdata/references.h5", 8),
+  ]
+  for (fixture, offset_size) in cases {
+    let file = Hdf5File::parse(@fs.read_file_to_bytes(fixture))
+    let external = file.add_external_dataset(
+      "/group",
+      "external",
+      [6UL],
+      Int32Values([10, 20, 30, 40, 50, 60]),
+      [
+        {
+          file_name: "created_external.bin",
+          file_offset: 4UL,
+          data_size: 24UL,
+        },
+      ],
+      fill_value=Int32Values([-1]),
+    ) catch {
+      error => fail("create external dataset: " + error.message())
+    }
+    let edited = Hdf5File::parse(external)
+    assert_eq(edited.superblock.offset_size, offset_size)
+    let metadata = edited.read_dataset_metadata("/group/external")
+    assert_eq(metadata.layout.kind(), Contiguous)
+    assert_eq(metadata.layout.data_size, 24UL)
+    let source = @buffer.Buffer::Buffer()
+    writer_write_zeros(source, 4)
+    for value in [10U, 20U, 30U, 40U, 50U, 60U] {
+      source.write_uint_le(value)
+    }
+    let resolver = Hdf5Resolver::new(external)
+    resolver.add_source("created_external.bin", source.to_bytes())
+    match resolver.read_dataset("/group/external").values {
+      Integers(values) => assert_eq(values, [10L, 20L, 30L, 40L, 50L, 60L])
+      _ => fail("expected external integer values")
+    }
+    match
+      resolver.read_dataset_selection("/group/external", Points([[5UL], [1UL]])).values {
+      Integers(values) => assert_eq(values, [60L, 20L])
+      _ => fail("expected external point selection")
+    }
+  }
+}
+
+///|
+test "chunked and external creation validate filters and slots" {
+  let file = Hdf5File::parse(Hdf5Writer::new().encode())
+  let bad_chunk = try {
+    ignore(
+      file.add_chunked_dataset("/", "bad", [2UL], [0U], UInt32Values([1U, 2U])),
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(bad_chunk, Some(InvalidArgument("chunk dimension is invalid")))
+  let bad_filter = try {
+    ignore(
+      file.add_chunked_dataset(
+        "/",
+        "bad",
+        [2UL],
+        [2U],
+        UInt32Values([1U, 2U]),
+        filters=[Deflate(10)],
+      ),
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(bad_filter, Some(InvalidArgument("invalid deflate writer filter")))
+  let bad_slots = try {
+    ignore(
+      file.add_external_dataset("/", "bad", [2UL], Int32Values([1, 2]), [
+        { file_name: "data.bin", file_offset: 0UL, data_size: 4UL, },
+      ]),
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    bad_slots,
+    Some(InvalidArgument("external data slots do not match the dataset size")),
   )
 }

@@ -187,13 +187,15 @@ pub fn Hdf5File::add_group(
 /// message using the file's address and length widths. Variable-length string
 /// descriptors use the file address width, and object references use the file
 /// address width rather than a host-sized reference slot. Nested variable-length
-/// or reference members in structured values remain unsupported.
+/// or reference members in structured values remain unsupported. An optional
+/// fill value is written through the normal fill-value message.
 pub fn Hdf5File::add_dataset(
   self : Hdf5File,
   parent_path : String,
   name : String,
   dimensions : Array[UInt64],
   values : Hdf5WriteValues,
+  fill_value? : Hdf5WriteValues,
 ) -> Bytes raise Hdf5Error {
   validate_editable_link_name(name)
   let (parent_address, header, links) = self.editable_group(parent_path)
@@ -212,9 +214,18 @@ pub fn Hdf5File::add_dataset(
     values,
     reference_address_size=Some(offset_size),
   )
+  let copied_fill = validated_write_fill(values, fill_value)
+  if copied_fill is Some(fill) && !created_dataset_values_supported(fill) {
+    raise UnsupportedFeature(
+      "dataset creation does not support nested variable-length or reference fills",
+    )
+  }
   let tail = @buffer.Buffer::Buffer()
   let strings : Array[String] = []
   collect_heap_strings(strings, values)
+  if copied_fill is Some(fill) {
+    collect_heap_strings(strings, fill)
+  }
   let mut heap = empty_writable_heap()
   if strings.length() > 0 {
     let heap_offset = next_aligned_tail_start(
@@ -247,7 +258,8 @@ pub fn Hdf5File::add_dataset(
       ),
     )
   }
-  let objects = if values is ObjectReferenceValues(_) {
+  let objects = if created_values_need_objects(values) ||
+    (copied_fill is Some(fill) && created_values_need_objects(fill)) {
     self.created_reference_objects()
   } else {
     []
@@ -272,31 +284,449 @@ pub fn Hdf5File::add_dataset(
   }
   let object_address = self.append_created_object(
     tail,
-    encode_created_object_header([
+    encode_created_object_header(
       {
-        msg_type: msg_dataspace,
-        flags: b'\x00',
-        data: encode_dataspace(dimensions),
-        creation_order: 0UL,
+        let messages : Array[RebuiltObjectMessage] = [
+          {
+            msg_type: msg_dataspace,
+            flags: b'\x00',
+            data: encode_dataspace(dimensions),
+            creation_order: 0UL,
+          },
+          {
+            msg_type: msg_datatype,
+            flags: b'\x00',
+            data: encoded.datatype,
+            creation_order: 0UL,
+          },
+        ]
+        if copied_fill is Some(fill) {
+          messages.push({
+            msg_type: msg_fill_value,
+            flags: b'\x00',
+            data: encode_fill_value(fill, heap~, objects~),
+            creation_order: 0UL,
+          })
+        }
+        messages.push({
+          msg_type: msg_data_layout,
+          flags: b'\x00',
+          data: encode_created_contiguous_layout(
+            data_address,
+            encoded.payload.length(),
+            offset_size,
+            length_size,
+          ),
+          creation_order: 0UL,
+        })
+        messages
       },
-      {
-        msg_type: msg_datatype,
-        flags: b'\x00',
-        data: encoded.datatype,
-        creation_order: 0UL,
-      },
-      {
-        msg_type: msg_data_layout,
-        flags: b'\x00',
-        data: encode_created_contiguous_layout(
-          data_address,
-          encoded.payload.length(),
-          offset_size,
-          length_size,
-        ),
-        creation_order: 0UL,
-      },
-    ]),
+    ),
+  )
+  let mut creation_order = 0UL
+  for link in links {
+    if link.creation_order >= creation_order {
+      creation_order = link.creation_order + 1UL
+    }
+  }
+  links.push({
+    link: {
+      name,
+      object_header_address: object_address,
+      cache_type: 0U,
+      link_target: None,
+      external_path: None,
+    },
+    creation_order,
+  })
+  self.write_rebuilt_links(parent_address, header, links, tail)
+}
+
+///|
+fn created_values_need_objects(values : Hdf5WriteValues) -> Bool {
+  match values {
+    ObjectReferenceValues(_) => true
+    _ => false
+  }
+}
+
+///|
+/// Adds a finite chunked dataset below `parent_path` and returns the updated
+/// file.
+///
+/// The fixed-array chunk index and chunk payloads are appended at aligned EOF
+/// offsets. Built-in Shuffle, deflate, Fletcher32 and scale-offset filters are
+/// supported; custom filters cannot be registered on this entry point.
+pub fn Hdf5File::add_chunked_dataset(
+  self : Hdf5File,
+  parent_path : String,
+  name : String,
+  dimensions : Array[UInt64],
+  chunk_dimensions : Array[UInt32],
+  values : Hdf5WriteValues,
+  fill_value? : Hdf5WriteValues,
+  filters~ : Array[Hdf5WriteFilter] = [],
+) -> Bytes raise Hdf5Error {
+  validate_editable_link_name(name)
+  let (parent_address, header, links) = self.editable_group(parent_path)
+  guard editable_link_index(links, name) is None else {
+    raise InvalidArgument("link name already exists: " + name)
+  }
+  guard created_dataset_values_supported(values) else {
+    raise UnsupportedFeature(
+      "dataset creation does not support nested variable-length or reference values",
+    )
+  }
+  let offset_size = self.superblock.offset_size
+  let length_size = self.superblock.length_size
+  validate_write_values(
+    dimensions,
+    values,
+    reference_address_size=Some(offset_size),
+  )
+  guard dimensions.length() > 0 &&
+    chunk_dimensions.length() == dimensions.length() else {
+    raise InvalidArgument("chunk dimensions must match a simple dataspace")
+  }
+  for axis in 0..<chunk_dimensions.length() {
+    guard dimensions[axis] > 0UL &&
+      chunk_dimensions[axis] > 0U &&
+      chunk_dimensions[axis] <= 0x7FFFFFFFU else {
+      raise InvalidArgument("chunk dimension is invalid")
+    }
+  }
+  chunk_grid(dimensions, chunk_dimensions) |> ignore
+  validate_writer_chunk_size(
+    chunk_dimensions,
+    writer_value_element_size(values),
+  )
+  let custom_filters : Array[&Hdf5CustomFilter] = []
+  validate_write_filters(filters, custom_filters)
+  validate_writer_filters_for_values(values, filters)
+  let copied_fill = validated_write_fill(values, fill_value)
+  if copied_fill is Some(fill) && !created_dataset_values_supported(fill) {
+    raise UnsupportedFeature(
+      "dataset creation does not support nested variable-length or reference fills",
+    )
+  }
+
+  let tail = @buffer.Buffer::Buffer()
+  let strings : Array[String] = []
+  collect_heap_strings(strings, values)
+  if copied_fill is Some(fill) {
+    collect_heap_strings(strings, fill)
+  }
+  let mut heap = empty_writable_heap()
+  if strings.length() > 0 {
+    let heap_offset = next_aligned_tail_start(
+      self.bytes.length(),
+      tail.length(),
+      "append dataset heap",
+    )
+    let heap_address = file_offset_to_stored_address(
+      heap_offset,
+      self.superblock.base_address,
+    )
+    guard editable_uint_fits_width(heap_address, offset_size) else {
+      raise UnsupportedFeature(
+        "dataset heap address exceeds the file address width",
+      )
+    }
+    heap = {
+      address: heap_address,
+      region_address: 0UL,
+      strings,
+      regions: [],
+      sequences: [],
+    }
+    ignore(
+      append_aligned_bytes_to_tail(
+        tail,
+        self.bytes.length(),
+        encode_global_heap(heap),
+        "append dataset heap",
+      ),
+    )
+  }
+  let objects = if created_values_need_objects(values) ||
+    (copied_fill is Some(fill) && created_values_need_objects(fill)) {
+    self.created_reference_objects()
+  } else {
+    []
+  }
+  let encoded = encode_write_values(
+    values,
+    heap~,
+    objects~,
+    reference_address_size=offset_size,
+    vlen_address_size=offset_size,
+  )
+  let fill_payload = match copied_fill {
+    Some(fill) =>
+      encode_write_values(
+        fill,
+        heap~,
+        objects~,
+        reference_address_size=offset_size,
+        vlen_address_size=offset_size,
+      ).payload
+    None => Bytes::make(encoded.element_size, b'\x00')
+  }
+  let chunk_dataset : WritableDataset = {
+    path: "/",
+    dimensions: dimensions.copy(),
+    maximum_dimensions: dimensions.copy(),
+    values: copy_write_values(values),
+    storage: WritableChunked(
+      chunk_dimensions.copy(),
+      copy_write_filters(filters),
+    ),
+    fill_value: copied_fill,
+    chunk_filter_masks: [],
+  }
+  let storage_start = next_aligned_tail_start(
+    self.bytes.length(),
+    tail.length(),
+    "append chunked dataset storage",
+  )
+  let storage = encode_fixed_array_storage(
+    storage_start,
+    chunk_dataset,
+    heap,
+    objects,
+    custom_filters,
+    offset_size~,
+    length_size~,
+    base_address=self.superblock.base_address,
+    reference_address_size=offset_size,
+    vlen_address_size=offset_size,
+  )
+  ignore(
+    append_aligned_bytes_to_tail(
+      tail,
+      self.bytes.length(),
+      storage,
+      "append chunked dataset storage",
+    ),
+  )
+  let storage_address = file_offset_to_stored_address(
+    storage_start,
+    self.superblock.base_address,
+  )
+  guard editable_uint_fits_width(storage_address, offset_size) else {
+    raise UnsupportedFeature(
+      "chunk index address exceeds the file address width",
+    )
+  }
+  let messages : Array[RebuiltObjectMessage] = [
+    {
+      msg_type: msg_dataspace,
+      flags: b'\x00',
+      data: encode_dataspace(dimensions),
+      creation_order: 0UL,
+    },
+    {
+      msg_type: msg_datatype,
+      flags: b'\x00',
+      data: encoded.datatype,
+      creation_order: 0UL,
+    },
+  ]
+  if copied_fill is Some(fill) {
+    messages.push({
+      msg_type: msg_fill_value,
+      flags: b'\x00',
+      data: encode_fill_value(fill, heap~, objects~),
+      creation_order: 0UL,
+    })
+  }
+  if filters.length() > 0 {
+    messages.push({
+      msg_type: msg_filter_pipeline,
+      flags: b'\x00',
+      data: encode_filter_pipeline(
+        filters,
+        encoded.element_size,
+        writer_chunk_element_count(chunk_dimensions),
+        values,
+        fill_payload,
+        custom_filters,
+      ),
+      creation_order: 0UL,
+    })
+  }
+  messages.push({
+    msg_type: msg_data_layout,
+    flags: b'\x00',
+    data: encode_chunked_layout(
+      storage_address,
+      chunk_dimensions,
+      encoded.element_size,
+      offset_size~,
+    ),
+    creation_order: 0UL,
+  })
+  let object_address = self.append_created_object(
+    tail,
+    encode_created_object_header(messages),
+  )
+  let mut creation_order = 0UL
+  for link in links {
+    if link.creation_order >= creation_order {
+      creation_order = link.creation_order + 1UL
+    }
+  }
+  links.push({
+    link: {
+      name,
+      object_header_address: object_address,
+      cache_type: 0U,
+      link_target: None,
+      external_path: None,
+    },
+    creation_order,
+  })
+  self.write_rebuilt_links(parent_address, header, links, tail)
+}
+
+///|
+/// Adds an unfiltered dataset whose raw bytes live in external files below
+/// `parent_path` and returns the updated file.
+///
+/// Slots are concatenated in caller order to form the row-major element stream
+/// and must add up exactly to the dataset byte size. The external-data heap is
+/// appended to the HDF5 file with the file's address and length widths.
+pub fn Hdf5File::add_external_dataset(
+  self : Hdf5File,
+  parent_path : String,
+  name : String,
+  dimensions : Array[UInt64],
+  values : Hdf5WriteValues,
+  slots : Array[Hdf5ExternalSlot],
+  fill_value? : Hdf5WriteValues,
+) -> Bytes raise Hdf5Error {
+  validate_editable_link_name(name)
+  let (parent_address, header, links) = self.editable_group(parent_path)
+  guard editable_link_index(links, name) is None else {
+    raise InvalidArgument("link name already exists: " + name)
+  }
+  guard created_dataset_values_supported(values) else {
+    raise UnsupportedFeature(
+      "dataset creation does not support nested variable-length or reference values",
+    )
+  }
+  guard !writer_values_contain_vlen(values) else {
+    raise UnsupportedFeature(
+      "external storage cannot hold variable-length values",
+    )
+  }
+  let offset_size = self.superblock.offset_size
+  let length_size = self.superblock.length_size
+  validate_write_values(
+    dimensions,
+    values,
+    reference_address_size=Some(offset_size),
+  )
+  let copied_fill = validated_write_fill(values, fill_value)
+  if copied_fill is Some(fill) &&
+    (
+      !created_dataset_values_supported(fill) ||
+      writer_values_contain_vlen(fill)
+    ) {
+    raise UnsupportedFeature(
+      "external storage cannot hold variable-length fills",
+    )
+  }
+  let objects = if created_values_need_objects(values) ||
+    (copied_fill is Some(fill) && created_values_need_objects(fill)) {
+    self.created_reference_objects()
+  } else {
+    []
+  }
+  let encoded = encode_write_values(
+    values,
+    objects~,
+    reference_address_size=offset_size,
+    vlen_address_size=offset_size,
+  )
+  let expected_size = writer_shape_count(dimensions).to_int64() *
+    encoded.element_size.to_int64()
+  guard expected_size >= 0 else {
+    raise InvalidArgument("external dataset size is too large")
+  }
+  validate_external_slots(slots, expected_size.reinterpret_as_uint64())
+
+  let tail = @buffer.Buffer::Buffer()
+  let empty_heap = empty_writable_heap()
+  let heap_offset = next_aligned_tail_start(
+    self.bytes.length(),
+    tail.length(),
+    "append external data heap",
+  )
+  let heap_address = file_offset_to_stored_address(
+    heap_offset,
+    self.superblock.base_address,
+  )
+  let external_heap = encode_external_local_heap(
+    slots,
+    heap_address,
+    offset_size~,
+    length_size~,
+  )
+  ignore(
+    append_aligned_bytes_to_tail(
+      tail,
+      self.bytes.length(),
+      external_heap,
+      "append external data heap",
+    ),
+  )
+  let messages : Array[RebuiltObjectMessage] = [
+    {
+      msg_type: msg_dataspace,
+      flags: b'\x00',
+      data: encode_dataspace(dimensions),
+      creation_order: 0UL,
+    },
+    {
+      msg_type: msg_datatype,
+      flags: b'\x00',
+      data: encoded.datatype,
+      creation_order: 0UL,
+    },
+  ]
+  if copied_fill is Some(fill) {
+    messages.push({
+      msg_type: msg_fill_value,
+      flags: b'\x00',
+      data: encode_fill_value(fill, heap=empty_heap, objects~),
+      creation_order: 0UL,
+    })
+  }
+  messages.push({
+    msg_type: msg_external_data_files,
+    flags: b'\x00',
+    data: encode_external_data_message(
+      slots,
+      heap_address,
+      offset_size~,
+      length_size~,
+    ),
+    creation_order: 0UL,
+  })
+  messages.push({
+    msg_type: msg_data_layout,
+    flags: b'\x00',
+    data: encode_external_data_layout(
+      expected_size.reinterpret_as_uint64(),
+      offset_size~,
+      length_size~,
+    ),
+    creation_order: 0UL,
+  })
+  let object_address = self.append_created_object(
+    tail,
+    encode_created_object_header(messages),
   )
   let mut creation_order = 0UL
   for link in links {

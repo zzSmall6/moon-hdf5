@@ -56,6 +56,9 @@ def verify(path: Path) -> None:
         assert isinstance(handle["created_root"], h5py.Group)
         assert isinstance(handle["group/created_leaf"], h5py.Group)
         assert sorted(handle["created_root"]) == [
+            "chunked",
+            "chunked_labels",
+            "external",
             "labels",
             "numbers",
             "references",
@@ -66,12 +69,41 @@ def verify(path: Path) -> None:
             handle["created_root/numbers"][:],
             np.arange(1, 7).reshape(2, 3),
         )
+        assert handle["created_root/numbers"].fillvalue == -1
         assert handle["created_root/labels"].asstr()[:].tolist() == [
             "moon",
             "数据",
             "",
             "moon",
         ]
+        chunked = handle["created_root/chunked"]
+        assert chunked.shape == (4, 3)
+        assert chunked.chunks == (2, 3)
+        assert chunked.fillvalue == 99
+        assert chunked.shuffle
+        assert chunked.compression == "gzip"
+        assert chunked.compression_opts == 6
+        assert chunked.fletcher32
+        np.testing.assert_array_equal(
+            chunked[:],
+            np.arange(12, dtype=np.uint32).reshape(4, 3),
+        )
+        chunked_labels = handle["created_root/chunked_labels"]
+        assert chunked_labels.chunks == (2,)
+        assert chunked_labels.compression == "gzip"
+        assert chunked_labels.asstr()[:].tolist() == [
+            "moon",
+            "数据",
+            "",
+            "moon",
+        ]
+        external = handle["created_root/external"]
+        external_path = str(path) + ".external.bin"
+        assert external.external == [(external_path, 4, 24)]
+        assert external.fillvalue == -1
+        np.testing.assert_array_equal(
+            external[:], [10, 20, 30, 40, 50, 60]
+        )
         second_target = (
             "group/values" if "group/values" in handle else "group/child"
         )
@@ -122,6 +154,7 @@ def verify(path: Path) -> None:
     for address in (dataset_address, leaf_dataset_address):
         messages = message_types(data, address, offset_size, length_size)
         assert set(messages) >= {0x01, 0x03, 0x08}
+    Path(str(path) + ".external.bin").unlink(missing_ok=True)
     print(
         f"Verified {path} with h5py {h5py.__version__} "
         f"and HDF5 {h5py.version.hdf5_version}"

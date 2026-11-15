@@ -399,9 +399,15 @@ object references resolve against the current root and traversal nodes and use
 the same address width for every slot, including 4-byte-address files where
 h5py's high-level multi-reference conversion expects 8-byte slots. The release
 verifier therefore reads raw reference slots with the HDF5 low-level API.
-Nested variable-length or reference members in structured values, chunked,
-filtered and external creation, fill values and maximum dimensions remain
-unsupported by this entry point.
+Finite chunked datasets append a width-aware fixed-array header, data block and
+chunk payloads before the object header; built-in Shuffle, deflate, Fletcher32
+and scale-offset messages use the normal filter pipeline. External datasets
+append a width-aware local heap for slot names and write the external-data
+message plus an undefined contiguous layout. Fill values use the shared fill
+message encoder for contiguous, chunked and external storage. Nested
+variable-length or reference members in structured values, resizable maximum
+dimensions, custom filters on appended chunked datasets and virtual storage
+remain unsupported by this entry point.
 The parent may use link messages or a symbol table; symbol-table parents are
 converted during attachment. Created objects participate in later attribute,
 link and object-creation edits. Object deletion is available as hard-link

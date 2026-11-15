@@ -3929,12 +3929,16 @@ fn encode_compact_layout(payload : Bytes) -> Bytes {
 }
 
 ///|
-fn encode_external_data_layout(size : UInt64) -> Bytes {
-  let buffer = @buffer.Buffer::Buffer(size_hint=18)
+fn encode_external_data_layout(
+  size : UInt64,
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+) -> Bytes {
+  let buffer = @buffer.Buffer::Buffer(size_hint=2 + offset_size + length_size)
   buffer.write_byte(b'\x03')
   buffer.write_byte(b'\x01')
-  buffer.write_uint64_le(0xFFFFFFFFFFFFFFFFUL)
-  buffer.write_uint64_le(size)
+  write_uint_width(buffer, 0xFFFFFFFFFFFFFFFFUL, offset_size)
+  write_uint_width(buffer, size, length_size)
   buffer.to_bytes()
 }
 
@@ -3975,6 +3979,8 @@ fn external_name_offsets(
 fn encode_external_local_heap(
   slots : Array[Hdf5ExternalSlot],
   address : UInt64,
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
 ) -> Bytes raise Hdf5Error {
   let (_, data_size) = external_name_offsets(slots)
   let data = FixedArray::make(data_size, b'\x00')
@@ -3988,13 +3994,16 @@ fn encode_external_local_heap(
       names.push(slot.file_name)
     }
   }
-  let buffer = @buffer.Buffer::Buffer(size_hint=32 + data_size)
+  let header_length = 8 + 2 * length_size + offset_size
+  let data_start = writer_align(header_length)
+  let buffer = @buffer.Buffer::Buffer(size_hint=data_start + data_size)
   writer_write_bytes(buffer, b"HEAP")
   buffer.write_byte(b'\x00')
   writer_write_zeros(buffer, 3)
-  buffer.write_uint64_le(data_size.to_uint64())
-  buffer.write_uint64_le(1UL)
-  buffer.write_uint64_le(address + 32UL)
+  write_uint_width(buffer, data_size.to_uint64(), length_size)
+  write_uint_width(buffer, 1UL, length_size)
+  write_uint_width(buffer, address + data_start.to_uint64(), offset_size)
+  writer_write_zeros(buffer, data_start - buffer.length())
   writer_write_bytes(buffer, data.unsafe_reinterpret_as_bytes())
   buffer.to_bytes()
 }
@@ -4003,6 +4012,8 @@ fn encode_external_local_heap(
 fn encode_external_data_message(
   slots : Array[Hdf5ExternalSlot],
   heap_address : UInt64,
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
 ) -> Bytes raise Hdf5Error {
   let (offsets, _) = external_name_offsets(slots)
   guard slots.length() <= 65535 else {
@@ -4013,12 +4024,13 @@ fn encode_external_data_message(
   writer_write_zeros(buffer, 3)
   buffer.write_uint16_le(slots.length().to_uint16())
   buffer.write_uint16_le(slots.length().to_uint16())
-  buffer.write_uint64_le(heap_address)
+  write_uint_width(buffer, heap_address, offset_size)
   for index in 0..<slots.length() {
-    buffer.write_uint64_le(offsets[index])
-    buffer.write_uint64_le(slots[index].file_offset)
-    buffer.write_uint64_le(slots[index].data_size)
+    write_uint_width(buffer, offsets[index], length_size)
+    write_uint_width(buffer, slots[index].file_offset, length_size)
+    write_uint_width(buffer, slots[index].data_size, length_size)
   }
+  writer_write_zeros(buffer, writer_align(buffer.length()) - buffer.length())
   buffer.to_bytes()
 }
 
@@ -4029,6 +4041,7 @@ fn encode_chunked_layout(
   element_size : Int32,
   extensible~ : Bool = false,
   btree_v2~ : Bool = false,
+  offset_size~ : Int32 = 8,
 ) -> Bytes {
   let mut largest = element_size.to_uint64()
   for dimension in chunk_dimensions {
@@ -4043,7 +4056,7 @@ fn encode_chunked_layout(
     remaining = remaining >> 8
   }
   let buffer = @buffer.Buffer::Buffer(
-    size_hint=8 + (chunk_dimensions.length() + 1) * width + 8,
+    size_hint=8 + (chunk_dimensions.length() + 1) * width + offset_size,
   )
   buffer.write_byte(b'\x04')
   buffer.write_byte(b'\x02')
@@ -4078,7 +4091,7 @@ fn encode_chunked_layout(
     buffer.write_byte(b'\x03')
     buffer.write_byte(b'\x0a')
   }
-  buffer.write_uint64_le(address)
+  write_uint_width(buffer, address, offset_size)
   buffer.to_bytes()
 }
 
@@ -4809,13 +4822,28 @@ fn encode_dataset_chunks(
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
   custom_filters : Array[&Hdf5CustomFilter],
+  reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
 ) -> Array[EncodedChunkEntry] raise Hdf5Error {
   let (chunk_dimensions, filters, order, grid_dimensions) = writer_dataset_chunk_grid(
     dataset,
   )
-  let encoded = encode_write_values(dataset.values, heap~, objects~)
+  let encoded = encode_write_values(
+    dataset.values,
+    heap~,
+    objects~,
+    reference_address_size~,
+    vlen_address_size~,
+  )
   let fill = match dataset.fill_value {
-    Some(value) => encode_write_values(value, heap~, objects~).payload
+    Some(value) =>
+      encode_write_values(
+        value,
+        heap~,
+        objects~,
+        reference_address_size~,
+        vlen_address_size~,
+      ).payload
     None => Bytes::make(encoded.element_size, b'\x00')
   }
   let (grid, chunk_count) = chunk_grid(grid_dimensions, chunk_dimensions)
@@ -4921,6 +4949,11 @@ fn encode_fixed_array_storage(
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
   custom_filters : Array[&Hdf5CustomFilter],
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+  base_address~ : UInt64 = 0UL,
+  reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
 ) -> Bytes raise Hdf5Error {
   let (_, filters) = match dataset.storage {
     WritableChunked(dimensions, filters) => (dimensions, filters)
@@ -4928,9 +4961,16 @@ fn encode_fixed_array_storage(
     WritableCompact | WritableContiguous | WritableExternal(_) =>
       raise InvalidField("expected chunked writer dataset")
   }
-  let entries = encode_dataset_chunks(dataset, heap, objects, custom_filters)
+  let entries = encode_dataset_chunks(
+    dataset,
+    heap,
+    objects,
+    custom_filters,
+    reference_address_size~,
+    vlen_address_size~,
+  )
   let filtered = filters.length() > 0
-  let entry_size = if filtered { 14 } else { 8 }
+  let entry_size = if filtered { offset_size + 6 } else { offset_size }
   let page_bits = 10
   let page_entries = 1 << page_bits
   let paged = entries.length() > page_entries
@@ -4940,19 +4980,28 @@ fn encode_fixed_array_storage(
     1
   }
   let bitmap_size = if paged { (page_count + 7) / 8 } else { 0 }
-  let header_length = 28
-  let block_address = writer_align(start.to_int() + header_length).to_uint64()
-  let block_length = 14 +
+  let header_length = 8 + length_size + offset_size + 4
+  let block_address = writer_align(start.to_int() + header_length)
+  let stored_start = file_offset_to_stored_address(start, base_address)
+  let stored_block_address = file_offset_to_stored_address(
+    block_address.to_uint64(),
+    base_address,
+  )
+  let block_length = 6 +
+    offset_size +
     bitmap_size +
     (if paged { 4 + page_count * 4 } else { 4 }) +
     entries.length() * entry_size
-  let mut chunk_address = writer_align(block_address.to_int() + block_length)
+  let mut chunk_address = writer_align(block_address + block_length)
   for index in 0..<entries.length() {
     if entries[index].allocated {
       entries[index] = {
         allocated: true,
         data: entries[index].data,
-        address: chunk_address.to_uint64(),
+        address: file_offset_to_stored_address(
+          chunk_address.to_uint64(),
+          base_address,
+        ),
         filter_mask: entries[index].filter_mask,
       }
       chunk_address = writer_align(chunk_address + entries[index].data.length())
@@ -4965,15 +5014,15 @@ fn encode_fixed_array_storage(
   header.write_byte(if filtered { b'\x01' } else { b'\x00' })
   header.write_byte(entry_size.to_byte())
   header.write_byte(page_bits.to_byte())
-  header.write_uint64_le(entries.length().to_uint64())
-  header.write_uint64_le(block_address)
+  write_uint_width(header, entries.length().to_uint64(), length_size)
+  write_uint_width(header, stored_block_address, offset_size)
   header.write_uint_le(metadata_checksum(header.to_bytes(), 0, header.length()))
 
   let block = @buffer.Buffer::Buffer(size_hint=block_length)
   writer_write_bytes(block, b"FADB")
   block.write_byte(b'\x00')
   block.write_byte(if filtered { b'\x01' } else { b'\x00' })
-  block.write_uint64_le(start)
+  write_uint_width(block, stored_start, offset_size)
   if paged {
     for byte_index in 0..<bitmap_size {
       let remaining = page_count - byte_index * 8
@@ -4997,12 +5046,14 @@ fn encode_fixed_array_storage(
     }
     while entry_index < page_end {
       let entry = entries[entry_index]
-      page.write_uint64_le(
+      write_uint_width(
+        page,
         if entry.allocated {
           entry.address
         } else {
           0xFFFFFFFFFFFFFFFFUL
         },
+        offset_size,
       )
       if filtered {
         guard entry.data.length() <= 65535 else {
@@ -5026,16 +5077,15 @@ fn encode_fixed_array_storage(
 
   let output = @buffer.Buffer::Buffer(size_hint=chunk_address - start.to_int())
   writer_write_bytes(output, header.to_bytes())
-  writer_write_zeros(
-    output,
-    block_address.to_int() - start.to_int() - output.length(),
-  )
+  writer_write_zeros(output, block_address - start.to_int() - output.length())
   writer_write_bytes(output, block.to_bytes())
   for entry in entries {
     if entry.allocated {
       writer_write_zeros(
         output,
-        entry.address.to_int() - start.to_int() - output.length(),
+        (entry.address - base_address).to_int() -
+        start.to_int() -
+        output.length(),
       )
       writer_write_bytes(output, entry.data)
     }

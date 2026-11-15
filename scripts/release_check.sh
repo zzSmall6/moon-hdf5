@@ -36,7 +36,7 @@ symbol_dense=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-dense.XXXXXX")
 created=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created.XXXXXX")
 created8=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created8.XXXXXX")
 deleted=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-deleted.XXXXXX")
-trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$created" "$created8" "$deleted"' EXIT HUP INT TERM
+trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"' EXIT HUP INT TERM
 moon run src/cmd/write_demo --target native -- "$output"
 
 python=${H5PY_PYTHON:-}
