@@ -16,7 +16,8 @@ This project implements a documented subset of HDF5. The
   links and resolver-backed raw-data sources.
 - Reading covers superblocks v0–v3, compact/contiguous/chunked storage, built-in
   and registered custom filters, dense and shared metadata, structured and
-  variable-length values, references, and bounded chunk/selection iterators.
+  variable-length values, references, virtual datasets, and bounded
+  chunk/selection iterators for directly addressable mappings.
 - Writing covers groups, datasets, attributes, links, committed datatypes,
   filters, fills, dense/SOHM metadata, nested variable-length and reference
   values, compact/contiguous/chunked/external storage, and resizable datasets.
@@ -32,7 +33,7 @@ cases.
 Add the released package to a MoonBit module:
 
 ```sh
-moon add Zz04321/moon-hdf5@0.1.0
+moon add Zz04321/moon-hdf5@0.2.0
 moon update
 ```
 
@@ -222,8 +223,15 @@ errors and 2 for invalid arguments.
 
 moon-hdf5 is not a drop-in replacement for libhdf5.
 
-- Not yet implemented: streaming output, free-space reclamation, virtual
-  datasets, SWMR and parallel HDF5.
+- Not yet implemented: streaming output, free-space reclamation, SWMR and
+  parallel HDF5.
+- Virtual datasets are read-only. Same-file and external sources are resolved
+  through `Hdf5File::with_external_source` or `Hdf5Resolver`; source files must
+  be registered, printf-style source names and datatype conversion are not
+  supported, and each source mapping must use the virtual dataset's exact
+  datatype. Page and tile reads of all or non-overlapping hyperslab mappings
+  fetch only the requested elements; point and irregular block mappings are
+  expanded in memory per mapping.
 - Fixed boundaries: readers and writers are memory-resident at the API surface;
   editing is append-only; references and patches target existing objects, and
   external reference files must be registered; external raw data is

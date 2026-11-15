@@ -292,6 +292,10 @@ fn selected_payload(
         source = bytes
       }
     }
+    3 =>
+      raise UnsupportedFeature(
+        "virtual dataset storage requires Hdf5File or Hdf5Resolver",
+      )
     _ => raise UnsupportedFeature("unknown data layout class")
   }
   let output = filled_payload(indices.length().to_int64(), datatype.size, fill)

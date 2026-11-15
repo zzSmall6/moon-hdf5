@@ -186,6 +186,18 @@ else
 fi
 
 if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> Virtual-dataset fixture verification skipped (SKIP_H5PY=1)"
+elif [ ! -f testdata/virtual_dataset.h5 ] ||
+  [ ! -f testdata/virtual_dataset_32.h5 ] ||
+  [ ! -f testdata/virtual_dataset_nested.h5 ] ||
+  [ ! -f testdata/virtual_dataset_source.h5 ] ||
+  [ ! -f testdata/virtual_dataset_source_32.h5 ]; then
+  echo "==> Virtual-dataset fixture verification skipped (fixture unavailable)"
+else
+  "$python" scripts/verify_virtual_dataset_fixture.py
+fi
+
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
   echo "==> Hard-link fixture verification skipped (SKIP_H5PY=1)"
 elif [ ! -f testdata/hard_links.h5 ]; then
   echo "==> Hard-link fixture verification skipped (fixture unavailable)"

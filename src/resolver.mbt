@@ -399,12 +399,24 @@ pub fn Hdf5Resolver::read_dataset(
   }
   let file = self.open(node.file)
   let header = file.object_header_at(node.address)
-  if header.first(msg_external_data_files) is Some(_) {
-    let metadata = read_dataset_metadata(
-      header,
-      file.superblock.offset_size,
-      file.superblock.length_size,
+  let metadata = read_dataset_metadata(
+    header,
+    file.superblock.offset_size,
+    file.superblock.length_size,
+  )
+  if metadata.layout.layout_class == 3 {
+    let selected = self.read_dataset_selection(
+      path,
+      full_dataset_selection(metadata.dataspace),
     )
+    return {
+      dataspace: metadata.dataspace,
+      datatype: metadata.datatype,
+      layout: metadata.layout,
+      values: selected.values,
+    }
+  }
+  if header.first(msg_external_data_files) is Some(_) {
     return self.read_external_dataset(node.file, file, header, metadata)
   }
   file.read_dataset(node.path)
@@ -436,12 +448,20 @@ pub fn Hdf5Resolver::read_dataset_selection(
   }
   let file = self.open(node.file)
   let header = file.object_header_at(node.address)
-  if header.first(msg_external_data_files) is Some(_) {
-    let metadata = read_dataset_metadata(
-      header,
-      file.superblock.offset_size,
-      file.superblock.length_size,
+  let metadata = read_dataset_metadata(
+    header,
+    file.superblock.offset_size,
+    file.superblock.length_size,
+  )
+  if metadata.layout.layout_class == 3 {
+    return file.read_dataset_selection_with_context(
+      node.path,
+      selection,
+      Some(self),
+      node.file,
     )
+  }
+  if header.first(msg_external_data_files) is Some(_) {
     return self.read_external_dataset_selection(
       node.file,
       file,

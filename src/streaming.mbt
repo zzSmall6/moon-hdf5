@@ -128,6 +128,20 @@ fn DatasetChunkIterator::read_selection(
   self : DatasetChunkIterator,
   selection : DatasetSelection,
 ) -> DatasetSelectionResult raise Hdf5Error {
+  if self.metadata.layout.layout_class == 3 {
+    let (dimensions, indices) = selection_indices(
+      self.metadata.dataspace,
+      selection,
+    )
+    return self.file.read_virtual_dataset_indices(
+      self.header,
+      self.metadata,
+      dimensions,
+      indices,
+      self.resolver,
+      self.referring_file,
+    )
+  }
   if self.header.first(msg_external_data_files) is Some(_) {
     let resolver = match self.resolver {
       Some(resolver) => resolver
@@ -354,6 +368,16 @@ fn DatasetSelectionIterator::read_page(
   indices : Array[UInt64],
 ) -> DatasetSelectionResult raise Hdf5Error {
   let dimensions = [indices.length().to_uint64()]
+  if self.metadata.layout.layout_class == 3 {
+    return self.file.read_virtual_dataset_indices(
+      self.header,
+      self.metadata,
+      dimensions,
+      indices,
+      self.resolver,
+      self.referring_file,
+    )
+  }
   if self.header.first(msg_external_data_files) is Some(_) {
     let resolver = match self.resolver {
       Some(resolver) => resolver

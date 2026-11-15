@@ -59,6 +59,8 @@ pub struct DataLayout {
   priv element_size : Int32
   priv compact_data : Bytes
   priv chunk_index : ChunkIndex
+  priv virtual_heap_address : UInt64
+  priv virtual_heap_index : Int32
 }
 
 ///|
@@ -113,6 +115,8 @@ fn parse_data_layout(
   let mut element_size = 0
   let mut compact_data : Bytes = b""
   let mut chunk_index = BTreeV1
+  let mut virtual_heap_address = 0UL
+  let mut virtual_heap_index = 0
   if version == 1 || version == 2 {
     match layout_class {
       0 => {
@@ -266,6 +270,22 @@ fn parse_data_layout(
           }
           element_size = reader.read_u32_le().reinterpret_as_int()
         }
+      3 => {
+        guard version == 4 else {
+          raise InvalidField("virtual data layout requires version 4")
+        }
+        data_address_offset = if message.data_offset >= 0 {
+          message.data_offset + reader.position()
+        } else {
+          -1
+        }
+        data_address_width = offset_size
+        virtual_heap_address = reader.read_uint_le(offset_size)
+        virtual_heap_index = reader.read_u32_le().reinterpret_as_int()
+        guard virtual_heap_index >= 0 else {
+          raise InvalidField("virtual mapping heap index is too large")
+        }
+      }
       _ => raise InvalidField("invalid data layout class")
     }
   }
@@ -282,5 +302,7 @@ fn parse_data_layout(
     element_size,
     compact_data,
     chunk_index,
+    virtual_heap_address,
+    virtual_heap_index,
   }
 }

@@ -48,6 +48,18 @@ are treated as no stored payload, so unallocated storage reads as zero, matching
 HDF5. A custom fixed-size payload remains parsed and size-checked even when the
 writing policy disables its use.
 
+Virtual datasets use a version-4 layout whose global-heap object contains the
+source/virtual selection mappings. The reader validates the mapping-block
+checksum, selection ranks and bounds, source registration, element counts and a
+recursive datatype match before copying source elements into the requested
+virtual indices. Unmapped elements use the declared fill value. The same path
+serves full reads, arbitrary selections, chunk tiles, selection pages and
+region-reference targets; nested virtual datasets recurse through the same
+dependency graph with a fixed depth bound. All and non-overlapping hyperslab
+mappings are addressed directly, so a page request reads only the corresponding
+source elements even when the mapping itself contains very many elements. Point
+and irregular block mappings retain the materialized mapping path.
+
 Filters are decoded through a shared pipeline model: shuffle, deflate,
 Fletcher32, integer scale-offset and f32/f64 decimal scale-offset. Per-chunk
 masks follow HDF5 filter order. Non-finite scale-offset inputs are rejected.
@@ -435,7 +447,7 @@ rejected instead of producing a file HDF5 may corrupt on resize. Custom filters
 for appended chunked datasets are supplied through the `custom_filters`
 argument, registered with the same ID/name validation as `Hdf5Writer`, and used
 by the fixed-array, extensible-array and v2 B-tree storage encoders. Virtual
-storage remains unsupported by this entry point.
+storage is read-only; this entry point does not emit virtual mappings.
 The parent may use link messages or a symbol table; symbol-table parents are
 converted during attachment. Created objects participate in later attribute,
 link and object-creation edits. Object deletion is available as hard-link

@@ -376,6 +376,20 @@ pub fn Hdf5File::read_dataset(
     self.superblock.offset_size,
     self.superblock.length_size,
   )
+  if metadata.layout.layout_class == 3 {
+    let selected = self.read_dataset_selection_with_context(
+      path,
+      full_dataset_selection(metadata.dataspace),
+      None,
+      "",
+    )
+    return {
+      dataspace: metadata.dataspace,
+      datatype: metadata.datatype,
+      layout: metadata.layout,
+      values: selected.values,
+    }
+  }
   match self.source {
     Some(source) => {
       let rank = metadata.dataspace.dimensions.length()
@@ -436,40 +450,7 @@ pub fn Hdf5File::read_dataset_selection(
   path : String,
   selection : DatasetSelection,
 ) -> DatasetSelectionResult raise Hdf5Error {
-  let node = self.resolve(path)
-  guard node.kind == Dataset else {
-    raise InvalidField("object is not a dataset: " + path)
-  }
-  let header = self.object_header_at(node.address)
-  let metadata = read_dataset_metadata(
-    header,
-    self.superblock.offset_size,
-    self.superblock.length_size,
-  )
-  match self.source {
-    Some(source) =>
-      read_source_dataset_selection(
-        source,
-        header,
-        metadata,
-        selection,
-        self.superblock.offset_size,
-        self.superblock.length_size,
-        self.superblock.base_address,
-        custom_filters=self.custom_filters,
-      )
-    None =>
-      read_dataset_selection(
-        self.bytes,
-        header,
-        metadata,
-        selection,
-        self.superblock.offset_size,
-        self.superblock.length_size,
-        self.superblock.base_address,
-        custom_filters=self.custom_filters,
-      )
-  }
+  self.read_dataset_selection_with_context(path, selection, None, "")
 }
 
 ///|

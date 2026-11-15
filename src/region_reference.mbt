@@ -260,19 +260,26 @@ fn validate_region_selection(
 }
 
 ///|
-fn parse_region_selection(
+fn parse_region_selection_body(
   reader : Reader,
-  dataspace : Dataspace,
 ) -> Hdf5RegionSelection raise Hdf5Error {
   let selection_type = reader.read_u32_le().reinterpret_as_int()
   let version = reader.read_u32_le().reinterpret_as_int()
-  let selection = match selection_type {
+  match selection_type {
     0 => parse_region_empty_selection(reader, version, RegionEmpty)
     1 => parse_region_points(reader, version)
     2 => parse_region_hyperslab(reader, version)
     3 => parse_region_empty_selection(reader, version, RegionAll)
     _ => raise UnsupportedFeature("unsupported region selection type")
   }
+}
+
+///|
+fn parse_region_selection(
+  reader : Reader,
+  dataspace : Dataspace,
+) -> Hdf5RegionSelection raise Hdf5Error {
+  let selection = parse_region_selection_body(reader)
   guard reader.remaining() == 0 else {
     raise InvalidField("region selection has trailing bytes")
   }
@@ -616,6 +623,18 @@ pub fn Hdf5File::read_region_reference(
     metadata.dataspace,
     target.selection,
   )
+  if metadata.layout.layout_class == 3 {
+    return Some(
+      self.read_virtual_dataset_indices(
+        header,
+        metadata,
+        dimensions,
+        indices,
+        None,
+        "",
+      ),
+    )
+  }
   let result = match self.source {
     Some(source) =>
       read_source_dataset_indices(

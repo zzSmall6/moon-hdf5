@@ -385,6 +385,18 @@ fn Hdf5Resolver::read_region_reference_in(
     metadata.dataspace,
     target.selection,
   )
+  if metadata.layout.layout_class == 3 {
+    return Some(
+      file.read_virtual_dataset_indices(
+        header,
+        metadata,
+        dimensions,
+        indices,
+        Some(self),
+        resolved.file,
+      ),
+    )
+  }
   let result = match file.source {
     Some(source) =>
       read_source_dataset_indices(

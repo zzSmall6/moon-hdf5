@@ -9,8 +9,8 @@ The MoonBit release checks pass on the current worktree with the stable
 MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
 `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 405 tests passed;
-- native: 405 tests passed;
+- wasm: 410 tests passed;
+- native: 410 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output remain
   covered by prior h5py 3.13.0/HDF5 1.14.6 verification, and the new v1 B-tree
@@ -96,8 +96,17 @@ MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
 - unallocated extensible-array pages in an existing data block are covered for
   both unfiltered and filtered indexes, including page checksums and the EASB
   bitmap checksum;
+- virtual datasets are read through version-4 layout messages and
+  global-heap mapping blocks, including same-file and registered external
+  sources, multiple and strided mappings, fill gaps, 4- and 8-byte addresses,
+  nested virtual datasets and selection/page/tile reads; mapping checksums,
+  selection bounds/counts, source registration and exact datatype compatibility
+  are validated; all and non-overlapping hyperslab mappings are addressed
+  directly so page and tile reads allocate by request size rather than mapping
+  size;
 - numeric-layout, scale-offset, vlen-fill, NetCDF-4, external-storage,
-  shared-message, hard-link, MATLAB-compatible and reference fixtures verified;
+  shared-message, virtual-dataset, hard-link, MATLAB-compatible and reference
+  fixtures verified;
 - the version-4 reference fixture and writer output are exercised by MoonBit
   round-trip tests; external-reference output is independently read through the
   HDF5 1.14.6 C API.
@@ -111,7 +120,8 @@ structures raise errors; detection is not exhaustive.
 | --- | --- |
 | Framing and navigation | Superblock v0–v3, user blocks, compact/dense groups, hard/soft links, `.`/`..` path normalization, source-backed reads |
 | Dense metadata | FRHP direct/indirect blocks, huge objects, v2 B-tree leaf/internal nodes and SOHM heap IDs |
-| Datasets | Compact, contiguous, external raw data and every supported chunk index |
+| Datasets | Compact, contiguous, virtual storage, external raw data and every supported chunk index |
+| Virtual datasets | Same-file and registered external mappings, multiple/strided selections, fill gaps, nested virtual datasets and 4-/8-byte fixtures |
 | Fill policies | Default, custom, undefined and `FILL_TIME_NEVER`; malformed messages and external-storage boundaries remain rejected |
 | Filters | Shuffle, deflate, Fletcher32, integer/f32/f64 scale-offset, masks and fill markers; registered caller-defined encoders/decoders with named v2 pipeline entries and per-chunk mask skips |
 | Datatypes | Fixed-point, IEEE/normalized floats, strings, compound, enum, array, time, bitfield, opaque, sequence, references, complex |
@@ -163,6 +173,14 @@ flags are rejected instead of being misread as local heap identifiers.
 rejects cycles, reports unregistered sources and reads contiguous external
 raw-data slots across file and element boundaries. `Hdf5File` intentionally does
 not dereference external targets or external raw data.
+
+Virtual datasets are decoded from the layout's global-heap mapping object after
+checking its checksum, version, entry count and complete consumption. Every
+mapping validates source registration, source dataset type, selection ranks and
+bounds, equal source/virtual element counts and exact datatype semantics. Source
+elements are copied through the normal dataset path, so compact, contiguous,
+chunked, filtered, external raw-data and nested virtual sources reuse their
+existing readers. Unmapped virtual indices retain the dataset fill value.
 
 Fixed-point storage wider than 8 bytes is decoded without truncation into
 `BigInt` values, including bit offsets and both byte orders. Extended binary
@@ -376,8 +394,9 @@ message types emitted by this writer.
   the file's 4- or 8-byte widths. Four-byte files reject custom fills for
   structured values containing variable-length members because HDF5 1.14.6
   cannot represent the fill size consistently. Appended chunked datasets accept
-  caller-registered filters through `custom_filters`; virtual storage and
-  physical free-space reclamation are not supported. New parents can be edited
+  caller-registered filters through `custom_filters`; virtual storage is read-only
+  through the dataset reader and physical free-space reclamation is not
+  supported. New parents can be edited
   afterwards, and superseded parent metadata remains unreferenced because no
   free-space manager is written.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
@@ -622,3 +641,13 @@ message types emitted by this writer.
   compound/array/vlen nesting. MoonBit tests cover object, region, attribute,
   chunked, nested, duplicate/unregistered-source and patch cases; release demo
   output is independently read through the HDF5 1.14.6 C API.
+- 2026-11-15: virtual-dataset reading is implemented for HDF5 1.14.6 layout-v4
+  messages and global-heap mapping blocks. The reader supports same-file and
+  registered external source files, multiple and strided mappings, fill gaps,
+  4-/8-byte addresses, nested virtual datasets and full, point, hyperslab, tile
+  and selection-page reads through both `Hdf5File` and `Hdf5Resolver`. Mapping
+  checksums, bounds, element counts, source registration and exact datatype
+  compatibility are validated. H5py 3.13.0/HDF5 1.14.6 fixtures and an
+  independent verifier cover the generated files; MoonBit covers the same
+  values, selections and resolver paths. Virtual-dataset writing remains outside
+  the read-only extension boundary.
