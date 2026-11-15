@@ -657,5 +657,7 @@ message types emitted by this writer.
   optional fill values, multiple mappings, same-file sources and caller-managed
   external source names in 4- and 8-byte files. Point and block mappings are
   rejected because HDF5 1.14.6 does not support them for virtual datasets.
+  Datatype validation follows the target file's address width, including
+  four-byte legacy reference datatypes.
   MoonBit tests cover new and existing files; h5py 3.13.0/HDF5 1.14.6
   independently verifies layout, values, shapes and mapping counts.

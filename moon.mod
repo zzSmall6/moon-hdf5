@@ -25,7 +25,7 @@ keywords = [ "hdf5", "scientific-data", "file-format", "reader", "writer" ]
 
 preferred_target = "wasm"
 
-description = "A pure MoonBit HDF5 reader and new-file writer"
+description = "A pure MoonBit HDF5 reader and writer for the common-file profile"
 
 import {
   "moonbitlang/x@0.5.7",

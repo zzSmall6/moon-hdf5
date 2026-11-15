@@ -35,7 +35,7 @@ cases.
 Add the released package to a MoonBit module:
 
 ```sh
-moon add Zz04321/moon-hdf5@0.2.0
+moon add Zz04321/moon-hdf5@0.3.0
 moon update
 ```
 
@@ -207,8 +207,8 @@ let edited = @lib.Hdf5File::parse(with_attribute).add_soft_link(
 - `add_group`, dataset creation APIs and `delete_object` append objects and
   attach or detach links through the same rebuild path.
 
-Editing is append-only. Allocations are limited to existing writable layout or
-chunk-index storage, and superseded metadata or data remains unreferenced.
+Editing is append-only: new objects, values and rebuilt metadata are appended,
+and superseded bytes remain unreferenced.
 
 ## Command Line
 
@@ -230,28 +230,23 @@ moon-hdf5 is not a drop-in replacement for libhdf5.
 
 - Outside the common-file profile: streaming output, free-space reclamation,
   SWMR and parallel HDF5.
-- Virtual datasets support all, empty and hyperslab mappings; HDF5 1.14.6 does
-  not support point or block virtual mappings, so the writer rejects them.
-  Readers resolve same-file and external sources through
-  `Hdf5File::with_external_source` or `Hdf5Resolver`. Writers store mappings but
-  do not open or validate source datasets. Source files must be registered when
-  reading, printf-style source names and datatype conversion are unsupported,
-  and each source mapping must use the virtual dataset's exact datatype. Page
-  and tile reads of all or non-overlapping hyperslab mappings fetch only the
-  requested elements; point and irregular block mappings are expanded in
-  memory per mapping.
-- Fixed boundaries: readers and writers are memory-resident at the API surface;
-  editing is append-only; references and patches target existing objects, and
-  external reference files must be registered; external raw data is
-  resolver-only, contiguous and unfiltered; dense collections are limited to
-  9–65,535 records; four-byte structured values with variable-length custom
-  fills are rejected for HDF5 1.14.6 interoperability.
+- Virtual datasets support same-file and registered external sources with all,
+  empty or hyperslab mappings. HDF5 1.14.6 rejects point and block virtual
+  mappings, so the writer rejects them. Writers store source names without
+  opening them; readers require source registration and an exact datatype match.
+  Printf-style source names and datatype conversion are unsupported.
+- The API is memory-resident, editing is append-only, and references or patches
+  target existing objects. External raw data is resolver-only, contiguous and
+  unfiltered. Dense collections hold 9–65,535 records. Four-byte structured
+  values with variable-length custom fills are rejected for HDF5 1.14.6
+  interoperability.
 - Detection of unsupported input is not exhaustive. Unsupported structures
   raise `UnsupportedFeature`; malformed input raises `InvalidField` or
   `UnexpectedEof`.
 
 The [compatibility matrix](docs/compatibility.md) is the authoritative list of
-supported variants and boundaries.
+supported variants and boundaries; [design](docs/design.md) and
+[audit](docs/audit.md) notes cover implementation and verification details.
 
 ## Development
 

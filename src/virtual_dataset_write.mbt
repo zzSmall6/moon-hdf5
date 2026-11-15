@@ -11,8 +11,13 @@ fn validate_virtual_dataset_dimensions(
 fn virtual_dataset_values(
   datatype : Datatype,
   fill_value : DatasetValue?,
+  reference_address_size : Int32,
 ) -> (Hdf5WriteValues, Hdf5WriteValues?) raise Hdf5Error {
-  validate_writer_datatype(datatype, 0)
+  validate_writer_datatype(
+    datatype,
+    0,
+    reference_address_size=Some(reference_address_size),
+  )
   let empty = StructuredValues(datatype, [])
   match fill_value {
     Some(value) => {
@@ -28,7 +33,8 @@ fn virtual_dataset_values(
 ///
 /// `source_file` uses `.` for the current file and otherwise names a file that
 /// a resolver or caller will provide when reading. Source and virtual selections
-/// may be all, empty, point, regular hyperslab or block selections. When both
+/// may be all, empty or hyperslab selections. HDF5 1.14.6 does not support point
+/// or block virtual mappings, so those selections are rejected. When both
 /// selections have countable elements, their counts must match. A fill value is
 /// one value of the dataset datatype and is used for unmapped virtual elements.
 pub fn Hdf5Writer::add_virtual_dataset(
@@ -47,7 +53,7 @@ pub fn Hdf5Writer::add_virtual_dataset(
     raise InvalidArgument("writer object path already exists")
   }
   validate_virtual_dataset_dimensions(dimensions)
-  let (values, copied_fill) = virtual_dataset_values(datatype, fill_value)
+  let (values, copied_fill) = virtual_dataset_values(datatype, fill_value, 8)
   for mapping in mappings {
     validate_virtual_mapping(dimensions, mapping)
   }
@@ -86,7 +92,11 @@ pub fn Hdf5File::add_virtual_dataset(
     raise InvalidArgument("link name already exists: " + name)
   }
   validate_virtual_dataset_dimensions(dimensions)
-  let (values, copied_fill) = virtual_dataset_values(datatype, fill_value)
+  let (values, copied_fill) = virtual_dataset_values(
+    datatype,
+    fill_value,
+    self.superblock.offset_size,
+  )
   for mapping in mappings {
     validate_virtual_mapping(dimensions, mapping)
   }

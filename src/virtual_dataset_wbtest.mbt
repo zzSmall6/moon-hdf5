@@ -394,4 +394,30 @@ test "existing four-byte files can gain virtual datasets" {
     virtual_dataset_integers(edited.read_dataset("/group/virtual_mapped")),
     [7L, 8L],
   )
+
+  let reference_type = Datatype::write_object_reference_with_address_size(4) catch {
+    error => fail("create four-byte reference datatype: " + error.message())
+  }
+  let references = edited.add_virtual_dataset(
+    "/group",
+    "virtual_references",
+    [1UL],
+    reference_type,
+    [
+      {
+        source_file: ".",
+        source_dataset: "/group/virtual_source",
+        source_selection: RegionAll,
+        virtual_selection: RegionAll,
+      },
+    ],
+  ) catch {
+    error =>
+      fail("create four-byte virtual reference dataset: " + error.message())
+  }
+  let reference_metadata = Hdf5File::parse(references).read_dataset_metadata(
+    "/group/virtual_references",
+  )
+  assert_eq(reference_metadata.datatype.class, 7)
+  assert_eq(reference_metadata.datatype.size, 4)
 }

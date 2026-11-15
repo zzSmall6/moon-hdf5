@@ -9812,6 +9812,9 @@ fn encode_heap_objects(
   let mut used_size = 16
   for item in objects {
     let length = item.length()
+    guard length <= 0x7FFFFFF8 else {
+      raise InvalidField("writer global heap object is too large")
+    }
     guard used_size <= 0x7FFFFFFF - 16 - round_up_to_eight(length) else {
       raise InvalidField("writer global heap is too large")
     }
