@@ -28,6 +28,6 @@ preferred_target = "wasm"
 description = "A pure MoonBit HDF5 reader and new-file writer"
 
 import {
-  "moonbitlang/x@0.5.5",
-  "moonbitstack/moonzip@0.3.0",
+  "moonbitlang/x@0.5.7",
+  "moonbitstack/moonzip@0.4.0",
 }

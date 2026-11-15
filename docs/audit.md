@@ -1,11 +1,13 @@
-# Code audit — 2026-11-13
+# Code audit — 2026-11-15
 
 Scope: current worktree, reader and writer, with emphasis on the HDF5 1.14.6
 v1.0 delivery profile and post-v1.0 extensions.
 
 ## Verdict
 
-The MoonBit release checks pass on the current worktree:
+The MoonBit release checks pass on the current worktree with the stable
+MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
+`moonbitstack/moonzip@0.4.0`:
 
 - wasm: 327 tests passed;
 - native: 327 tests passed;

@@ -46,8 +46,8 @@ Fixtures are generated h5py data; see [provenance and regeneration](../testdata/
 
 ## Runtime compression dependency
 
-`moonbitstack/moonzip@0.3.0` provides zlib/DEFLATE decoding with checksum and
-output-limit options; its transitive dependency is `moonbitstack/moonbase@0.4.0`.
+`moonbitstack/moonzip@0.4.0` provides zlib/DEFLATE decoding with checksum and
+output-limit options; its transitive dependency is `moonbitstack/moonbase@0.5.0`.
 Both use Apache-2.0. They are package dependencies, not copied source.
 Fletcher32 layout and checksum byte order were cross-checked against HDF5's
 `H5Zfletcher32.c` and `H5checksum.c`; our implementation is verified with h5py
