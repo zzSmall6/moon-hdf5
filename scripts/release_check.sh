@@ -33,7 +33,8 @@ echo "==> Writer compatibility"
 output=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-release.XXXXXX")
 symbol_compact=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-compact.XXXXXX")
 symbol_dense=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-dense.XXXXXX")
-trap 'rm -f "$output" "$symbol_compact" "$symbol_dense"' EXIT HUP INT TERM
+created=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created.XXXXXX")
+trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$created"' EXIT HUP INT TERM
 moon run src/cmd/write_demo --target native -- "$output"
 
 python=${H5PY_PYTHON:-}
@@ -66,6 +67,15 @@ if [ "${SKIP_H5PY:-0}" = "1" ]; then
 else
   "$python" scripts/verify_symbol_table_edit.py "$symbol_compact" compact
   "$python" scripts/verify_symbol_table_edit.py "$symbol_dense" dense
+fi
+
+echo "==> Object creation"
+moon run src/cmd/object_create_demo --target native -- \
+  testdata/symbol_table_32.h5 "$created"
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> Object creation verification skipped (SKIP_H5PY=1)"
+else
+  "$python" scripts/verify_object_create.py "$created"
 fi
 
 if [ "${SKIP_H5PY:-0}" = "1" ]; then

@@ -9,8 +9,8 @@ The MoonBit release checks pass on the current worktree with the stable
 MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
 `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 374 tests passed;
-- native: 374 tests passed;
+- wasm: 385 tests passed;
+- native: 385 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output remain
   covered by prior h5py 3.13.0/HDF5 1.14.6 verification, and the new v1 B-tree
@@ -35,6 +35,10 @@ MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
   orders, compact/dense conversion, 4-byte addresses, multi-block soft links and
   huge external-link objects; release-demo edits and a separate 4-byte edit
   were independently re-read by h5py 3.13.0/HDF5 1.14.6;
+- group and fixed-size dataset creation are covered by MoonBit round-trip tests
+  for nested objects, 4-byte symbol-table parents and subsequent attribute and
+  link edits; the mixed 4/8 release demo is independently re-read by h5py
+  3.13.0/HDF5 1.14.6;
 - variable-length UTF-8 string and fixed-base sequence dataset patching is
   covered for compact, contiguous, unallocated contiguous, chunked, Shuffle and
   deflate storage, including empty and repeated values and back-to-back patches;
@@ -95,6 +99,7 @@ structures raise errors; detection is not exhaustive.
 | Attribute patching | Existing fixed-size inline, dense and creation-order-tracked attributes on objects, including compact attributes, big-endian numeric values, large dense values, variable-length UTF-8 strings, sequences, legacy object references, legacy region references and same-file version-4 object/region/attribute references, plus references and variable-length values nested in compound, fixed-array and sequence members; object-header/OCHK and fractal-heap direct-block checksums are refreshed, variable-length, region-reference and indirect version-4 values append a global heap and update the superblock EOF, while attribute message metadata and indexes remain unchanged |
 | Attribute editing | Add, rename and delete on v1/v2 object headers, including compact-to-dense and dense-to-compact conversion, ordered-dense creation-order preservation, variable-length string and sequence addition, committed datatypes, shared compact/dense attributes, 4-byte-address dense heaps/B-trees, aligned continuation chunks, OCHK/OHDR checksum refresh, dense heap/name/order index rebuilding and superblock EOF repair; v1, 4-byte and shared fixture edits are independently readable by h5py 3.13.0/HDF5 1.14.6 |
 | Link editing | Add, rename and delete for hard, soft and external links in v2 link-message groups and symbol-table groups, including symbol-table-to-link-message conversion, compact/dense conversion, creation-order preservation, 4-/8-byte target addresses, mixed 4-byte-address/8-byte-length files, in-place version 1 to version 2 object-header upgrades, multi-block dense heaps, huge external-link objects, huge-object v2 B-tree records, aligned continuation chunks, OCHK/OHDR checksum refresh and superblock EOF repair; writer-demo edits and separate 4/8-width compact and dense edits are independently readable by h5py 3.13.0/HDF5 1.14.6 |
+| Object creation | `add_group` and fixed-size contiguous `add_dataset` append version 2 object headers to bytes-backed files, link them into the parent, honor 4-/8-byte address and length widths, support v1/v2 and symbol-table parents, and remain editable through the attribute, link and object-creation APIs; MoonBit tests cover nested group/dataset creation, 4-byte symbol-table parents and subsequent attribute/link edits, and the mixed 4/8 release demo is independently readable by h5py 3.13.0/HDF5 1.14.6 |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
 
 ## Reader findings
@@ -295,10 +300,15 @@ heaps and heap extension across multiple blocks are not emitted.
 - Link editing also accepts symbol-table groups and converts them to compact or
   dense link-message storage. Hard-link targets must already exist in the same
   bytes-backed file, while soft and external targets are stored without
-  resolution. Object creation, object deletion, external-target creation and
-  free-space reclamation are not performed. Compact, dense and symbol-table
+  resolution. Object deletion, external-target creation and free-space
+  reclamation are not performed. Compact, dense and symbol-table
   link metadata is rebuilt from the final link set, so old link messages,
   heaps, symbol tables and indexes remain unreferenced.
+- Object creation appends empty groups or fixed-size contiguous datasets.
+  Variable-length and reference dataset values, chunked, filtered or external
+  creation, fill values, maximum dimensions and object deletion are not
+  supported. New parents can be edited afterwards, and old parent link metadata
+  remains unreferenced because no free-space reclamation is written.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB
@@ -474,3 +484,9 @@ heaps and heap extension across multiple blocks are not emitted.
   orders, multi-block soft links and a huge external link. The writer demo's
   edited hard/soft/external links and a separate 4-byte-address edit are
   independently re-read by h5py 3.13.0/HDF5 1.14.6.
+- 2026-11-15: empty groups and fixed-size contiguous datasets can be created in
+  bytes-backed files through `add_group` and `add_dataset`. New version-2 object
+  headers use the file's address/length widths, are attached through the link
+  rebuild path, and remain editable afterwards. MoonBit tests cover nested
+  creation, 4-byte symbol-table parents and later attribute/link edits; release
+  demo output is independently re-read by h5py 3.13.0/HDF5 1.14.6.

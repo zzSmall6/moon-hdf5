@@ -275,7 +275,9 @@ pub struct Hdf5File {
   // private fields
 }
 pub fn Hdf5File::add_attribute(Self, String, String, Array[UInt64], Hdf5WriteValues) -> Bytes raise Hdf5Error
+pub fn Hdf5File::add_dataset(Self, String, String, Array[UInt64], Hdf5WriteValues) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_external_link(Self, String, String, String, String) -> Bytes raise Hdf5Error
+pub fn Hdf5File::add_group(Self, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_hard_link(Self, String, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_soft_link(Self, String, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::attributes(Self, String) -> Array[Attribute] raise Hdf5Error

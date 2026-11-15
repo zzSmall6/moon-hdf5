@@ -382,6 +382,21 @@ creation and object deletion are outside this path. Link edits are append-only
 and leave the previous compact messages, dense heap, symbol tables and indexes
 unreferenced because no free-space manager is written.
 
+`add_group` and `add_dataset` append new objects at an aligned EOF and then use
+the same link rebuild path to attach them to an existing parent. A new object
+uses a version 2 `OHDR` header with a padded initial chunk so later attribute or
+link edits can replace it with an aligned continuation. Group headers contain a
+compact link-info message. Dataset headers contain dataspace, datatype and
+contiguous-layout messages; their payload is appended first and the layout uses
+the file's offset and length widths. Fixed-size numeric, string, complex and
+structured values are supported. Variable-length and reference values require a
+heap or target-resolution plan and are rejected by this entry point, as are
+chunked, filtered and external creation, fill values and maximum dimensions.
+The parent may use link messages or a symbol table; symbol-table parents are
+converted during attachment. Created objects participate in later attribute,
+link and object-creation edits. Object deletion and free-space reclamation are
+not implemented.
+
 ## Errors and verification
 
 Unsupported structures raise `UnsupportedFeature`; malformed metadata normally

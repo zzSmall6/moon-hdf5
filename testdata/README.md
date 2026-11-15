@@ -72,6 +72,7 @@ Independent verifiers run with the HDF5 1.14.6 environment:
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_hard_links_fixture.py testdata/hard_links.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_symbol_table_edit.py /tmp/symbol_compact.h5 compact
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_symbol_table_edit.py /tmp/symbol_dense.h5 dense
+/tmp/moon-hdf5-h5py/bin/python scripts/verify_object_create.py /tmp/created.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_matlab73_fixture.py testdata/matlab73_compatible.mat
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_netcdf4_fixture.py testdata/netcdf4_1_7_5.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_wide_numeric_fixture.py testdata/wide_numeric.h5
