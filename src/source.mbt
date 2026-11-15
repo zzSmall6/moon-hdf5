@@ -8,6 +8,12 @@ pub(open) trait Hdf5Source: @debug.Debug {
 }
 
 ///|
+priv struct Hdf5ExternalSource {
+  name : String
+  source : &Hdf5Source
+}
+
+///|
 fn source_address_to_offset(
   address : UInt64,
   base_address : UInt64,

@@ -170,6 +170,7 @@ fn Hdf5File::append_created_values_heap(
     strings,
     regions,
     sequences: [],
+    external_references: [],
   }
   let sequences : Array[Bytes] = []
   let collect_sequences = fn(values : Hdf5WriteValues) -> Unit raise Hdf5Error {
@@ -203,6 +204,7 @@ fn Hdf5File::append_created_values_heap(
         strings,
         regions,
         sequences,
+        external_references: [],
       }),
       "append dataset global heap",
     )
@@ -210,7 +212,14 @@ fn Hdf5File::append_created_values_heap(
   } else {
     0UL
   }
-  { address: heap_address, region_address, strings, regions, sequences, }
+  {
+    address: heap_address,
+    region_address,
+    strings,
+    regions,
+    sequences,
+    external_references: [],
+  }
 }
 
 ///|

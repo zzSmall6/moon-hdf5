@@ -15,10 +15,10 @@ echo "==> Check"
 moon check
 
 echo "==> Test (wasm)"
-moon test --target wasm
+moon test --target wasm --no-parallelize
 
 echo "==> Test (native)"
-moon test --target native
+moon test --target native --no-parallelize
 
 echo "==> Documentation"
 moon doc
@@ -35,10 +35,11 @@ symbol_compact=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-compact.XXXXXX")
 symbol_dense=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-dense.XXXXXX")
 filtered_links=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-filtered-links.XXXXXX")
 extended_floats=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-extended-floats.XXXXXX")
+external_references=$(mktemp -d "${TMPDIR:-/tmp}/moon-hdf5-external-references.XXXXXX")
 created=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created.XXXXXX")
 created8=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created8.XXXXXX")
 deleted=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-deleted.XXXXXX")
-trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"' EXIT HUP INT TERM
+trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"; rm -rf "$external_references"' EXIT HUP INT TERM
 moon run src/cmd/write_demo --target native -- "$output"
 
 python=${H5PY_PYTHON:-}
@@ -88,6 +89,20 @@ if [ "${SKIP_H5PY:-0}" = "1" ]; then
   echo "==> Extended floating-point verification skipped (SKIP_H5PY=1)"
 else
   "$python" scripts/verify_extended_float_output.py "$extended_floats"
+fi
+
+echo "==> External version-4 reference output"
+moon run src/cmd/external_reference_demo --target native -- \
+  "$external_references/external_reference_target.h5" \
+  "$external_references/source.h5" \
+  "$external_references/patched.h5"
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> External version-4 reference verification skipped (SKIP_H5PY=1)"
+else
+  "$python" scripts/verify_external_reference_output.py \
+    "$external_references/external_reference_target.h5" \
+    "$external_references/source.h5" \
+    "$external_references/patched.h5"
 fi
 
 echo "==> Object creation"

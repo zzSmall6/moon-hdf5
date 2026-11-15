@@ -36,6 +36,12 @@ pub(all) enum DatasetValue {
   RegionReference(String?, Hdf5RegionSelection)
   /// Writer input for a version-4 attribute reference.
   AttributeReference(String?, String)
+  /// Writer input for a version-4 object reference into a registered file.
+  ExternalObjectReference(String, String)
+  /// Writer input for a version-4 region reference into a registered file.
+  ExternalRegionReference(String, String, Hdf5RegionSelection)
+  /// Writer input for a version-4 attribute reference into a registered file.
+  ExternalAttributeReference(String, String, String)
   Reference(Bytes)
   Sequence(Array[DatasetValue])
   Time(UInt64)

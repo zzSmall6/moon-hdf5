@@ -191,6 +191,29 @@ fn validate_patch_write_values(
 }
 
 ///|
+fn patch_value_contains_external_reference(value : DatasetValue) -> Bool {
+  match value {
+    ExternalObjectReference(_, _)
+    | ExternalRegionReference(_, _, _)
+    | ExternalAttributeReference(_, _, _) => true
+    Compound(fields) =>
+      fields.any(field => patch_value_contains_external_reference(field.value))
+    Elements(items) | Sequence(items) =>
+      items.any(patch_value_contains_external_reference)
+    _ => false
+  }
+}
+
+///|
+fn patch_values_contain_external_reference(values : Hdf5WriteValues) -> Bool {
+  match values {
+    StructuredValues(_, items) =>
+      items.any(patch_value_contains_external_reference)
+    _ => false
+  }
+}
+
+///|
 fn patch_legacy_object_reference(
   values : Hdf5WriteValues,
   datatype : Datatype,
@@ -3335,6 +3358,7 @@ fn Hdf5File::patch_dataset_values_impl(
   let vlen_reference = patch_vlen_reference_datatype(metadata.datatype)
   let nested_vlen = !variable_length &&
     datatype_contains_vlen(metadata.datatype)
+  let external_reference = patch_values_contain_external_reference(values)
   guard !datatype_contains_reference(metadata.datatype) ||
     legacy_object_reference ||
     legacy_region_reference ||
@@ -3367,7 +3391,18 @@ fn Hdf5File::patch_dataset_values_impl(
   }
   let full_size = count.to_int() * metadata.datatype.size
   let prefix_tail = @buffer.Buffer::Buffer()
-  let payload = if variable_length {
+  let payload = if external_reference {
+    self.encode_patch_nested_references(
+      values,
+      metadata.datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append an external-reference dataset heap",
+    )
+  } else if variable_length {
     self.encode_patch_vlen_values(
       values,
       metadata.datatype,
@@ -3485,10 +3520,10 @@ fn Hdf5File::patch_dataset_values_impl(
 /// Same-file version-4 object references rewrite direct address tokens; version-4
 /// region and attribute references append indirect global-heap payloads and
 /// rewrite their kind, length, heap-address and index fields. Chunked, compact,
-/// external and filtered storage, external-file version-4 references,
-/// reference-bearing compound/array/sequence datatypes and nested
-/// variable-length storage are rejected. Use `patch_dataset_values` to patch
-/// compact or unallocated storage as well.
+/// external and filtered storage, reference-bearing compound/array/sequence
+/// datatypes and nested variable-length storage are rejected. Use
+/// `patch_dataset_values` to patch compact, unallocated or external-reference
+/// storage as well.
 pub fn Hdf5File::patch_contiguous_dataset(
   self : Hdf5File,
   path : String,
@@ -3530,13 +3565,14 @@ pub fn Hdf5File::patch_contiguous_dataset(
 /// sequences nested in compound, array and sequence members are encoded
 /// recursively. Chunked values accept unfiltered storage, Shuffle or deflate,
 /// and cannot create a missing fixed-array data block or extensible-array
-/// metadata. External storage and external-file version-4 references are
-/// rejected. Legacy object references
+/// metadata. External storage is read-only; external version-4 references
+/// resolve through sources registered with `Hdf5File::with_external_source`.
+/// Legacy object references
 /// require a slot width equal to the file address size; legacy region
 /// references require four additional bytes and existing dataset targets with
-/// non-null dataspaces. Version-4 region and attribute targets are same-file
-/// dataset or existing-attribute targets. The dataset shape and chunk grid are
-/// never changed.
+/// non-null dataspaces. Version-4 region and attribute targets are dataset or
+/// existing-attribute targets in the local file or a registered external
+/// source. The dataset shape and chunk grid are never changed.
 pub fn Hdf5File::patch_dataset_values(
   self : Hdf5File,
   path : String,

@@ -200,6 +200,7 @@ fn Hdf5File::encode_attribute_patch_payload(
   let nested_reference = patch_nested_reference_datatype(datatype)
   let vlen_reference = patch_vlen_reference_datatype(datatype)
   let nested_vlen = !variable_length && datatype_contains_vlen(datatype)
+  let external_reference = patch_values_contain_external_reference(values)
   guard !datatype_contains_reference(datatype) ||
     legacy_object_reference ||
     legacy_region_reference ||
@@ -220,7 +221,18 @@ fn Hdf5File::encode_attribute_patch_payload(
     raise InvalidField("attribute byte size is too large")
   }
   let full_size = count.to_int() * datatype.size
-  let payload = if variable_length {
+  let payload = if external_reference {
+    self.encode_patch_nested_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      tail,
+      "append an external-reference attribute heap",
+    )
+  } else if variable_length {
     self.encode_patch_vlen_values(
       values,
       datatype,
@@ -371,8 +383,10 @@ fn Hdf5File::rebuild_patched_attribute(
 /// region and attribute references append indirect global-heap payloads and
 /// rewrite their kind, length, heap-address and index fields. References and
 /// variable-length strings or sequences nested in compound, array and sequence
-/// members are encoded recursively. External-file version-4 references are
-/// rejected. Legacy object-reference slots must match the file address size;
+/// members are encoded recursively. External version-4 references resolve
+/// through sources registered with `Hdf5File::with_external_source` and use
+/// flag one plus indirect payloads. Legacy object-reference slots must match the
+/// file address size;
 /// legacy region-reference slots must be four bytes wider and target existing
 /// datasets with non-null dataspaces. Version-4 region and attribute targets
 /// follow the same dataset and existing-attribute rules. Shared attribute

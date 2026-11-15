@@ -159,8 +159,14 @@ dataset that uses `Custom(id, parameters)`. Existing-file
 
 Version-4 references are opt-in per datatype; legacy references remain the
 writer default. Use the `Datatype::write_version4_*_reference` constructors for
-version-4 object, region or attribute references. The writer emits same-file
-targets only.
+version-4 object, region or attribute references. Same-file targets use
+`ObjectReference`, `RegionReference` or `AttributeReference`. External targets
+use `ExternalObjectReference`, `ExternalRegionReference` or
+`ExternalAttributeReference` with a file name registered through
+`Hdf5Writer::add_external_source`. The writer validates the target object,
+region dataspace and attribute, supports 4- and 8-byte target files, and stores
+the file name in the reference. The caller owns and must keep the target file
+available under that name.
 
 ## Editing Existing Files
 
@@ -184,8 +190,9 @@ let edited = @lib.Hdf5File::parse(with_attribute).add_soft_link(
 ```
 
 - `patch_dataset_values` handles compact, contiguous and chunked datasets,
-  including variable-length values and same-file references. The replacement
-  must keep the dataset's shape and a compatible datatype.
+  including variable-length values, same-file references and external
+  version-4 references registered through `Hdf5File::with_external_source`.
+  The replacement must keep the dataset's shape and a compatible datatype.
 - `patch_contiguous_dataset` is the strict allocated-contiguous-only form.
 - `patch_attribute_values` replaces existing attribute values without changing
   names, creation order or storage form when the record can be updated in place.
@@ -218,10 +225,11 @@ moon-hdf5 is not a drop-in replacement for libhdf5.
 - Not yet implemented: streaming output, free-space reclamation, virtual
   datasets, SWMR and parallel HDF5.
 - Fixed boundaries: readers and writers are memory-resident at the API surface;
-  editing is append-only; writer/patch references must target existing same-file
-  objects; external raw data is resolver-only, contiguous and unfiltered; dense
-  collections are limited to 9–65,535 records; four-byte structured values with
-  variable-length custom fills are rejected for HDF5 1.14.6 interoperability.
+  editing is append-only; references and patches target existing objects, and
+  external reference files must be registered; external raw data is
+  resolver-only, contiguous and unfiltered; dense collections are limited to
+  9–65,535 records; four-byte structured values with variable-length custom
+  fills are rejected for HDF5 1.14.6 interoperability.
 - Detection of unsupported input is not exhaustive. Unsupported structures
   raise `UnsupportedFeature`; malformed input raises `InvalidField` or
   `UnexpectedEof`.

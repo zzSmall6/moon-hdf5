@@ -37,6 +37,7 @@ pub struct Hdf5File {
   priv source : &Hdf5Source?
   priv shared_messages : SharedMessageContext
   priv custom_filters : Array[&Hdf5CustomFilter]
+  priv external_sources : Array[Hdf5ExternalSource]
 }
 
 ///|
@@ -49,6 +50,7 @@ pub fn Hdf5File::parse(bytes : Bytes) -> Hdf5File raise Hdf5Error {
     source: None,
     shared_messages: parse_shared_message_context(bytes, None, superblock),
     custom_filters: [],
+    external_sources: [],
   }
 }
 
@@ -63,6 +65,38 @@ pub fn Hdf5File::parse_source(source : &Hdf5Source) -> Hdf5File raise Hdf5Error 
     source: Some(source),
     shared_messages: parse_shared_message_context(b"", Some(source), superblock),
     custom_filters: [],
+    external_sources: [],
+  }
+}
+
+///|
+/// Registers a source that version-4 references in this file may target.
+///
+/// The name is matched against the external reference file name after path
+/// normalization. Patching requires a bytes-backed `Hdf5File`.
+pub fn Hdf5File::with_external_source(
+  self : Hdf5File,
+  name : String,
+  source : &Hdf5Source,
+) -> Hdf5File raise Hdf5Error {
+  let normalized = resolver_file_name(name)
+  guard normalized != resolver_root_name() else {
+    raise InvalidArgument("<root> is reserved for the local file")
+  }
+  guard !self.external_sources.any(item => item.name == normalized) else {
+    raise InvalidArgument(
+      "external source is already registered: " + normalized,
+    )
+  }
+  let external_sources = self.external_sources.copy()
+  external_sources.push({ name: normalized, source, })
+  {
+    bytes: self.bytes,
+    superblock: self.superblock,
+    source: self.source,
+    shared_messages: self.shared_messages,
+    custom_filters: self.custom_filters,
+    external_sources,
   }
 }
 
@@ -93,6 +127,7 @@ pub fn Hdf5File::with_custom_filter(
     source: self.source,
     shared_messages,
     custom_filters,
+    external_sources: self.external_sources,
   }
 }
 

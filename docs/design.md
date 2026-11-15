@@ -78,8 +78,8 @@ size plus a global-heap address and index. Attribute payloads add a UTF-8
 attribute name, and resolved values go through the normal attribute decoder.
 The writer selects version-4 encodings only when the caller constructs the
 matching datatype; legacy 8-byte objects and 12-byte regions remain the default.
-References marked as pointing into external files are rejected until the
-resolver-backed reference path is extended.
+`Hdf5File` rejects references marked as pointing into external files; the same
+encoded bytes resolve through `Hdf5Resolver` when the named file is registered.
 
 ## External sources
 
@@ -182,7 +182,14 @@ because mixing them with string or sequence heap objects can corrupt HDF5 1.14.6
 bookkeeping.
 Version-4 region and attribute payloads share that dedicated heap. The writer
 validates attribute-reference targets before encoding and emits zero-filled
-slots for null references.
+slots for null references. External version-4 references resolve their targets
+from sources registered with `Hdf5Writer::add_external_source`. Object payloads
+store the target file's address width, target address, file-name length and
+UTF-8 name. Region payloads append the target dataspace rank and encoded
+selection; attribute payloads append the UTF-8 attribute name. External slot
+flags are one, and the payload address and object index refer to the same
+region-reference global heap. Mixed same-file and external references may share
+one file.
 
 Variable-length strings and sequences use 16-byte descriptors and one shared
 global heap; repeated payloads and custom fills share heap objects. Sequence
@@ -241,16 +248,18 @@ the heap address and object index; null references are zero-filled. The path is
 limited to version-3-or-earlier region references whose slot width is the file
 address size plus four bytes.
 
-Same-file version-4 references keep their 18-byte slots. Object references write
+Version-4 references keep their 18-byte slots. Same-file object references write
 the reference kind, zero flags, address-token size and target address directly.
-Region and attribute references append an indirect payload to the same global
-heap mechanism used for variable-length data: a region payload contains the
-token size, target-dataset address, selection length, rank and encoded
+Same-file region and attribute references append an indirect payload to the same
+global heap mechanism used for variable-length data: a region payload contains
+the token size, target-dataset address, selection length, rank and encoded
 selection, while an attribute payload contains the token size, target-object
-address and UTF-8 attribute name. Attribute-reference targets are checked
-against the target object's existing attributes. Null slots are zero-filled and
-external-file flags are not emitted. References nested inside compound, array
-or sequence datatypes remain rejected.
+address and UTF-8 attribute name. External object, region and attribute
+references instead write flag one plus the payload length, heap address and
+object index; their payloads carry the normalized external file name and the
+target file's address width. Attribute-reference targets are checked against
+the target object's existing attributes. Null slots are zero-filled. Compound,
+fixed-array and sequence values recurse through nested references.
 
 An undefined chunk slot represented by the active index is handled similarly:
 the patch constructs a fill-initialized chunk, overlays the requested values,
@@ -319,14 +328,17 @@ payloads to the same heap before rewriting their heap-address/index slots.
 Same-file version-4 object references write direct address tokens; version-4
 region and attribute references append their indirect payloads to the heap,
 validate region dataspaces and existing attribute names, and rewrite kind,
-payload length, heap address and object index. The superblock EOF and checksum
-are updated; all-empty variable-length, null-only region-reference and
-all-null version-4 values skip the append. Compound, fixed-array and sequence
-values are traversed recursively, so references and variable-length values in
-members, nested members, array elements and sequence elements use the same
-address-width and heap rules. Shared attribute messages, filtered heap storage
-and external-file version-4 flags are rejected. Old global heaps remain
-unreferenced because no free-space reclamation is written.
+payload length, heap address and object index. External version-4 references
+resolve against registered sources, validate the same target properties, use
+flag one and embed each target file's address width and normalized file name.
+The superblock EOF and checksum are updated; all-empty variable-length,
+null-only region-reference and all-null version-4 values skip the append.
+Compound, fixed-array and sequence values are traversed recursively, so
+references and variable-length values in members, nested members, array
+elements and sequence elements use the same address-width and heap rules.
+Shared attribute messages, filtered heap storage and unregistered external
+reference files are rejected. Old global heaps remain unreferenced because no
+free-space reclamation is written.
 
 `add_attribute`, `rename_attribute` and `delete_attribute` use a separate
 metadata-rebuild path. The reader collects compact and dense attribute messages,

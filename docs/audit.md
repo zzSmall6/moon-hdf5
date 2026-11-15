@@ -9,8 +9,8 @@ The MoonBit release checks pass on the current worktree with the stable
 MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
 `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 395 tests passed;
-- native: 395 tests passed;
+- wasm: 405 tests passed;
+- native: 405 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output remain
   covered by prior h5py 3.13.0/HDF5 1.14.6 verification, and the new v1 B-tree
@@ -70,10 +70,11 @@ MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
   slots, groups/datasets/committed datatypes, point/hyperslab/block/all/empty
   selections and 4- and 8-byte-address fixtures; non-dataset region targets are
   rejected;
-- same-file version-4 object, region and attribute reference patching is covered
-  for compact, contiguous and filtered chunked datasets and inline attributes,
-  including null slots, repeated indirect heap payloads, object/region/attribute
-  target resolution and target-validation errors;
+- version-4 object, region and attribute reference writing and patching is
+  covered for same-file and registered external targets, compact, contiguous
+  and filtered chunked datasets, inline attributes, compound/array/vlen nesting,
+  4- and 8-byte target files, null slots, repeated indirect heap payloads and
+  target-validation errors;
 - caller-defined filter encoding, named pipelines, chunk-mask skips, patch
   re-encoding and growth relocation are covered by MoonBit round-trip tests;
 - unallocated contiguous payloads and undefined slots in existing single,
@@ -98,7 +99,8 @@ MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
 - numeric-layout, scale-offset, vlen-fill, NetCDF-4, external-storage,
   shared-message, hard-link, MATLAB-compatible and reference fixtures verified;
 - the version-4 reference fixture and writer output are exercised by MoonBit
-  round-trip tests.
+  round-trip tests; external-reference output is independently read through the
+  HDF5 1.14.6 C API.
 
 The implementation remains a documented HDF5 subset. Known unsupported
 structures raise errors; detection is not exhaustive.
@@ -113,11 +115,11 @@ structures raise errors; detection is not exhaustive.
 | Fill policies | Default, custom, undefined and `FILL_TIME_NEVER`; malformed messages and external-storage boundaries remain rejected |
 | Filters | Shuffle, deflate, Fletcher32, integer/f32/f64 scale-offset, masks and fill markers; registered caller-defined encoders/decoders with named v2 pipeline entries and per-chunk mask skips |
 | Datatypes | Fixed-point, IEEE/normalized floats, strings, compound, enum, array, time, bitfield, opaque, sequence, references, complex |
-| References | 4-/8-byte object references, legacy region references and version-4 object/region/attribute references against compact, contiguous and filtered targets; legacy and same-file version-4 object-, region- and attribute-reference datasets and attributes, including references nested in compound, fixed-array and fixed-base sequence values, can be patched in place |
+| References | 4-/8-byte object references, legacy region references and version-4 object/region/attribute references against compact, contiguous and filtered targets; legacy, same-file and registered-external version-4 object-, region- and attribute-reference datasets and attributes, including references nested in compound, fixed-array and fixed-base sequence values, can be written and patched in place |
 | Shared messages | Table/indexes/heaps, wrappers v1–v3, field sharing, fills, filter pipelines, whole attributes and committed targets |
 | Writer | Superblock v3, OHDR/OCHK, dense metadata, chunk indexes, SOHM, references and external slots |
-| In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including fixed-size, variable-length UTF-8 string, sequence, legacy object-reference, legacy region-reference and same-file version-4 object/region/attribute-reference values, plus references and variable-length values nested in compound, fixed-array and sequence members, sparse fill-only chunks, undefined slots in existing indexes, missing fixed-array data blocks, missing extensible-array data/index/super blocks, unallocated fixed- and extensible-array pages, missing v1/v2 B-tree chunk records and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout, slot, page-bitmap, FADB/FAHD, EAHD/EAIB/EASB/EADB and B-tree fields, affected checksums and superblock EOF updated; v1 tree rebuilds honor the superblock K, sibling links and datatype-sized termination keys; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved; variable-length values use one appended global heap collection and null references for empty values; object references rewrite address-width slots from existing target paths; region references append deduplicated target-address plus selection payloads to a global heap and rewrite heap-address/index slots; version-4 object references write direct address tokens, while version-4 region and attribute references append indirect heap payloads and rewrite kind, length, heap address and index fields |
-| Attribute patching | Existing fixed-size inline, dense and creation-order-tracked attributes on objects, including compact attributes, big-endian numeric values, large dense values, variable-length UTF-8 strings, sequences, legacy object references, legacy region references and same-file version-4 object/region/attribute references, plus references and variable-length values nested in compound, fixed-array and sequence members; object-header/OCHK and fractal-heap direct-block checksums are refreshed, variable-length, region-reference and indirect version-4 values append a global heap and update the superblock EOF, while attribute message metadata and indexes remain unchanged |
+| In-place patching | Compact, allocated or unallocated contiguous and filtered or unfiltered chunked datasets, including fixed-size, variable-length UTF-8 string, sequence, legacy object-reference, legacy region-reference and version-4 object/region/attribute-reference values, plus references and variable-length values nested in compound, fixed-array and sequence members, sparse fill-only chunks, undefined slots in existing indexes, missing fixed-array data blocks, missing extensible-array data/index/super blocks, unallocated fixed- and extensible-array pages, missing v1/v2 B-tree chunk records and registered custom filters with encoders; unallocated payloads and growing filtered chunks are appended at an aligned EOF, with layout, slot, page-bitmap, FADB/FAHD, EAHD/EAIB/EASB/EADB and B-tree fields, affected checksums and superblock EOF updated; v1 tree rebuilds honor the superblock K, sibling links and datatype-sized termination keys; big-endian scale-offset is preserved through byte-order normalization, and chunk edge padding is preserved; variable-length values use one appended global heap collection and null references for empty values; object references rewrite address-width slots from existing target paths; region references append deduplicated target-address plus selection payloads to a global heap and rewrite heap-address/index slots; same-file version-4 object references write direct address tokens, while version-4 region and attribute references append indirect heap payloads and rewrite kind, length, heap address and index fields; external version-4 references use flag 1 and payloads built from registered sources at each target file's address width |
+| Attribute patching | Existing fixed-size inline, dense and creation-order-tracked attributes on objects, including compact attributes, big-endian numeric values, large dense values, variable-length UTF-8 strings, sequences, legacy object references, legacy region references and version-4 object/region/attribute references, plus references and variable-length values nested in compound, fixed-array and sequence members; object-header/OCHK and fractal-heap direct-block checksums are refreshed, variable-length, region-reference and indirect version-4 values append a global heap and update the superblock EOF, while attribute message metadata and indexes remain unchanged; external targets are resolved through registered `Hdf5File` sources |
 | Attribute editing | Add, rename and delete on v1/v2 object headers, including compact-to-dense and dense-to-compact conversion, ordered-dense creation-order preservation, variable-length string and sequence addition, committed datatypes, shared compact/dense attributes, 4-byte-address dense heaps/B-trees, aligned continuation chunks, OCHK/OHDR checksum refresh, dense heap/name/order index rebuilding and superblock EOF repair; v1, 4-byte and shared fixture edits are independently readable by h5py 3.13.0/HDF5 1.14.6 |
 | Link editing | Add, rename and delete for hard, soft and external links in v2 link-message groups and symbol-table groups, including symbol-table-to-link-message conversion, compact/dense conversion, creation-order preservation, 4-/8-byte target addresses, mixed 4-byte-address/8-byte-length files, in-place version 1 to version 2 object-header upgrades, multi-block dense heaps, huge external-link objects, huge-object v2 B-tree records, aligned continuation chunks, OCHK/OHDR checksum refresh and superblock EOF repair; writer-demo edits and separate 4/8-width compact and dense edits are independently readable by h5py 3.13.0/HDF5 1.14.6 |
 | Object creation | `add_group`, fixed-size contiguous `add_dataset`, finite or resizable `add_chunked_dataset` and `add_external_dataset` append version 2 object headers to bytes-backed files, link them into the parent, honor 4-/8-byte address and length widths, support v1/v2 and symbol-table parents, and remain editable through the attribute, link and object-creation APIs; datasets support numeric, fixed-string, complex, fixed-size structured, variable-length UTF-8 string, variable-length sequence, object-reference and region-reference values, including members nested in compound, fixed-array and fixed-base sequence datatypes, with variable-length descriptors, reference slots and heap addresses sized to the file address width; all creation forms accept fill values, chunked creation supports fixed-array indexes, extensible-array indexes for one unlimited axis and v2 B-tree indexes for multiple unlimited axes, built-in Shuffle, deflate, Fletcher32 and scale-offset filters, caller-registered custom filters passed through `custom_filters`, plus nested and top-level vlen/reference snapshots, and external creation writes unfiltered fixed-size raw-data slots through an appended external-data local heap. MoonBit tests cover nested group/dataset creation, 4-byte symbol-table parents, subsequent attribute/link edits, variable-length strings and sequences, object and region references, filtered chunk values, custom filters on all three chunk-index paths, vlen/reference chunks, resizable maximum dimensions and external resolver/selection reads in 4- and 8-byte files; the mixed 4/8 release demo is independently readable and resizable by h5py 3.13.0/HDF5 1.14.6, with raw reference slots used because h5py's high-level multi-reference conversion misreads 4-byte slots |
@@ -304,8 +306,9 @@ message types emitted by this writer.
 - Variable-length patching accepts string datatypes and sequences whose base is
   fixed-size, including variable-length values nested in compound, fixed-array
   and sequence members. Reference-bearing bases are encoded recursively and
-  share the same same-file target rules as other nested references; their
-  indirect payloads and sequence objects share one global heap collection.
+  share the same local-or-registered-external target rules as other nested
+  references; their indirect payloads and sequence objects share one global
+  heap collection.
   Chunked vlen data supports unfiltered storage, Shuffle or
   deflate, not Fletcher32 or scale-offset, and cannot create a missing
   fixed-array data block or extensible-array metadata. Each patch appends a new
@@ -318,22 +321,26 @@ message types emitted by this writer.
   zero-filled. Legacy region-reference patching accepts version-3-or-earlier
   slots whose width is the address size plus four bytes. Every non-null target
   must be an existing dataset with a non-null dataspace, and point, hyperslab,
-  block, all and empty selections are supported. Same-file version-4 object,
-  region and attribute references accept 18-byte slots, write only flags zero,
-  and validate dataset and existing-attribute targets before appending indirect
-  heap payloads. Compound, fixed-array and sequence values recurse through
-  nested members and elements, including nested variable-length values.
-  External-file version-4 references remain read-only.
+  block, all and empty selections are supported. Same-file version-4 object
+  references use direct address tokens. Version-4 region and attribute
+  references accept 18-byte slots and append indirect heap payloads after
+  validating dataset and existing-attribute targets. External version-4
+  references use flag 1 and resolve against sources registered through
+  `Hdf5Writer::add_external_source` or `Hdf5File::with_external_source`; their
+  payloads carry the normalized target file name and the target file's address
+  width. Compound, fixed-array and sequence values recurse through nested
+  members and elements, including nested variable-length values.
 - Attribute patching is limited to replacing values of existing fixed-size,
   variable-length UTF-8 string, fixed-base sequence, legacy object-reference,
-  legacy region-reference or same-file version-4 object/region/attribute
-  reference attributes. Object-reference slots must match the file address size;
+  legacy region-reference or version-4 object/region/attribute reference
+  attributes. Object-reference slots must match the file address size;
   region-reference slots must be four bytes wider and target existing non-null
   datasets. References and variable-length values nested in compound,
   fixed-array and sequence members are patched recursively. Version-4
-  attribute targets must already exist, and external-file flags are rejected,
-  as are shared attribute messages and filtered fractal-heap storage for direct
-  value patching. Attribute addition,
+  attribute targets must already exist in the local file or a registered
+  external source; unregistered external files are rejected, as are shared
+  attribute messages and filtered fractal-heap storage for direct value
+  patching. Attribute addition,
   deletion and renaming use a rebuild path that supports v1/v2 object headers,
   compact/dense conversion, ordered-dense creation order, shared compact/dense
   attribute messages (rebuilt as local messages), 4-byte-address dense heaps and
@@ -375,8 +382,10 @@ message types emitted by this writer.
   free-space manager is written.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
-- Version-4 references to external files and high-level netCDF-4/MATLAB
-  semantics remain outside the profile.
+- External version-4 references are encoded only for already-registered target
+  files and existing targets; reference target file creation, lifecycle
+  management and physical free-space reclamation remain outside the library.
+  High-level netCDF-4/MATLAB semantics also remain outside the profile.
 
 ## Milestones
 
@@ -605,3 +614,11 @@ message types emitted by this writer.
   storage alike. MoonBit tests create and read custom-filtered datasets for all
   three index paths, including a named ID above 255, and cover duplicate,
   built-in-ID and unregistered-filter errors.
+- 2026-11-15: version-4 object, region and attribute references can target
+  external HDF5 files registered through `Hdf5Writer::add_external_source` or
+  `Hdf5File::with_external_source`. Writer and patch paths emit flag-one
+  indirect slots, embed the normalized target file name, honor each target
+  file's 4- or 8-byte address width, and support datasets, attributes and
+  compound/array/vlen nesting. MoonBit tests cover object, region, attribute,
+  chunked, nested, duplicate/unregistered-source and patch cases; release demo
+  output is independently read through the HDF5 1.14.6 C API.

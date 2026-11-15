@@ -549,6 +549,7 @@ pub struct Hdf5Writer {
   priv mut share_fills : Bool
   priv mut share_filters : Bool
   priv custom_filters : Array[&Hdf5CustomFilter]
+  priv external_sources : Array[Hdf5ExternalSource]
 }
 
 ///|
@@ -589,6 +590,13 @@ priv struct WritableGlobalHeap {
   strings : Array[String]
   regions : Array[Bytes]
   sequences : Array[Bytes]
+  external_references : Array[WritableExternalReference]
+}
+
+///|
+priv struct WritableExternalReference {
+  value : DatasetValue
+  payload : Bytes
 }
 
 ///|
@@ -689,7 +697,30 @@ pub fn Hdf5Writer::new() -> Hdf5Writer {
     share_fills: false,
     share_filters: false,
     custom_filters: [],
+    external_sources: [],
   }
+}
+
+///|
+/// Registers a source that external version-4 reference values may target.
+///
+/// The reference value stores the caller-provided file name; registration is
+/// matched after path normalization. Duplicate names are rejected.
+pub fn Hdf5Writer::add_external_source(
+  self : Hdf5Writer,
+  name : String,
+  source : &Hdf5Source,
+) -> Unit raise Hdf5Error {
+  let normalized = resolver_file_name(name)
+  guard normalized != resolver_root_name() else {
+    raise InvalidArgument("<root> is reserved for the writer output")
+  }
+  guard !self.external_sources.any(item => item.name == normalized) else {
+    raise InvalidArgument(
+      "external source is already registered: " + normalized,
+    )
+  }
+  self.external_sources.push({ name: normalized, source, })
 }
 
 ///|
@@ -1326,6 +1357,30 @@ fn validate_writer_integer(
 }
 
 ///|
+fn validate_external_reference_file_name(name : String) -> Unit raise Hdf5Error {
+  let encoded = @utf8.encode(name)
+  guard encoded.length() > 0 && encoded.length() <= 65535 else {
+    raise InvalidArgument("external reference file name is invalid")
+  }
+  for byte in encoded {
+    guard byte != b'\x00' else {
+      raise InvalidArgument("external reference file names cannot contain NUL")
+    }
+  }
+  resolver_file_name(name) |> ignore
+}
+
+///|
+fn validate_writer_reference_attribute_name(
+  name : String,
+) -> Unit raise Hdf5Error {
+  let encoded = @utf8.encode(name)
+  guard encoded.length() > 0 && encoded.length() <= 65535 else {
+    raise InvalidArgument("writer attribute reference name is invalid")
+  }
+}
+
+///|
 fn validate_structured_value(
   value : DatasetValue,
   datatype : Datatype,
@@ -1415,36 +1470,67 @@ fn validate_structured_value(
     }
     7 =>
       if datatype.reference_kind == 0 || datatype.reference_kind == 2 {
-        guard value is ObjectReference(path) else {
-          raise InvalidArgument("object reference value has the wrong kind")
-        }
-        match path {
-          Some(target) => canonical_writer_path(target) |> ignore
-          None => ()
-        }
-      } else if datatype.reference_kind == 1 || datatype.reference_kind == 3 {
-        guard value is RegionReference(path, _) else {
-          raise InvalidArgument("region reference value has the wrong kind")
-        }
-        match path {
-          Some(target) => canonical_writer_path(target) |> ignore
-          None => ()
-        }
-      } else {
-        guard value is AttributeReference(path, name) else {
-          raise InvalidArgument("attribute reference value has the wrong kind")
-        }
-        match path {
-          Some(target) => {
-            canonical_writer_path(target) |> ignore
-            let encoded_name = @utf8.encode(name)
-            guard encoded_name.length() > 0 && encoded_name.length() <= 65535 else {
+        match value {
+          ObjectReference(path) =>
+            match path {
+              Some(target) => canonical_writer_path(target) |> ignore
+              None => ()
+            }
+          ExternalObjectReference(file_name, path) => {
+            guard datatype.version >= 4 else {
               raise InvalidArgument(
-                "writer attribute reference name is invalid",
+                "external references require a version-4 datatype",
               )
             }
+            validate_external_reference_file_name(file_name)
+            canonical_writer_path(path) |> ignore
           }
-          None => ()
+          _ =>
+            raise InvalidArgument("object reference value has the wrong kind")
+        }
+      } else if datatype.reference_kind == 1 || datatype.reference_kind == 3 {
+        match value {
+          RegionReference(path, _) =>
+            match path {
+              Some(target) => canonical_writer_path(target) |> ignore
+              None => ()
+            }
+          ExternalRegionReference(file_name, path, _) => {
+            guard datatype.version >= 4 && datatype.reference_kind == 3 else {
+              raise InvalidArgument(
+                "external region references require a version-4 datatype",
+              )
+            }
+            validate_external_reference_file_name(file_name)
+            canonical_writer_path(path) |> ignore
+          }
+          _ =>
+            raise InvalidArgument("region reference value has the wrong kind")
+        }
+      } else {
+        match value {
+          AttributeReference(path, name) =>
+            match path {
+              Some(target) => {
+                canonical_writer_path(target) |> ignore
+                validate_writer_reference_attribute_name(name)
+              }
+              None => ()
+            }
+          ExternalAttributeReference(file_name, path, name) => {
+            guard datatype.version >= 4 && datatype.reference_kind == 4 else {
+              raise InvalidArgument(
+                "external attribute references require a version-4 datatype",
+              )
+            }
+            validate_external_reference_file_name(file_name)
+            canonical_writer_path(path) |> ignore
+            validate_writer_reference_attribute_name(name)
+          }
+          _ =>
+            raise InvalidArgument(
+              "attribute reference value has the wrong kind",
+            )
         }
       }
     8 => {
@@ -3682,6 +3768,26 @@ fn encode_structured_value(
                 )
               }
             }
+          (2, ExternalObjectReference(_, _)) =>
+            match writable_external_reference_slot(heap, value) {
+              None => writer_write_zeros(buffer, datatype.size)
+              Some((payload, index)) => {
+                guard payload.length() <= 0x7FFFFFFF else {
+                  raise InvalidArgument(
+                    "version-4 external object reference payload is too large",
+                  )
+                }
+                buffer.write_byte(b'\x02')
+                buffer.write_byte(b'\x01')
+                buffer.write_uint_le(payload.length().reinterpret_as_uint())
+                write_uint_width(
+                  buffer,
+                  heap.region_address,
+                  reference_address_size,
+                )
+                buffer.write_uint_le(index.reinterpret_as_uint())
+              }
+            }
           (3, RegionReference(path, selection)) =>
             match path {
               None => writer_write_zeros(buffer, datatype.size)
@@ -3711,6 +3817,21 @@ fn encode_structured_value(
                 )
               }
             }
+          (3, ExternalRegionReference(_, _, _)) =>
+            match writable_external_reference_slot(heap, value) {
+              None => writer_write_zeros(buffer, datatype.size)
+              Some((payload, index)) => {
+                buffer.write_byte(b'\x03')
+                buffer.write_byte(b'\x01')
+                buffer.write_uint_le(payload.length().reinterpret_as_uint())
+                write_uint_width(
+                  buffer,
+                  heap.region_address,
+                  reference_address_size,
+                )
+                buffer.write_uint_le(index.reinterpret_as_uint())
+              }
+            }
           (4, AttributeReference(path, name)) =>
             match path {
               None => writer_write_zeros(buffer, datatype.size)
@@ -3737,6 +3858,21 @@ fn encode_structured_value(
                 buffer.write_uint_le(
                   writable_region_heap_index(heap, payload).reinterpret_as_uint(),
                 )
+              }
+            }
+          (4, ExternalAttributeReference(_, _, _)) =>
+            match writable_external_reference_slot(heap, value) {
+              None => writer_write_zeros(buffer, datatype.size)
+              Some((payload, index)) => {
+                buffer.write_byte(b'\x04')
+                buffer.write_byte(b'\x01')
+                buffer.write_uint_le(payload.length().reinterpret_as_uint())
+                write_uint_width(
+                  buffer,
+                  heap.region_address,
+                  reference_address_size,
+                )
+                buffer.write_uint_le(index.reinterpret_as_uint())
               }
             }
           _ => ()
@@ -3935,6 +4071,7 @@ fn empty_writable_heap() -> WritableGlobalHeap {
     strings: [],
     regions: [],
     sequences: [],
+    external_references: [],
   }
 }
 
@@ -3983,6 +4120,25 @@ fn writable_region_heap_index(
       }
       0
     }
+  }
+}
+
+///|
+fn writable_external_reference_slot(
+  heap : WritableGlobalHeap,
+  value : DatasetValue,
+) -> (Bytes, Int32)? raise Hdf5Error {
+  match heap.external_references.search_by(item => item.value == value) {
+    Some(index) => {
+      let payload = heap.external_references[index].payload
+      Some((payload, writable_region_heap_index(heap, payload)))
+    }
+    None =>
+      if heap.region_address == 0UL && heap.external_references.length() == 0 {
+        None
+      } else {
+        raise InvalidField("external reference is missing from the global heap")
+      }
   }
 }
 
@@ -8621,6 +8777,152 @@ fn writer_attribute_reference_payload(
 }
 
 ///|
+fn writer_external_reference_file(
+  sources : Array[Hdf5ExternalSource],
+  custom_filters : Array[&Hdf5CustomFilter],
+  name : String,
+) -> (String, Hdf5File) raise Hdf5Error {
+  let normalized = resolver_file_name(name)
+  let registered = match sources.search_by(item => item.name == normalized) {
+    Some(index) => sources[index]
+    None =>
+      raise InvalidArgument(
+        "external reference file is not registered: " + name,
+      )
+  }
+  let mut file = Hdf5File::parse_source(registered.source)
+  for filter in custom_filters {
+    file = file.with_custom_filter(filter)
+  }
+  (registered.name, file)
+}
+
+///|
+fn writer_external_reference_prefix(
+  sources : Array[Hdf5ExternalSource],
+  custom_filters : Array[&Hdf5CustomFilter],
+  file_name : String,
+  path : String,
+) -> (Hdf5File, Hdf5ReferenceTarget, Int32, Bytes) raise Hdf5Error {
+  let (_, target_file) = writer_external_reference_file(
+    sources, custom_filters, file_name,
+  )
+  let node = target_file.resolve(path)
+  let encoded_name = @utf8.encode(file_name)
+  guard encoded_name.length() > 0 && encoded_name.length() <= 65535 else {
+    raise InvalidArgument("external reference file name is invalid")
+  }
+  guard encoded_name.to_array().all(byte => byte != b'\x00') else {
+    raise InvalidArgument("external reference file names cannot contain NUL")
+  }
+  let offset_size = target_file.address_size()
+  let prefix = @buffer.Buffer::Buffer(
+    size_hint=1 + offset_size + 2 + encoded_name.length(),
+  )
+  prefix.write_byte(offset_size.to_byte())
+  write_uint_width(prefix, node.address, offset_size)
+  prefix.write_uint16_le(encoded_name.length().to_uint16())
+  writer_write_bytes(prefix, encoded_name)
+  (
+    target_file,
+    { address: node.address, kind: node.kind, path: Some(node.path), },
+    offset_size,
+    prefix.to_bytes(),
+  )
+}
+
+///|
+fn writer_external_object_reference_payload(
+  sources : Array[Hdf5ExternalSource],
+  custom_filters : Array[&Hdf5CustomFilter],
+  file_name : String,
+  path : String,
+) -> Bytes raise Hdf5Error {
+  let (_, _, _, payload) = writer_external_reference_prefix(
+    sources, custom_filters, file_name, path,
+  )
+  payload
+}
+
+///|
+fn writer_external_region_reference_payload(
+  sources : Array[Hdf5ExternalSource],
+  custom_filters : Array[&Hdf5CustomFilter],
+  file_name : String,
+  path : String,
+  selection : Hdf5RegionSelection,
+) -> Bytes raise Hdf5Error {
+  let (target_file, target, offset_size, prefix) = writer_external_reference_prefix(
+    sources, custom_filters, file_name, path,
+  )
+  guard target.kind == Dataset else {
+    raise InvalidArgument(
+      "external region reference target is not a dataset: " +
+      file_name +
+      ":" +
+      path,
+    )
+  }
+  let metadata = read_dataset_metadata(
+    target_file.object_header_at(target.address),
+    offset_size,
+    target_file.superblock.length_size,
+  )
+  guard metadata.dataspace.kind != Null else {
+    raise InvalidArgument(
+      "external region reference target has a null dataspace",
+    )
+  }
+  let encoded_selection = encode_region_selection(metadata.dataspace, selection)
+  guard encoded_selection.length() <= 0x7FFFFFFF else {
+    raise UnsupportedFeature("external region reference selection is too large")
+  }
+  let buffer = @buffer.Buffer::Buffer()
+  writer_write_bytes(buffer, prefix)
+  buffer.write_uint_le(encoded_selection.length().reinterpret_as_uint())
+  buffer.write_uint_le(
+    metadata.dataspace.dimensions.length().reinterpret_as_uint(),
+  )
+  writer_write_bytes(buffer, encoded_selection)
+  buffer.to_bytes()
+}
+
+///|
+fn writer_external_attribute_reference_payload(
+  sources : Array[Hdf5ExternalSource],
+  custom_filters : Array[&Hdf5CustomFilter],
+  file_name : String,
+  path : String,
+  name : String,
+) -> Bytes raise Hdf5Error {
+  let (target_file, _, _, prefix) = writer_external_reference_prefix(
+    sources, custom_filters, file_name, path,
+  )
+  let encoded_name = @utf8.encode(name)
+  guard encoded_name.length() > 0 && encoded_name.length() <= 65535 else {
+    raise InvalidArgument("external attribute reference name is invalid")
+  }
+  guard target_file
+    .attributes(path)
+    .search_by(attribute => attribute.name == name)
+    is Some(_) else {
+    raise InvalidArgument(
+      "external attribute reference attribute does not exist: " +
+      file_name +
+      ":" +
+      path +
+      "." +
+      name,
+    )
+  }
+  let buffer = @buffer.Buffer::Buffer()
+  writer_write_bytes(buffer, prefix)
+  buffer.write_uint16_le(encoded_name.length().to_uint16())
+  writer_write_bytes(buffer, encoded_name)
+  buffer.to_bytes()
+}
+
+///|
 fn Hdf5Writer::object_payload(
   self : Hdf5Writer,
   object : WritableObject,
@@ -9091,6 +9393,9 @@ fn collect_heap_regions(
   objects : Array[WritableObject],
   attributes : Array[WritableAttribute],
   reference_address_size~ : Int32 = 8,
+  external_sources~ : Array[Hdf5ExternalSource] = [],
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
+  external_references~ : Array[WritableExternalReference] = [],
 ) -> Unit raise Hdf5Error {
   match datatype.class {
     6 =>
@@ -9104,6 +9409,9 @@ fn collect_heap_regions(
               objects,
               attributes,
               reference_address_size~,
+              external_sources~,
+              custom_filters~,
+              external_references~,
             )
           }
         _ => ()
@@ -9124,6 +9432,22 @@ fn collect_heap_regions(
                 raise InvalidField("writer global heap has too many objects")
               }
               output.push(payload)
+            }
+          }
+          ExternalRegionReference(file_name, path, selection) if datatype.reference_kind ==
+            3 => {
+            let payload = writer_external_region_reference_payload(
+              external_sources, custom_filters, file_name, path, selection,
+            )
+            if !output.contains(payload) {
+              guard output.length() < 65535 else {
+                raise InvalidField("writer global heap has too many objects")
+              }
+              output.push(payload)
+            }
+            if external_references.search_by(item => item.value == value)
+              is None {
+              external_references.push({ value, payload, })
             }
           }
           _ => ()
@@ -9156,6 +9480,40 @@ fn collect_heap_regions(
               output.push(payload)
             }
           }
+          ExternalAttributeReference(file_name, path, name) => {
+            let payload = writer_external_attribute_reference_payload(
+              external_sources, custom_filters, file_name, path, name,
+            )
+            if !output.contains(payload) {
+              guard output.length() < 65535 else {
+                raise InvalidField("writer global heap has too many objects")
+              }
+              output.push(payload)
+            }
+            if external_references.search_by(item => item.value == value)
+              is None {
+              external_references.push({ value, payload, })
+            }
+          }
+          _ => ()
+        }
+      } else if datatype.reference_kind == 2 {
+        match value {
+          ExternalObjectReference(file_name, path) => {
+            let payload = writer_external_object_reference_payload(
+              external_sources, custom_filters, file_name, path,
+            )
+            if !output.contains(payload) {
+              guard output.length() < 65535 else {
+                raise InvalidField("writer global heap has too many objects")
+              }
+              output.push(payload)
+            }
+            if external_references.search_by(item => item.value == value)
+              is None {
+              external_references.push({ value, payload, })
+            }
+          }
           _ => ()
         }
       }
@@ -9170,6 +9528,9 @@ fn collect_heap_regions(
               objects,
               attributes,
               reference_address_size~,
+              external_sources~,
+              custom_filters~,
+              external_references~,
             )
           }
         _ => ()
@@ -9185,6 +9546,9 @@ fn collect_heap_regions(
               objects,
               attributes,
               reference_address_size~,
+              external_sources~,
+              custom_filters~,
+              external_references~,
             )
           }
         _ => ()
@@ -9273,8 +9637,9 @@ fn Hdf5Writer::global_heap_sequences(
 fn Hdf5Writer::global_heap_regions(
   self : Hdf5Writer,
   objects~ : Array[WritableObject],
-) -> Array[Bytes] raise Hdf5Error {
+) -> (Array[Bytes], Array[WritableExternalReference]) raise Hdf5Error {
   let regions : Array[Bytes] = []
+  let external_references : Array[WritableExternalReference] = []
   for dataset in self.datasets {
     match dataset.values {
       StructuredValues(datatype, items) =>
@@ -9285,6 +9650,9 @@ fn Hdf5Writer::global_heap_regions(
             item,
             objects,
             self.attributes,
+            external_sources=self.external_sources,
+            custom_filters=self.custom_filters,
+            external_references~,
           )
         }
       _ => ()
@@ -9298,6 +9666,9 @@ fn Hdf5Writer::global_heap_regions(
             item,
             objects,
             self.attributes,
+            external_sources=self.external_sources,
+            custom_filters=self.custom_filters,
+            external_references~,
           )
         }
       _ => ()
@@ -9313,12 +9684,15 @@ fn Hdf5Writer::global_heap_regions(
             item,
             objects,
             self.attributes,
+            external_sources=self.external_sources,
+            custom_filters=self.custom_filters,
+            external_references~,
           )
         }
       _ => ()
     }
   }
-  regions
+  (regions, external_references)
 }
 
 ///|
@@ -9445,7 +9819,7 @@ fn assign_writable_addresses(
     offset = writer_align(offset + lengths[index])
   }
   let strings = writer.global_heap_strings()
-  let regions = writer.global_heap_regions(objects~)
+  let (regions, external_references) = writer.global_heap_regions(objects~)
   let region_address = if regions.length() > 0 {
     offset.to_uint64()
   } else {
@@ -9464,6 +9838,7 @@ fn assign_writable_addresses(
     strings,
     regions,
     sequences: [],
+    external_references,
   }
   let sequences = writer.global_heap_sequences(heap=base_heap, objects~)
   let heap = {
@@ -9476,6 +9851,7 @@ fn assign_writable_addresses(
     strings,
     regions,
     sequences,
+    external_references,
   }
   if heap.strings.length() > 0 || heap.sequences.length() > 0 {
     offset = writer_align(offset + encode_global_heap(heap).length())

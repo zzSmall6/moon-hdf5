@@ -144,6 +144,9 @@ pub(all) enum DatasetValue {
   ObjectReference(String?)
   RegionReference(String?, Hdf5RegionSelection)
   AttributeReference(String?, String)
+  ExternalObjectReference(String, String)
+  ExternalRegionReference(String, String, Hdf5RegionSelection)
+  ExternalAttributeReference(String, String, String)
   Reference(Bytes)
   Sequence(Array[DatasetValue])
   Time(UInt64)
@@ -310,6 +313,7 @@ pub fn Hdf5File::selection_iterator(Self, String, DatasetSelection, Int32) -> Da
 pub fn Hdf5File::superblock_version(Self) -> Int32
 pub fn Hdf5File::walk(Self) -> Array[Hdf5Node] raise Hdf5Error
 pub fn Hdf5File::with_custom_filter(Self, &Hdf5CustomFilter) -> Self raise Hdf5Error
+pub fn Hdf5File::with_external_source(Self, String, &Hdf5Source) -> Self raise Hdf5Error
 
 #derive(Eq, @debug.Debug)
 pub(all) struct Hdf5Node {
@@ -472,6 +476,7 @@ pub fn Hdf5Writer::add_dataset(Self, String, Array[UInt64], Hdf5WriteValues) -> 
 pub fn Hdf5Writer::add_extensible_dataset(Self, String, Array[UInt64], Array[UInt64?], Array[UInt32], Hdf5WriteValues, fill_value? : Hdf5WriteValues, filters? : Array[Hdf5WriteFilter]) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_external_dataset(Self, String, Array[UInt64], Hdf5WriteValues, Array[Hdf5ExternalSlot], fill_value? : Hdf5WriteValues) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_external_link(Self, String, String, String, String) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::add_external_source(Self, String, &Hdf5Source) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_group(Self, String) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_soft_link(Self, String, String, String) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::append_dataset(Self, String, Array[UInt64], Hdf5WriteValues) -> Unit raise Hdf5Error

@@ -82,6 +82,14 @@ fn Hdf5File::collect_patch_structured_reference_payloads(
             match value {
               ObjectReference(None) => ()
               ObjectReference(Some(path)) => self.resolve(path) |> ignore
+              ExternalObjectReference(file, path) =>
+                writer_external_object_reference_payload(
+                  self.external_sources,
+                  self.custom_filters,
+                  file,
+                  path,
+                )
+                |> ignore
               _ =>
                 raise InvalidArgument(
                   "version-4 object reference value has the wrong kind",
@@ -96,6 +104,16 @@ fn Hdf5File::collect_patch_structured_reference_payloads(
                     path, selection, offset_size,
                   ),
                 )
+              ExternalRegionReference(file, path, selection) =>
+                payloads.push(
+                  writer_external_region_reference_payload(
+                    self.external_sources,
+                    self.custom_filters,
+                    file,
+                    path,
+                    selection,
+                  ),
+                )
               _ =>
                 raise InvalidArgument(
                   "version-4 region reference value has the wrong kind",
@@ -108,6 +126,16 @@ fn Hdf5File::collect_patch_structured_reference_payloads(
                 payloads.push(
                   self.encode_patch_version4_attribute_reference_payload(
                     path, name, offset_size,
+                  ),
+                )
+              ExternalAttributeReference(file, path, name) =>
+                payloads.push(
+                  writer_external_attribute_reference_payload(
+                    self.external_sources,
+                    self.custom_filters,
+                    file,
+                    path,
+                    name,
                   ),
                 )
               _ =>
@@ -244,6 +272,21 @@ fn Hdf5File::encode_patch_structured_reference_value(
                 write_uint_width(buffer, node.address, offset_size)
                 writer_write_zeros(buffer, datatype.size - offset_size - 3)
               }
+              ExternalObjectReference(file, path) => {
+                let payload = writer_external_object_reference_payload(
+                  self.external_sources,
+                  self.custom_filters,
+                  file,
+                  path,
+                )
+                buffer.write_byte(b'\x02')
+                buffer.write_byte(b'\x01')
+                buffer.write_uint_le(payload.length().reinterpret_as_uint())
+                write_uint_width(buffer, heap_address, offset_size)
+                buffer.write_uint_le(
+                  patch_add_heap_object(heap, payload).reinterpret_as_uint(),
+                )
+              }
               _ =>
                 raise InvalidArgument(
                   "version-4 object reference value has the wrong kind",
@@ -265,6 +308,22 @@ fn Hdf5File::encode_patch_structured_reference_value(
                   patch_add_heap_object(heap, payload).reinterpret_as_uint(),
                 )
               }
+              ExternalRegionReference(file, path, selection) => {
+                let payload = writer_external_region_reference_payload(
+                  self.external_sources,
+                  self.custom_filters,
+                  file,
+                  path,
+                  selection,
+                )
+                buffer.write_byte(b'\x03')
+                buffer.write_byte(b'\x01')
+                buffer.write_uint_le(payload.length().reinterpret_as_uint())
+                write_uint_width(buffer, heap_address, offset_size)
+                buffer.write_uint_le(
+                  patch_add_heap_object(heap, payload).reinterpret_as_uint(),
+                )
+              }
               _ =>
                 raise InvalidArgument(
                   "version-4 region reference value has the wrong kind",
@@ -280,6 +339,22 @@ fn Hdf5File::encode_patch_structured_reference_value(
                 )
                 buffer.write_byte(b'\x04')
                 buffer.write_byte(b'\x00')
+                buffer.write_uint_le(payload.length().reinterpret_as_uint())
+                write_uint_width(buffer, heap_address, offset_size)
+                buffer.write_uint_le(
+                  patch_add_heap_object(heap, payload).reinterpret_as_uint(),
+                )
+              }
+              ExternalAttributeReference(file, path, name) => {
+                let payload = writer_external_attribute_reference_payload(
+                  self.external_sources,
+                  self.custom_filters,
+                  file,
+                  path,
+                  name,
+                )
+                buffer.write_byte(b'\x04')
+                buffer.write_byte(b'\x01')
                 buffer.write_uint_le(payload.length().reinterpret_as_uint())
                 write_uint_width(buffer, heap_address, offset_size)
                 buffer.write_uint_le(
