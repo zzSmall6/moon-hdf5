@@ -17,6 +17,12 @@ fn run(args : Array[String]) -> Int32 {
     } catch {
       _ => "/"
     }
+    let reference_target = try {
+      ignore(root_file.resolve("/group/values"))
+      "/group/values"
+    } catch {
+      _ => "/group/child"
+    }
     edited = root_file.add_group(inner_parent, "created_leaf")
     edited = @lib.Hdf5File::parse(edited).add_dataset(
       "/created_root",
@@ -41,6 +47,18 @@ fn run(args : Array[String]) -> Int32 {
       "unit",
       [],
       @lib.FixedStringValues(["count"], 8),
+    )
+    edited = @lib.Hdf5File::parse(edited).add_dataset(
+      "/created_root",
+      "labels",
+      [4UL],
+      @lib.VariableStringValues(["moon", "数据", "", "moon"]),
+    )
+    edited = @lib.Hdf5File::parse(edited).add_dataset(
+      "/created_root",
+      "references",
+      [3UL],
+      @lib.ObjectReferenceValues([Some("/matrix"), None, Some(reference_target)]),
     )
     @fs.write_bytes_to_file(args[2], edited)
     println("wrote " + args[2])

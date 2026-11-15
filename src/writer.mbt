@@ -3625,13 +3625,13 @@ fn encode_string_datatype(width : Int32) -> Bytes {
 }
 
 ///|
-fn encode_variable_string_datatype() -> Bytes {
+fn encode_variable_string_datatype(size : Int32) -> Bytes {
   let buffer = @buffer.Buffer::Buffer(size_hint=16)
   buffer.write_byte(b'\x19')
   buffer.write_byte(b'\x01')
   buffer.write_byte(b'\x01')
   buffer.write_byte(b'\x00')
-  buffer.write_uint_le(16U)
+  buffer.write_uint_le(size.reinterpret_as_uint())
   writer_write_bytes(buffer, encode_integer_datatype(false, 1))
   buffer.to_bytes()
 }
@@ -3726,7 +3726,13 @@ fn encode_write_values(
   heap~ : WritableGlobalHeap = empty_writable_heap(),
   objects~ : Array[WritableObject] = [],
   reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
 ) -> EncodedWriteValues raise Hdf5Error {
+  let vlen_width = if vlen_address_size > 0 {
+    vlen_address_size
+  } else {
+    reference_address_size
+  }
   let payload = @buffer.Buffer::Buffer()
   let (datatype, element_size) = match values {
     Int8Values(items) => {
@@ -3810,20 +3816,21 @@ fn encode_write_values(
       (encode_string_datatype(width), width)
     }
     VariableStringValues(items) => {
+      let vlen_size = 4 + vlen_width + 4
       for item in items {
         let encoded = @utf8.encode(item)
         payload.write_uint_le(encoded.length().reinterpret_as_uint())
         if encoded.length() == 0 {
-          payload.write_uint64_le(0UL)
+          write_uint_width(payload, 0UL, vlen_width)
           payload.write_uint_le(0U)
         } else {
-          payload.write_uint64_le(heap.address)
+          write_uint_width(payload, heap.address, vlen_width)
           payload.write_uint_le(
             writable_heap_index(heap, item).reinterpret_as_uint(),
           )
         }
       }
-      (encode_variable_string_datatype(), 16)
+      (encode_variable_string_datatype(vlen_size), vlen_size)
     }
     ObjectReferenceValues(items) => {
       for item in items {

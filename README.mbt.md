@@ -45,8 +45,9 @@ moon-hdf5 implements a documented subset of HDF5. The
   files, including symbol-table groups, preserving creation order and switching
   between compact and dense storage as needed.
 - `add_group` and `add_dataset` append new groups or fixed-size contiguous
-  datasets to bytes-backed files. `delete_object` removes every hard link to an
-  object so aliases cannot keep it reachable.
+  datasets, including variable-length strings and top-level object references,
+  to bytes-backed files. `delete_object` removes every hard link to an object so
+  aliases cannot keep it reachable.
 
 ## Installation
 
@@ -560,13 +561,16 @@ the items below summarize the main user-visible gaps.
   unreferenced because no free-space reclamation is written.
 - **Object creation:** `add_group` creates empty groups below an existing group.
   `add_dataset` creates fixed-size contiguous datasets from numeric, fixed-string,
-  complex and fixed-size structured values. New objects use version 2 object
-  headers, honor 4- and 8-byte address/length widths, and can themselves become
-  parents for later attributes, links, groups and datasets. Existing symbol-table
-  parents are converted by the link rebuild path. Variable-length and reference
-  dataset values, chunked/filtered/external creation, fill values, maximum
-  dimensions are unsupported. Creation is append-only and leaves superseded
-  parent metadata unreferenced because no free-space manager is written.
+  complex, fixed-size structured, variable-length UTF-8 string and object-reference
+  values. Variable-length string descriptors and object-reference slots use the
+  file address width; string payloads are appended in a global heap. New objects
+  use version 2 object headers, honor 4- and 8-byte address/length widths, and can
+  themselves become parents for later attributes, links, groups and datasets.
+  Existing symbol-table parents are converted by the link rebuild path.
+  Variable-length or reference members nested in structured values,
+  chunked/filtered/external creation, fill values and maximum dimensions are
+  unsupported. Creation is append-only and leaves superseded parent metadata
+  unreferenced because no free-space manager is written.
 - **Object deletion:** `delete_object` resolves an object and removes every hard
   link that names its object header, including links in other groups. Soft and
   external links are left untouched and may dangle. The root group cannot be

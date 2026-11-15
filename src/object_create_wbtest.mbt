@@ -216,22 +216,84 @@ test "created datasets can receive attributes and links" {
 }
 
 ///|
-test "dataset creation rejects unsupported values and invalid shape" {
+test "variable-length and object-reference datasets can be created" {
+  let cases : Array[(String, String, Int32)] = [
+    ("testdata/symbol_table_32.h5", "/group/values", 4),
+    ("testdata/references.h5", "/group/child", 8),
+  ]
+  for (fixture, second_target, reference_size) in cases {
+    let file = Hdf5File::parse(@fs.read_file_to_bytes(fixture))
+    let strings = file.add_dataset(
+      "/group",
+      "labels",
+      [4UL],
+      VariableStringValues(["moon", "数据", "", "moon"]),
+    ) catch {
+      error => fail("create variable-length strings: " + error.message())
+    }
+    let references = Hdf5File::parse(strings).add_dataset(
+      "/group",
+      "references",
+      [3UL],
+      ObjectReferenceValues([Some("/matrix"), None, Some(second_target)]),
+    ) catch {
+      error => fail("create object references: " + error.message())
+    }
+    let edited = Hdf5File::parse(references)
+    let labels = edited.read_dataset("/group/labels")
+    assert_eq(labels.datatype.class, 9)
+    assert_eq(labels.datatype.size, 4 + reference_size + 4)
+    match labels.values {
+      Strings(values) => assert_eq(values, ["moon", "数据", "", "moon"])
+      _ => fail("expected variable-length strings")
+    }
+    let refs = edited.read_dataset("/group/references")
+    assert_eq(refs.datatype.class, 7)
+    assert_eq(refs.datatype.size, reference_size)
+    let values = match refs.values {
+      Structured(values) => values
+      _ => fail("expected structured object references")
+    }
+    let matrix_bytes = match values[0] {
+      Reference(bytes) => bytes
+      _ => fail("expected object-reference bytes")
+    }
+    assert_eq(
+      edited.resolve_object_reference(matrix_bytes).unwrap().path,
+      Some("/matrix"),
+    )
+    assert_eq(values[1], Reference(Bytes::make(reference_size, b'\x00')))
+    let target_bytes = match values[2] {
+      Reference(bytes) => bytes
+      _ => fail("expected object-reference bytes")
+    }
+    assert_eq(
+      edited.resolve_object_reference(target_bytes).unwrap().address,
+      edited.resolve(second_target).address,
+    )
+  }
+}
+
+///|
+test "dataset creation rejects invalid references and shapes" {
   let writer = Hdf5Writer::new()
   let file = Hdf5File::parse(writer.encode())
-  let variable = try {
-    ignore(file.add_dataset("/", "text", [1UL], VariableStringValues(["moon"])))
+  let missing = try {
+    ignore(
+      file.add_dataset(
+        "/",
+        "refs",
+        [1UL],
+        ObjectReferenceValues([Some("/missing")]),
+      ),
+    )
     None
   } catch {
     error => Some(error)
   }
   assert_eq(
-    variable,
-    Some(
-      UnsupportedFeature(
-        "dataset creation does not support variable-length or reference values",
-      ),
-    ),
+    missing,
+    Some(InvalidArgument("object reference target does not exist: /missing")),
   )
   let mismatched = try {
     ignore(file.add_dataset("/", "bad", [2UL], UInt64Values([1UL])))

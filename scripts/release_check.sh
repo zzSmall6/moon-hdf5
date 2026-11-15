@@ -34,8 +34,9 @@ output=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-release.XXXXXX")
 symbol_compact=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-compact.XXXXXX")
 symbol_dense=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-dense.XXXXXX")
 created=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created.XXXXXX")
+created8=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created8.XXXXXX")
 deleted=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-deleted.XXXXXX")
-trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$created" "$deleted"' EXIT HUP INT TERM
+trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$created" "$created8" "$deleted"' EXIT HUP INT TERM
 moon run src/cmd/write_demo --target native -- "$output"
 
 python=${H5PY_PYTHON:-}
@@ -73,10 +74,13 @@ fi
 echo "==> Object creation"
 moon run src/cmd/object_create_demo --target native -- \
   testdata/symbol_table_32.h5 "$created"
+moon run src/cmd/object_create_demo --target native -- \
+  testdata/references.h5 "$created8"
 if [ "${SKIP_H5PY:-0}" = "1" ]; then
   echo "==> Object creation verification skipped (SKIP_H5PY=1)"
 else
   "$python" scripts/verify_object_create.py "$created"
+  "$python" scripts/verify_object_create.py "$created8"
 fi
 
 echo "==> Object deletion"

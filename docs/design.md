@@ -392,9 +392,16 @@ link edits can replace it with an aligned continuation. Group headers contain a
 compact link-info message. Dataset headers contain dataspace, datatype and
 contiguous-layout messages; their payload is appended first and the layout uses
 the file's offset and length widths. Fixed-size numeric, string, complex and
-structured values are supported. Variable-length and reference values require a
-heap or target-resolution plan and are rejected by this entry point, as are
-chunked, filtered and external creation, fill values and maximum dimensions.
+structured values are supported. Variable-length UTF-8 strings receive an
+appended global heap and descriptors whose length, heap-address and object-index
+fields use the file address width (`4 + address_width + 4` bytes). Top-level
+object references resolve against the current root and traversal nodes and use
+the same address width for every slot, including 4-byte-address files where
+h5py's high-level multi-reference conversion expects 8-byte slots. The release
+verifier therefore reads raw reference slots with the HDF5 low-level API.
+Nested variable-length or reference members in structured values, chunked,
+filtered and external creation, fill values and maximum dimensions remain
+unsupported by this entry point.
 The parent may use link messages or a symbol table; symbol-table parents are
 converted during attachment. Created objects participate in later attribute,
 link and object-creation edits. Object deletion is available as hard-link

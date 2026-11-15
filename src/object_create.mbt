@@ -76,12 +76,37 @@ fn encode_created_contiguous_layout(
 ///|
 fn created_dataset_values_supported(values : Hdf5WriteValues) -> Bool {
   match values {
-    VariableStringValues(_) | ObjectReferenceValues(_) => false
+    VariableStringValues(_) | ObjectReferenceValues(_) => true
     StructuredValues(datatype, _) =>
       !datatype_contains_vlen(datatype) &&
       !datatype_contains_reference(datatype)
     _ => true
   }
+}
+
+///|
+fn Hdf5File::created_reference_objects(
+  self : Hdf5File,
+) -> Array[WritableObject] raise Hdf5Error {
+  let objects : Array[WritableObject] = [
+    {
+      path: "/",
+      kind: WritableGroup,
+      address: self.root_address(),
+      raw_address: 0UL,
+      dataspace: None,
+    },
+  ]
+  for node in self.walk() {
+    objects.push({
+      path: node.path,
+      kind: WritableGroup,
+      address: node.address,
+      raw_address: 0UL,
+      dataspace: None,
+    })
+  }
+  objects
 }
 
 ///|
@@ -156,12 +181,13 @@ pub fn Hdf5File::add_group(
 /// Adds a fixed-size contiguous dataset below `parent_path` and returns the
 /// updated file.
 ///
-/// Numeric, fixed-string, complex and structured values without variable-length
-/// or reference members are supported. The payload is appended first and the
-/// new dataset object header links it through a contiguous layout message using
-/// the file's address and length widths. Variable-length and reference values
-/// need a heap or target-resolution plan and remain unsupported by this entry
-/// point.
+/// Numeric, fixed-string, complex, fixed-size structured, variable-length
+/// string and object-reference values are supported. The payload is appended
+/// first and the new dataset object header links it through a contiguous layout
+/// message using the file's address and length widths. Variable-length string
+/// descriptors use the file address width, and object references use the file
+/// address width rather than a host-sized reference slot. Nested variable-length
+/// or reference members in structured values remain unsupported.
 pub fn Hdf5File::add_dataset(
   self : Hdf5File,
   parent_path : String,
@@ -176,7 +202,7 @@ pub fn Hdf5File::add_dataset(
   }
   guard created_dataset_values_supported(values) else {
     raise UnsupportedFeature(
-      "dataset creation does not support variable-length or reference values",
+      "dataset creation does not support nested variable-length or reference values",
     )
   }
   let offset_size = self.superblock.offset_size
@@ -186,8 +212,53 @@ pub fn Hdf5File::add_dataset(
     values,
     reference_address_size=Some(offset_size),
   )
-  let encoded = encode_write_values(values, reference_address_size=offset_size)
   let tail = @buffer.Buffer::Buffer()
+  let strings : Array[String] = []
+  collect_heap_strings(strings, values)
+  let mut heap = empty_writable_heap()
+  if strings.length() > 0 {
+    let heap_offset = next_aligned_tail_start(
+      self.bytes.length(),
+      tail.length(),
+      "append dataset heap",
+    )
+    let heap_address = file_offset_to_stored_address(
+      heap_offset,
+      self.superblock.base_address,
+    )
+    guard editable_uint_fits_width(heap_address, offset_size) else {
+      raise UnsupportedFeature(
+        "dataset heap address exceeds the file address width",
+      )
+    }
+    heap = {
+      address: heap_address,
+      region_address: 0UL,
+      strings,
+      regions: [],
+      sequences: [],
+    }
+    ignore(
+      append_aligned_bytes_to_tail(
+        tail,
+        self.bytes.length(),
+        encode_global_heap(heap),
+        "append dataset heap",
+      ),
+    )
+  }
+  let objects = if values is ObjectReferenceValues(_) {
+    self.created_reference_objects()
+  } else {
+    []
+  }
+  let encoded = encode_write_values(
+    values,
+    heap~,
+    objects~,
+    reference_address_size=offset_size,
+    vlen_address_size=offset_size,
+  )
   let data_address = if encoded.payload.length() == 0 {
     heap_undefined_address(offset_size)
   } else {
