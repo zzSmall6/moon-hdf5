@@ -9,8 +9,8 @@ The MoonBit release checks pass on the current worktree with the stable
 MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
 `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 344 tests passed;
-- native: 344 tests passed;
+- wasm: 362 tests passed;
+- native: 362 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output remain
   covered by prior h5py 3.13.0/HDF5 1.14.6 verification, and the new v1 B-tree
@@ -130,11 +130,15 @@ rejects cycles, reports unregistered sources and reads contiguous external
 raw-data slots across file and element boundaries. `Hdf5File` intentionally does
 not dereference external targets or external raw data.
 
-Numeric storage wider than 8 bytes and binary-float normalizations other than
-implied MSB are rejected. Attribute value decoding propagates unsupported
-datatype errors instead of reporting an empty value. HDF5 2.0 datatype-message
-v5 is accepted as forward-compatibility evidence and is outside the 1.14.6
-baseline.
+Fixed-point storage wider than 8 bytes is decoded without truncation into
+`BigInt` values, including bit offsets and both byte orders. Extended binary
+floating layouts, including x87 80-bit storage and explicit- or implied-MSB
+normalization, are converted to `Double`. The writer emits wide integers through
+`BigIntegerValues` and structured `BigInteger`/`BigTime`/`BigBitfield` values;
+extended floating-point output remains outside the writer boundary. Attribute
+value decoding propagates unsupported datatype errors instead of reporting an
+empty value. HDF5 2.0 datatype-message v5 is accepted as forward-compatibility
+evidence and is outside the 1.14.6 baseline.
 
 ## Writer findings
 

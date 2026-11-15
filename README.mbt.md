@@ -64,9 +64,11 @@ instead, use the commands in [Quick Start](#quick-start).
   scale-offset, including per-chunk filter masks.
 - Caller-registered encoders and decoders for third-party dataset chunk
   filters.
-- Signed and unsigned 1–8-byte integers in either byte order, IEEE
-  float16/32/64, normalized binary floats with implied MSB, strings, compound,
-  enum, array, time, bitfield, opaque, sequence, reference and complex values.
+- Signed and unsigned fixed-point integers of arbitrary width (wider values are
+  returned as `BigInt` in either byte order), IEEE float16/32/64, explicit- or
+  implied-MSB extended binary floats such as x87 80-bit storage, strings,
+  compound, enum, array, time, bitfield, opaque, sequence, reference and complex
+  values.
 - Hyperslab and ordered-point reads, metadata-only reads, bounded-memory chunk
   iteration, legacy and version-4 object/region references, and version-4
   attribute-reference reads.
@@ -607,8 +609,13 @@ the items below summarize the main user-visible gaps.
   files; `Hdf5File` alone cannot dereference it. Remote URLs, filtered/chunked
   external layouts and automatic external-file creation are unsupported, and
   short sources are zero-filled for the declared remainder.
-- **Numeric and string constraints:** numeric storage wider than 8 bytes and
-  binary-float normalizations other than implied MSB are unsupported.
+- **Numeric and string constraints:** the reader decodes fixed-point storage
+  wider than 8 bytes without truncation and returns `BigInt` values, and it
+  converts extended binary-float layouts (including x87 80-bit and explicit-
+  or implied-MSB normalization) to `Double`. The writer accepts integer widths
+  up to 8,191 bytes through `BigIntegerValues`, `BigInteger`, `BigTime` and
+  `BigBitfield`, including wide enums, but floating-point output remains
+  IEEE float16/32/64 only, and scale-offset remains limited to 32/64-bit floats.
 - **Variable-length structures:** writer sequence bases must be fixed-size. They
   may contain legacy or version-4 region references when those targets already
   exist. Custom variable-length string and sequence fills are stored through

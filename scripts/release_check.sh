@@ -143,4 +143,12 @@ else
     testdata/references_layouts_32.h5
 fi
 
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> Wide numeric fixture verification skipped (SKIP_H5PY=1)"
+elif [ ! -f testdata/wide_numeric.h5 ]; then
+  echo "==> Wide numeric fixture verification skipped (fixture unavailable)"
+else
+  "$python" scripts/verify_wide_numeric_fixture.py testdata/wide_numeric.h5
+fi
+
 echo "Release checks passed."

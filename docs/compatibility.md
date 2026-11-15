@@ -13,8 +13,7 @@ evidence, not part of the 1.14.6 baseline.
 
 Outside the profile: virtual datasets, SWMR, parallel HDF5, metadata editing
 beyond attribute add/delete/rename and value patching, netCDF-4/MATLAB
-high-level semantics, numeric storage wider than 8 bytes and non-implied-MSB
-binary floats.
+high-level semantics, and extended floating-point output.
 
 The release gate is `scripts/release_check.sh`: formatting, documentation and
 package checks; wasm/native tests; writer demo; and independent h5py
@@ -30,7 +29,7 @@ verification with h5py 3.13.0/HDF5 1.14.6.
 | Attributes | Inline v1–v3, dense, SOHM wrappers, shared datatype/dataspace fields | Unsupported attribute datatypes fail the read instead of returning empty values |
 | Layouts and indexes | Compact, contiguous, chunked; v1 B-tree, single-chunk, implicit, fixed-array, extensible-array and v2 B-tree indexes | Unsupported index variants are rejected |
 | Filters | Deflate, shuffle, Fletcher32, integer and f32/f64 decimal scale-offset, masks and fill markers; caller-registered dataset chunk and fractal-heap metadata decoders through `Hdf5CustomFilter` | Other scale modes are rejected; overrides of built-in filter IDs are unsupported; unregistered required filters raise `UnsupportedFeature` |
-| Numeric values | 1–8-byte fixed-point with byte order, bit offset/precision and padding; IEEE float16/32/64; implied-MSB binary floats | Wider storage and other normalizations are rejected |
+| Numeric values | Arbitrary-width fixed-point with byte order, bit offset/precision and padding, returned as `BigInt` beyond 64 bits; IEEE float16/32/64; explicit- or implied-MSB extended binary floats such as x87 80-bit storage, converted to `Double` | Floating values beyond `Double` precision are rounded during conversion; malformed field layouts are rejected |
 | Structured values | Compound, enum, array, vlen sequence, bitfield, opaque, time, reference, complex; datatype messages v1–v5 | Reference values decode as bytes; resolution is separate |
 | References | Legacy object and dataset-region references under 4- and 8-byte addresses; version-4 object, dataset-region and attribute references; same-file resolution on `Hdf5File`; registered external HDF5 targets through `Hdf5Resolver`; compact, contiguous and filtered targets; point, hyperslab, block, all and empty selections | The writer and value patcher do not emit or rewrite external-file references; `Hdf5File` requires same-file targets; unresolved object targets keep a null path |
 | Fill values | Default, fixed-size, structured, custom vlen-string and vlen-sequence fills; undefined and `FILL_TIME_NEVER` policies; disabled or absent fills zero unallocated storage | Malformed fill messages and unresolvable global-heap targets are rejected |
@@ -67,7 +66,7 @@ through its NumPy dtype bridge.
 | Groups and attributes | Compact/dense collections, creation order, continued headers, inline/dense attributes | Dense limits below |
 | Dense metadata | 9–65,535 records with encoded objects up to 65,535 bytes; FRHP/FHDB, BTHD/BTLF and type 6/9 indexes; optional one SOHM table/heap | One direct block and leaf per index; no huge/indirect blocks or free-space manager; larger compact sets use OCHK |
 | Datasets | Compact, contiguous, external raw data, paged fixed-array, extensible-array and v2 B-tree chunks | No virtual storage; compact payloads are limited to 65,535 bytes; external storage is unfiltered fixed-size only |
-| Numeric values | int/uint 1–8 bytes and IEEE float16/32/64 in either byte order | Nonstandard floating-point output is absent; scale-offset is limited to 32/64-bit floats |
+| Numeric values | int/uint 1–8,191 bytes through `BigIntegerValues` or structured `BigInteger`/`BigTime`/`BigBitfield` values, in either byte order, plus IEEE float16/32/64 | Extended floating-point output is absent; scale-offset is limited to 32/64-bit floats |
 | Strings and structures | Fixed/vlen UTF-8; compound, enum, array, time, bitfield, opaque, references, complex and sequences; `Datatype::write_vlen_string` can be nested in structured values | Complex output is little-endian canonical `r`/`i`; written sequence bases are fixed-size but may contain region references |
 | References | Legacy 8-byte objects and 12-byte regions plus opt-in version-4 object, region and attribute references in datasets, attributes, compounds, arrays and fixed-base sequences, including region references nested in sequence bases; same-file legacy and version-4 object-, region- and attribute-reference datasets and attributes can also be patched | Same-file targets only; region targets must be existing datasets with a non-null dataspace; attribute targets must already exist; legacy remains the default; external-file version-4 flags are unsupported |
 | Filters | Shuffle, deflate, Fletcher32, integer and f32/f64 decimal scale-offset, per-chunk masks, and caller-registered `Hdf5CustomFilter` encoders through `Custom(id, parameters)` | Fixed-size values support the full built-in set; variable-length values support shuffle/deflate, not Fletcher32 or scale-offset; scale-offset must lead; floating scale-offset cannot use Fletcher32; custom filters must be registered before dataset creation and provide `encode` for output |

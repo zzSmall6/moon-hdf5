@@ -10,6 +10,8 @@ pub(all) enum Hdf5WriteValues {
   UInt16Values(Array[UInt32])
   UInt32Values(Array[UInt32])
   UInt64Values(Array[UInt64])
+  /// Little-endian fixed-point values wider than 8 bytes.
+  BigIntegerValues(Array[@bigint.BigInt], Int32, Bool)
   Float16Values(Array[Float])
   Float32Values(Array[Float])
   Float64Values(Array[Double])
@@ -98,7 +100,7 @@ pub fn Datatype::write_integer_with_order(
   size : Int32,
   little_endian : Bool,
 ) -> Datatype raise Hdf5Error {
-  guard size >= 1 && size <= 8 else {
+  guard size >= 1 && size <= 8191 else {
     raise InvalidArgument("writer integer datatype width is invalid")
   }
   writer_datatype(0, size, signed~, little_endian~)
@@ -129,7 +131,7 @@ pub fn Datatype::write_time(
   size : Int32,
   little_endian~ : Bool = true,
 ) -> Datatype raise Hdf5Error {
-  guard size == 1 || size == 2 || size == 4 || size == 8 else {
+  guard size >= 1 && size <= 8191 else {
     raise InvalidArgument("writer time datatype width is invalid")
   }
   writer_datatype(2, size, little_endian~, bit_precision=size * 8)
@@ -143,11 +145,12 @@ pub fn Datatype::write_bitfield(
   offset~ : Int32 = 0,
   little_endian~ : Bool = true,
 ) -> Datatype raise Hdf5Error {
-  guard (size == 1 || size == 2 || size == 4 || size == 8) &&
+  guard size >= 1 &&
+    size <= 8191 &&
     precision > 0 &&
-    precision <= 64 &&
+    precision.to_int64() <= size.to_int64() * 8L &&
     offset >= 0 &&
-    offset <= size * 8 - precision else {
+    offset.to_int64() + precision.to_int64() <= size.to_int64() * 8L else {
     raise InvalidArgument("writer bitfield layout is invalid")
   }
   writer_datatype(
@@ -734,6 +737,7 @@ fn writer_value_count(values : Hdf5WriteValues) -> Int32 {
     UInt16Values(items) => items.length()
     UInt32Values(items) => items.length()
     UInt64Values(items) => items.length()
+    BigIntegerValues(items, _, _) => items.length()
     Float16Values(items) => items.length()
     Float32Values(items) => items.length()
     Float64Values(items) => items.length()
@@ -753,6 +757,7 @@ fn writer_value_element_size(values : Hdf5WriteValues) -> Int32 {
     Int16Values(_) | UInt16Values(_) => 2
     Int32Values(_) | UInt32Values(_) | Float32Values(_) => 4
     Int64Values(_) | UInt64Values(_) | Float64Values(_) => 8
+    BigIntegerValues(_, size, _) => size
     Float16Values(_) => 2
     FixedStringValues(_, width) => width
     VariableStringValues(_) => 16
@@ -774,6 +779,8 @@ fn copy_write_values(values : Hdf5WriteValues) -> Hdf5WriteValues {
     UInt16Values(items) => UInt16Values(items.copy())
     UInt32Values(items) => UInt32Values(items.copy())
     UInt64Values(items) => UInt64Values(items.copy())
+    BigIntegerValues(items, size, signed) =>
+      BigIntegerValues(items.copy(), size, signed)
     Float16Values(items) => Float16Values(items.copy())
     Float32Values(items) => Float32Values(items.copy())
     Float64Values(items) => Float64Values(items.copy())
@@ -923,7 +930,7 @@ fn validate_writer_datatype(
   }
   match datatype.class {
     0 => {
-      guard datatype.size >= 1 && datatype.size <= 8 else {
+      guard datatype.size >= 1 && datatype.size <= 8191 else {
         raise InvalidArgument("writer integer datatype is unsupported")
       }
     }
@@ -933,14 +940,10 @@ fn validate_writer_datatype(
       }
     }
     2 => {
-      guard (
-          datatype.size == 1 ||
-          datatype.size == 2 ||
-          datatype.size == 4 ||
-          datatype.size == 8
-        ) &&
+      guard datatype.size >= 1 &&
+        datatype.size <= 8191 &&
         datatype.bit_precision > 0 &&
-        datatype.bit_precision <= datatype.size * 8 else {
+        datatype.bit_precision.to_int64() <= datatype.size.to_int64() * 8L else {
         raise InvalidArgument("writer time datatype is unsupported")
       }
     }
@@ -952,16 +955,12 @@ fn validate_writer_datatype(
       }
     }
     4 => {
-      guard (
-          datatype.size == 1 ||
-          datatype.size == 2 ||
-          datatype.size == 4 ||
-          datatype.size == 8
-        ) &&
+      guard datatype.size >= 1 &&
+        datatype.size <= 8191 &&
         datatype.bit_precision > 0 &&
-        datatype.bit_precision <= 64 &&
         datatype.bit_offset >= 0 &&
-        datatype.bit_offset <= datatype.size * 8 - datatype.bit_precision else {
+        datatype.bit_offset.to_int64() + datatype.bit_precision.to_int64() <=
+        datatype.size.to_int64() * 8L else {
         raise InvalidArgument("writer bitfield datatype is unsupported")
       }
     }
@@ -1056,19 +1055,33 @@ fn validate_writer_datatype(
       for index in 0..<datatype.enum_members.length() {
         let enum_item = datatype.enum_members[index]
         validate_writer_datatype_name(enum_item.name, "enum member name")
-        guard (base.signed && enum_item.value is EnumValue::Signed(_)) ||
-          (!base.signed && enum_item.value is EnumValue::Unsigned(_)) else {
-          raise InvalidArgument(
-            "enum member signedness does not match its base",
-          )
+        let integer_value = match enum_item.value {
+          EnumValue::Signed(number) => {
+            guard base.signed && base.size <= 8 else {
+              raise InvalidArgument(
+                "enum member signedness does not match its base",
+              )
+            }
+            SignedInteger(number)
+          }
+          EnumValue::Unsigned(number) => {
+            guard !base.signed && base.size <= 8 else {
+              raise InvalidArgument(
+                "enum member signedness does not match its base",
+              )
+            }
+            UnsignedInteger(number)
+          }
+          EnumValue::Big(number) => {
+            guard base.size > 8 else {
+              raise InvalidArgument(
+                "wide enum member does not match a narrow base",
+              )
+            }
+            BigInteger(number)
+          }
         }
-        validate_writer_integer(
-          match enum_item.value {
-            EnumValue::Signed(number) => SignedInteger(number)
-            EnumValue::Unsigned(number) => UnsignedInteger(number)
-          },
-          base,
-        )
+        validate_writer_integer(integer_value, base)
         for previous in 0..<index {
           guard datatype.enum_members[previous].name != enum_item.name &&
             datatype.enum_members[previous].value != enum_item.value else {
@@ -1128,7 +1141,12 @@ fn validate_writer_integer(
   value : DatasetValue,
   datatype : Datatype,
 ) -> Unit raise Hdf5Error {
-  if datatype.signed {
+  if datatype.size > 8 {
+    guard value is BigInteger(number) else {
+      raise InvalidArgument("wide structured integer has the wrong kind")
+    }
+    validate_big_integer(number, datatype.size, datatype.signed)
+  } else if datatype.signed {
     guard value is SignedInteger(number) else {
       raise InvalidArgument("structured integer value has the wrong kind")
     }
@@ -1170,16 +1188,25 @@ fn validate_structured_value(
         )
       }
     }
-    2 => {
-      guard value is Time(number) else {
-        raise InvalidArgument("structured time value has the wrong kind")
-      }
-      if datatype.bit_precision < 64 {
-        guard number < 1UL << datatype.bit_precision else {
+    2 =>
+      if datatype.size > 8 {
+        guard value is BigTime(number) else {
+          raise InvalidArgument("wide structured time has the wrong kind")
+        }
+        validate_big_integer(number, datatype.size, false)
+        guard number.bit_length() <= datatype.bit_precision else {
           raise InvalidArgument("structured time is out of range")
         }
+      } else {
+        guard value is Time(number) else {
+          raise InvalidArgument("structured time value has the wrong kind")
+        }
+        if datatype.bit_precision < 64 {
+          guard number < 1UL << datatype.bit_precision else {
+            raise InvalidArgument("structured time is out of range")
+          }
+        }
       }
-    }
     3 => {
       guard value is Text(text) else {
         raise InvalidArgument("structured string value has the wrong kind")
@@ -1188,16 +1215,25 @@ fn validate_structured_value(
         raise InvalidArgument("structured string exceeds its width")
       }
     }
-    4 => {
-      guard value is Bitfield(number) else {
-        raise InvalidArgument("structured bitfield value has the wrong kind")
-      }
-      if datatype.bit_precision < 64 {
-        guard number < 1UL << datatype.bit_precision else {
+    4 =>
+      if datatype.size > 8 {
+        guard value is BigBitfield(number) else {
+          raise InvalidArgument("wide structured bitfield has the wrong kind")
+        }
+        validate_big_integer(number, datatype.size, false)
+        guard number.bit_length() <= datatype.bit_precision else {
           raise InvalidArgument("structured bitfield is out of range")
         }
+      } else {
+        guard value is Bitfield(number) else {
+          raise InvalidArgument("structured bitfield value has the wrong kind")
+        }
+        if datatype.bit_precision < 64 {
+          guard number < 1UL << datatype.bit_precision else {
+            raise InvalidArgument("structured bitfield is out of range")
+          }
+        }
       }
-    }
     5 => {
       guard value is Opaque(bytes) else {
         raise InvalidArgument("structured opaque value has the wrong kind")
@@ -1377,6 +1413,12 @@ fn validate_write_values(
     }
     Int64Values(items) => validate_writer_byte_size(items.length(), 8)
     UInt64Values(items) => validate_writer_byte_size(items.length(), 8)
+    BigIntegerValues(items, size, signed) => {
+      validate_writer_byte_size(items.length(), size)
+      for item in items {
+        validate_big_integer(item, size, signed)
+      }
+    }
     Float64Values(items) => validate_writer_byte_size(items.length(), 8)
     Float16Values(items) => validate_writer_byte_size(items.length(), 2)
     Complex64Values(items) => validate_writer_byte_size(items.length(), 8)
@@ -1831,6 +1873,10 @@ fn same_write_datatype(
     (UInt16Values(_), UInt16Values(_)) => true
     (UInt32Values(_), UInt32Values(_)) => true
     (UInt64Values(_), UInt64Values(_)) => true
+    (
+      BigIntegerValues(_, left_size, left_signed),
+      BigIntegerValues(_, right_size, right_signed),
+    ) => left_size == right_size && left_signed == right_signed
     (Float16Values(_), Float16Values(_)) => true
     (Float32Values(_), Float32Values(_)) => true
     (Float64Values(_), Float64Values(_)) => true
@@ -2406,6 +2452,8 @@ fn default_write_fill(
     UInt16Values(_) => UInt16Values([0U])
     UInt32Values(_) => UInt32Values([0U])
     UInt64Values(_) => UInt64Values([0UL])
+    BigIntegerValues(_, size, signed) =>
+      BigIntegerValues([@bigint.BigInt::from_int(0)], size, signed)
     Float16Values(_) => Float16Values([0.0])
     Float32Values(_) => Float32Values([0.0])
     Float64Values(_) => Float64Values([0.0])
@@ -2476,6 +2524,8 @@ fn repeated_write_values(
       UInt32Values(Array::make(count, items[0]))
     (UInt64Values(_), UInt64Values(items)) =>
       UInt64Values(Array::make(count, items[0]))
+    (BigIntegerValues(_, size, signed), BigIntegerValues(items, _, _)) =>
+      BigIntegerValues(Array::make(count, items[0]), size, signed)
     (Float16Values(_), Float16Values(items)) =>
       Float16Values(Array::make(count, items[0]))
     (Float32Values(_), Float32Values(items)) =>
@@ -2886,6 +2936,51 @@ fn write_uint_width(
 }
 
 ///|
+fn validate_big_integer(
+  value : @bigint.BigInt,
+  size : Int32,
+  signed : Bool,
+) -> Unit raise Hdf5Error {
+  guard size >= 1 && size <= 8191 else {
+    raise InvalidArgument("writer integer width is invalid")
+  }
+  let bits = size * 8
+  if signed {
+    let limit = @bigint.BigInt::from_int(1).shl(bits - 1)
+    guard value.compare(limit.neg()) >= 0 && value.compare(limit) < 0 else {
+      raise InvalidArgument("writer signed integer is out of range")
+    }
+  } else {
+    let limit = @bigint.BigInt::from_int(1).shl(bits)
+    guard value.compare(@bigint.BigInt::from_int(0)) >= 0 &&
+      value.compare(limit) < 0 else {
+      raise InvalidArgument("writer unsigned integer is out of range")
+    }
+  }
+}
+
+///|
+fn write_big_integer_width(
+  buffer : @buffer.Buffer,
+  value : @bigint.BigInt,
+  size : Int32,
+  signed : Bool,
+  little_endian~ : Bool = true,
+) -> Unit raise Hdf5Error {
+  validate_big_integer(value, size, signed)
+  let magnitude = if value.compare(@bigint.BigInt::from_int(0)) < 0 {
+    @bigint.BigInt::from_int(1).shl(size * 8).add(value)
+  } else {
+    value
+  }
+  let encoded = magnitude.to_octets(length=size)
+  for index in 0..<size {
+    let source = if little_endian { size - 1 - index } else { index }
+    buffer.write_byte(encoded.unsafe_get(source))
+  }
+}
+
+///|
 fn encode_integer_datatype(
   signed : Bool,
   size : Int32,
@@ -3082,16 +3177,30 @@ fn encode_writer_datatype(
         buffer.write_byte(b'\x00')
       }
       for enum_item in datatype.enum_members {
-        let raw = match enum_item.value {
-          EnumValue::Signed(value) => value.reinterpret_as_uint64()
-          EnumValue::Unsigned(value) => value
+        match enum_item.value {
+          EnumValue::Signed(value) =>
+            write_uint_width(
+              buffer,
+              value.reinterpret_as_uint64(),
+              datatype.size,
+              little_endian=datatype.base_types[0].little_endian,
+            )
+          EnumValue::Unsigned(value) =>
+            write_uint_width(
+              buffer,
+              value,
+              datatype.size,
+              little_endian=datatype.base_types[0].little_endian,
+            )
+          EnumValue::Big(value) =>
+            write_big_integer_width(
+              buffer,
+              value,
+              datatype.size,
+              datatype.base_types[0].signed,
+              little_endian=datatype.base_types[0].little_endian,
+            )
         }
-        write_uint_width(
-          buffer,
-          raw,
-          datatype.size,
-          little_endian=datatype.base_types[0].little_endian,
-        )
       }
       buffer.to_bytes()
     }
@@ -3165,19 +3274,32 @@ fn encode_structured_value(
   validate_structured_value(value, datatype, 0)
   let buffer = @buffer.Buffer::Buffer(size_hint=datatype.size)
   match datatype.class {
-    0 => {
-      let raw = match value {
-        SignedInteger(number) => number.reinterpret_as_uint64()
-        UnsignedInteger(number) => number
-        _ => 0UL
+    0 =>
+      if datatype.size > 8 {
+        match value {
+          BigInteger(number) =>
+            write_big_integer_width(
+              buffer,
+              number,
+              datatype.size,
+              datatype.signed,
+              little_endian=datatype.little_endian,
+            )
+          _ => writer_write_zeros(buffer, datatype.size)
+        }
+      } else {
+        let raw = match value {
+          SignedInteger(number) => number.reinterpret_as_uint64()
+          UnsignedInteger(number) => number
+          _ => 0UL
+        }
+        write_uint_width(
+          buffer,
+          raw,
+          datatype.size,
+          little_endian=datatype.little_endian,
+        )
       }
-      write_uint_width(
-        buffer,
-        raw,
-        datatype.size,
-        little_endian=datatype.little_endian,
-      )
-    }
     1 =>
       match value {
         FloatingPoint(number) =>
@@ -3210,6 +3332,14 @@ fn encode_structured_value(
             datatype.size,
             little_endian=datatype.little_endian,
           )
+        BigTime(number) =>
+          write_big_integer_width(
+            buffer,
+            number,
+            datatype.size,
+            false,
+            little_endian=datatype.little_endian,
+          )
         _ => ()
       }
     3 =>
@@ -3238,6 +3368,14 @@ fn encode_structured_value(
             buffer,
             number << datatype.bit_offset,
             datatype.size,
+            little_endian=datatype.little_endian,
+          )
+        BigBitfield(number) =>
+          write_big_integer_width(
+            buffer,
+            number.shl(datatype.bit_offset),
+            datatype.size,
+            false,
             little_endian=datatype.little_endian,
           )
         _ => ()
@@ -3373,16 +3511,30 @@ fn encode_structured_value(
           let index = datatype.enum_members
             .search_by(enum_item => enum_item.name == name)
             .unwrap()
-          let raw = match datatype.enum_members[index].value {
-            EnumValue::Signed(number) => number.reinterpret_as_uint64()
-            EnumValue::Unsigned(number) => number
+          match datatype.enum_members[index].value {
+            EnumValue::Signed(number) =>
+              write_uint_width(
+                buffer,
+                number.reinterpret_as_uint64(),
+                datatype.size,
+                little_endian=datatype.base_types[0].little_endian,
+              )
+            EnumValue::Unsigned(number) =>
+              write_uint_width(
+                buffer,
+                number,
+                datatype.size,
+                little_endian=datatype.base_types[0].little_endian,
+              )
+            EnumValue::Big(number) =>
+              write_big_integer_width(
+                buffer,
+                number,
+                datatype.size,
+                datatype.base_types[0].signed,
+                little_endian=datatype.base_types[0].little_endian,
+              )
           }
-          write_uint_width(
-            buffer,
-            raw,
-            datatype.size,
-            little_endian=datatype.base_types[0].little_endian,
-          )
         }
         _ => ()
       }
@@ -3624,6 +3776,12 @@ fn encode_write_values(
         payload.write_uint64_le(item)
       }
       (encode_integer_datatype(false, 8), 8)
+    }
+    BigIntegerValues(items, size, signed) => {
+      for item in items {
+        write_big_integer_width(payload, item, size, signed)
+      }
+      (encode_integer_datatype(signed, size), size)
     }
     Float16Values(items) => {
       for item in items {
@@ -3945,6 +4103,10 @@ fn writer_scaleoffset_layout(
     UInt16Values(_) => (2, false, 0)
     UInt32Values(_) => (4, false, 0)
     UInt64Values(_) => (8, false, 0)
+    BigIntegerValues(_, _, _) =>
+      raise UnsupportedFeature(
+        "scale-offset does not support integers wider than 8 bytes",
+      )
     Float32Values(_) => (4, false, 1)
     Float64Values(_) => (8, false, 1)
     _ =>

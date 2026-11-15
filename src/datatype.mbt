@@ -5,6 +5,8 @@
 pub(all) enum EnumValue {
   Signed(Int64)
   Unsigned(UInt64)
+  /// Integer enumeration member wider than 64 bits.
+  Big(@bigint.BigInt)
 }
 
 ///|
@@ -196,13 +198,11 @@ fn parse_datatype_reader(
     bit_offset = offset
     bit_precision = precision
     if class == 0 {
-      guard size >= 1 && size <= 8 else {
-        raise UnsupportedFeature("integer width is outside 1..8 bytes")
-      }
       guard (bit_field_0 & 0xF0) == 0 && bit_field_1 == 0 && bit_field_2 == 0 else {
         raise UnsupportedFeature("integer datatype flags are not supported")
       }
-      guard precision > 0 && precision <= 64 && offset + precision <= size * 8 else {
+      guard precision > 0 &&
+        offset.to_int64() + precision.to_int64() <= size.to_int64() * 8L else {
         raise InvalidField("invalid integer offset or precision")
       }
     } else {
@@ -213,23 +213,17 @@ fn parse_datatype_reader(
       let exponent_bias = reader.read_u32_le()
       float_normalization = (bit_field_0 >> 4) & 0x03
       guard size >= 1 &&
-        size <= 8 &&
         precision > 0 &&
-        precision <= 64 &&
-        offset + precision <= size * 8 &&
+        offset.to_int64() + precision.to_int64() <= size.to_int64() * 8L &&
         (bit_field_0 & 0xC0) == 0 &&
         bit_field_2 == 0 else {
         raise InvalidField("invalid floating-point layout")
       }
-      guard float_normalization == 2 else {
-        raise UnsupportedFeature(
-          "floating-point normalization other than implied MSB",
-        )
+      guard float_normalization <= 2 else {
+        raise InvalidField("invalid floating-point normalization")
       }
       guard exponent_size > 0 &&
         exponent_size <= 32 &&
-        mantissa_size >= 0 &&
-        mantissa_size <= 64 &&
         bit_field_1 >= 0 &&
         bit_field_1 < precision &&
         exponent_position >= 0 &&
@@ -252,11 +246,11 @@ fn parse_datatype_reader(
       (bit_field_0 & 0xFE) == 0 &&
       bit_field_1 == 0 &&
       bit_field_2 == 0 &&
-      (size == 1 || size == 2 || size == 4 || size == 8) else {
+      size >= 1 else {
       raise UnsupportedFeature("unsupported time datatype layout")
     }
     bit_precision = reader.read_u16_le().to_int()
-    guard bit_precision > 0 && bit_precision <= size * 8 else {
+    guard bit_precision > 0 && bit_precision.to_int64() <= size.to_int64() * 8L else {
       raise InvalidField("invalid time datatype precision")
     }
   } else if class == 3 {
@@ -276,12 +270,13 @@ fn parse_datatype_reader(
       (bit_field_0 & 0xF8) == 0 &&
       bit_field_1 == 0 &&
       bit_field_2 == 0 &&
-      (size == 1 || size == 2 || size == 4 || size == 8) else {
+      size >= 1 else {
       raise UnsupportedFeature("unsupported bitfield datatype layout")
     }
     bit_offset = reader.read_u16_le().to_int()
     bit_precision = reader.read_u16_le().to_int()
-    guard bit_precision > 0 && bit_offset + bit_precision <= size * 8 else {
+    guard bit_precision > 0 &&
+      bit_offset.to_int64() + bit_precision.to_int64() <= size.to_int64() * 8L else {
       raise InvalidField("invalid bitfield offset or precision")
     }
   } else if class == 5 {
@@ -406,16 +401,30 @@ fn parse_datatype_reader(
     }
     let raw_values = reader.read_bytes(member_count * base.size)
     for index in 0..<member_count {
-      let raw = read_uint_at(
-        raw_values,
-        index * base.size,
-        base.size,
-        base.little_endian,
-      )
-      let value = if base.signed {
-        EnumValue::Signed(decode_integer_signed(raw, base))
+      let value = if base.size <= 8 && base.bit_precision <= 64 {
+        let raw = read_uint_at(
+          raw_values,
+          index * base.size,
+          base.size,
+          base.little_endian,
+        )
+        if base.signed {
+          EnumValue::Signed(decode_integer_signed(raw, base))
+        } else {
+          EnumValue::Unsigned(decode_integer_unsigned(raw, base))
+        }
       } else {
-        EnumValue::Unsigned(decode_integer_unsigned(raw, base))
+        let raw = read_big_uint_at(
+          raw_values,
+          index * base.size,
+          base.size,
+          base.little_endian,
+        )
+        if base.signed {
+          EnumValue::Big(decode_big_integer_signed(raw, base))
+        } else {
+          EnumValue::Big(decode_big_integer_unsigned(raw, base))
+        }
       }
       enum_members.push({ name: names[index], value, })
     }

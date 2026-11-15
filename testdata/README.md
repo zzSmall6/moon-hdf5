@@ -25,6 +25,7 @@ python3 -m venv /tmp/moon-hdf5-h5py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_filtered_attribute_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_hard_link_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_matlab73_fixture.py
+/tmp/moon-hdf5-h5py/bin/python scripts/generate_wide_numeric_fixture.py
 ```
 
 The v114 generator refuses other HDF5 versions. A newer HDF5 2.x environment can
@@ -70,6 +71,7 @@ Independent verifiers run with the HDF5 1.14.6 environment:
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_hard_links_fixture.py testdata/hard_links.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_matlab73_fixture.py testdata/matlab73_compatible.mat
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_netcdf4_fixture.py testdata/netcdf4_1_7_5.h5
+/tmp/moon-hdf5-h5py/bin/python scripts/verify_wide_numeric_fixture.py testdata/wide_numeric.h5
 ```
 
 Regeneration is not part of the release gate; `scripts/release_check.sh`
@@ -82,6 +84,7 @@ verifies the committed files.
 | `group_storage.h5`, `attribute_storage.h5` | Empty/compact/dense groups and attributes, with and without creation order |
 | `fill_v2.h5`, `fill_v3.h5`, `contiguous_fill_v*.h5` | Fill-message versions, unallocated and partially allocated contiguous storage |
 | `numeric_layouts.h5` | Integer widths/byte orders, IEEE float16/32/64, nonstandard precision/offset/padding and normalized binary floats |
+| `wide_numeric.h5` | 16-byte signed/unsigned integers, bit-offset integers, x87 80-bit and wide implied/explicit-MSB floats, and big-endian variants |
 | `nested_vlen.h5` | Vlen strings used as the base of vlen sequences in contiguous and chunked datasets and a root attribute |
 | `scaleoffset.h5` | Integer and f32/f64 decimal scale-offset, big-endian values, fill markers, pipeline and full-precision cases |
 | `layout_v4.h5` | Compact/contiguous/chunked layouts, filter masks and all common chunk indexes |

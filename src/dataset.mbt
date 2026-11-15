@@ -4,6 +4,8 @@
 pub(all) enum DatasetValues {
   Integers(Array[Int64])
   UnsignedIntegers(Array[UInt64])
+  /// Fixed-point values whose storage or precision exceeds 64 bits.
+  BigIntegers(Array[@bigint.BigInt])
   Floats(Array[Double])
   Strings(Array[String])
   Enums(Array[String])
@@ -19,6 +21,8 @@ pub extend DatasetValues with @debug.Debug::{to_repr}
 pub(all) enum DatasetValue {
   SignedInteger(Int64)
   UnsignedInteger(UInt64)
+  /// Fixed-point value whose storage or precision exceeds 64 bits.
+  BigInteger(@bigint.BigInt)
   FloatingPoint(Double)
   Text(String)
   Enumeration(String)
@@ -35,6 +39,10 @@ pub(all) enum DatasetValue {
   Reference(Bytes)
   Sequence(Array[DatasetValue])
   Time(UInt64)
+  /// Time value whose storage or precision exceeds 64 bits.
+  BigTime(@bigint.BigInt)
+  /// Bitfield value whose storage or precision exceeds 64 bits.
+  BigBitfield(@bigint.BigInt)
   Complex(Double, Double)
 }
 
@@ -125,6 +133,96 @@ fn read_uint_at(
     }
   }
   value
+}
+
+///|
+/// Reads an arbitrarily wide unsigned integer without truncation. The bytes
+/// are interpreted with the requested byte order and retain every bit.
+fn read_big_uint_at(
+  bytes : Bytes,
+  offset : Int32,
+  size : Int32,
+  little_endian : Bool,
+) -> @bigint.BigInt raise Hdf5Error {
+  guard offset >= 0 &&
+    size >= 1 &&
+    offset.to_int64() + size.to_int64() <= bytes.length().to_int64() else {
+    raise UnexpectedEof(offset.to_int64())
+  }
+  let buffer = @buffer.Buffer::Buffer(size_hint=size)
+  for index in 0..<size {
+    let source = if little_endian {
+      offset + size - 1 - index
+    } else {
+      offset + index
+    }
+    buffer.write_byte(bytes.unsafe_get(source))
+  }
+  @bigint.BigInt::from_octets(buffer.to_bytes().get_view().unwrap())
+}
+
+///|
+fn bigint_one() -> @bigint.BigInt {
+  @bigint.BigInt::from_int(1)
+}
+
+///|
+fn bigint_mask(bits : Int32) -> @bigint.BigInt {
+  bigint_one().shl(bits).sub(bigint_one())
+}
+
+///|
+fn bigint_field(
+  value : @bigint.BigInt,
+  position : Int32,
+  size : Int32,
+) -> @bigint.BigInt {
+  if size <= 0 {
+    @bigint.BigInt::from_int(0)
+  } else {
+    value.shr(position).land(bigint_mask(size))
+  }
+}
+
+///|
+fn bigint_bit(value : @bigint.BigInt, position : Int32) -> Bool {
+  !value.shr(position).land(bigint_one()).is_zero()
+}
+
+///|
+fn bigint_masked_value(
+  raw : @bigint.BigInt,
+  offset : Int32,
+  precision : Int32,
+) -> @bigint.BigInt {
+  bigint_field(raw, offset, precision)
+}
+
+///|
+fn decode_big_integer_unsigned(
+  raw : @bigint.BigInt,
+  datatype : Datatype,
+) -> @bigint.BigInt raise Hdf5Error {
+  guard datatype.bit_precision > 0 &&
+    datatype.bit_offset >= 0 &&
+    datatype.bit_offset.to_int64() + datatype.bit_precision.to_int64() <=
+    datatype.size.to_int64() * 8L else {
+    raise InvalidField("invalid integer offset or precision")
+  }
+  bigint_masked_value(raw, datatype.bit_offset, datatype.bit_precision)
+}
+
+///|
+fn decode_big_integer_signed(
+  raw : @bigint.BigInt,
+  datatype : Datatype,
+) -> @bigint.BigInt raise Hdf5Error {
+  let unsigned = decode_big_integer_unsigned(raw, datatype)
+  if bigint_bit(unsigned, datatype.bit_precision - 1) {
+    unsigned.sub(bigint_one().shl(datatype.bit_precision))
+  } else {
+    unsigned
+  }
 }
 
 ///|
@@ -234,75 +332,140 @@ fn is_ieee_float_layout(datatype : Datatype) -> Bool {
 }
 
 ///|
-fn binary_float_to_double(raw : UInt64, datatype : Datatype) -> Double {
-  let sign_bit = 0x8000000000000000UL
-  let fraction_mask = 0x000FFFFFFFFFFFFFUL
-  let value = masked_value(raw, datatype.bit_offset, datatype.bit_precision)
-  let sign = if ((value >> datatype.float_sign_position) & 1UL) != 0UL {
-    sign_bit
+fn double_power_of_two(exponent : Int32) -> Double {
+  if exponent > 1023 {
+    0x7FF0000000000000UL.reinterpret_as_double()
+  } else if exponent >= -1022 {
+    ((exponent + 1023).to_uint64() << 52).reinterpret_as_double()
+  } else if exponent >= -1074 {
+    (1UL << (exponent + 1074)).reinterpret_as_double()
   } else {
-    0UL
+    0.0
   }
-  let exponent = masked_value(
-    value,
+}
+
+///|
+/// Converts an arbitrary-precision significand and an exact power-of-two
+/// exponent to the nearest `Double`, rounding ties to even.
+fn big_significand_to_double(
+  negative : Bool,
+  significand : @bigint.BigInt,
+  exponent : Int32,
+) -> Double {
+  if significand.is_zero() {
+    return if negative {
+      0x8000000000000000UL.reinterpret_as_double()
+    } else {
+      0.0
+    }
+  }
+  let highest = significand.bit_length() - 1
+  let mut top = 0UL
+  let mut scale = exponent
+  if highest > 52 {
+    let shift = highest - 52
+    let truncated = significand.shr(shift)
+    top = truncated.to_uint64()
+    let remainder = significand.sub(truncated.shl(shift))
+    if !remainder.is_zero() {
+      let round_bit = bigint_bit(remainder, shift - 1)
+      let sticky = shift > 1 && !bigint_field(remainder, 0, shift - 1).is_zero()
+      if round_bit && (sticky || (top & 1UL) != 0UL) {
+        top = top + 1UL
+        if top == 1UL << 53 {
+          top = top >> 1
+          scale = scale + 1
+        }
+      }
+    }
+    scale = scale + shift
+  } else {
+    top = significand.shl(52 - highest).to_uint64()
+    scale = scale - (52 - highest)
+  }
+  let magnitude = top.to_double() * double_power_of_two(scale)
+  if negative {
+    -magnitude
+  } else {
+    magnitude
+  }
+}
+
+///|
+/// Decodes a floating-point value whose storage or field layout is not one of
+/// the standard 2/4/8-byte IEEE layouts. Explicit-integer-bit formats such as
+/// x86 extended precision and wider IEEE formats are converted to `Double`.
+fn read_big_float_value(
+  bytes : Bytes,
+  offset : Int32,
+  datatype : Datatype,
+) -> Double raise Hdf5Error {
+  let raw = read_big_uint_at(
+    bytes,
+    offset,
+    datatype.size,
+    datatype.little_endian,
+  )
+  let bits = bigint_masked_value(
+    raw,
+    datatype.bit_offset,
+    datatype.bit_precision,
+  )
+  let negative = bigint_bit(bits, datatype.float_sign_position)
+  let sign_bits = if negative { 0x8000000000000000UL } else { 0UL }
+  let exponent = bigint_field(
+    bits,
     datatype.float_exponent_position,
     datatype.float_exponent_size,
-  ).reinterpret_as_int64()
+  ).to_uint64()
   let max_exponent = (1UL << datatype.float_exponent_size) - 1UL
-  let mantissa = masked_value(
-    value,
+  let mantissa = bigint_field(
+    bits,
     datatype.float_mantissa_position,
     datatype.float_mantissa_size,
   )
-  if exponent == max_exponent.reinterpret_as_int64() {
-    return if mantissa == 0UL {
-      (sign | 0x7FF0000000000000UL).reinterpret_as_double()
-    } else {
-      (sign | 0x7FF8000000000000UL).reinterpret_as_double()
-    }
-  }
-  if exponent == 0L && mantissa == 0UL {
-    return sign.reinterpret_as_double()
-  }
   let mantissa_size = datatype.float_mantissa_size.to_int64()
-  let mut exponent_field = 0L
-  let mut fraction = 0UL
-  if exponent == 0L {
-    let mut highest = 0
-    for bit in 0..<datatype.float_mantissa_size {
-      if ((mantissa >> bit) & 1UL) != 0UL {
-        highest = bit
-      }
-    }
-    fraction = if highest <= 52 {
-      (mantissa << (52 - highest)) & fraction_mask
-    } else {
-      (mantissa >> (highest - 52)) & fraction_mask
-    }
-    exponent_field = 1023L +
-      1L -
-      datatype.float_exponent_bias.to_int64() -
-      (mantissa_size - highest.to_int64())
+  let fraction = if datatype.float_normalization == 2 {
+    mantissa
   } else {
-    fraction = if mantissa_size <= 52L {
-      (mantissa << (52 - mantissa_size.to_int())) & fraction_mask
+    bigint_field(mantissa, 0, datatype.float_mantissa_size - 1)
+  }
+  if exponent == max_exponent {
+    let payload = if fraction.is_zero() {
+      0x7FF0000000000000UL
     } else {
-      mantissa >> (mantissa_size.to_int() - 52)
+      0x7FF8000000000000UL
     }
-    exponent_field = 1023L + exponent - datatype.float_exponent_bias.to_int64()
+    return (sign_bits | payload).reinterpret_as_double()
   }
-  if exponent_field >= 2047L {
-    return (sign | 0x7FF0000000000000UL).reinterpret_as_double()
-  }
-  if exponent_field <= 0L {
-    let shift = 1L - exponent_field
-    if shift >= 53L {
-      return sign.reinterpret_as_double()
+  let exponent_bias = datatype.float_exponent_bias.to_int64()
+  let significand = if datatype.float_normalization == 2 {
+    if exponent == 0UL {
+      mantissa
+    } else {
+      mantissa.lor(bigint_one().shl(datatype.float_mantissa_size))
     }
-    let significand = (1UL << 52) | fraction
-    return (sign | (significand >> shift.to_int())).reinterpret_as_double()
+  } else {
+    mantissa
   }
-  (sign | (exponent_field.reinterpret_as_uint64() << 52) | fraction).reinterpret_as_double()
+  let field_offset = if datatype.float_normalization == 2 {
+    mantissa_size
+  } else {
+    mantissa_size - 1L
+  }
+  let binary_exponent = if exponent == 0UL {
+    1L - exponent_bias - field_offset
+  } else {
+    exponent.reinterpret_as_int64() - exponent_bias - field_offset
+  }
+  let clamped_exponent = if binary_exponent > 1_000_000L {
+    1_000_000
+  } else if binary_exponent < -1_000_000L {
+    -1_000_000
+  } else {
+    binary_exponent.to_int()
+  }
+  big_significand_to_double(negative, significand, clamped_exponent)
 }
 
 ///|
@@ -314,8 +477,7 @@ fn read_float_value(
   if is_ieee_float_layout(datatype) {
     read_float_at(bytes, offset, datatype.size, datatype.little_endian)
   } else {
-    let raw = read_uint_at(bytes, offset, datatype.size, datatype.little_endian)
-    binary_float_to_double(raw, datatype)
+    read_big_float_value(bytes, offset, datatype)
   }
 }
 
@@ -370,12 +532,45 @@ fn enum_value_name(raw : UInt64, datatype : Datatype) -> String raise Hdf5Error 
   } else {
     EnumValue::Unsigned(decode_integer_unsigned(raw, base))
   }
+  enum_value_name_of(value, datatype)
+}
+
+///|
+fn enum_value_name_of(
+  value : EnumValue,
+  datatype : Datatype,
+) -> String raise Hdf5Error {
   for enum_member in datatype.enum_members {
     if enum_member.value == value {
       return enum_member.name
     }
   }
   raise InvalidField("enum value does not match any member")
+}
+
+///|
+fn read_enum_value_name(
+  bytes : Bytes,
+  offset : Int32,
+  datatype : Datatype,
+) -> String raise Hdf5Error {
+  guard datatype.base_types.length() == 1 &&
+    datatype.base_types[0].class == datatype_class_fixed_point() else {
+    raise InvalidField("enum datatype is missing its integer base type")
+  }
+  let base = datatype.base_types[0]
+  if base.size <= 8 && base.bit_precision <= 64 {
+    let raw = read_uint_at(bytes, offset, base.size, base.little_endian)
+    enum_value_name(raw, datatype)
+  } else {
+    let raw = read_big_uint_at(bytes, offset, base.size, base.little_endian)
+    let value = if base.signed {
+      EnumValue::Big(decode_big_integer_signed(raw, base))
+    } else {
+      EnumValue::Big(decode_big_integer_unsigned(raw, base))
+    }
+    enum_value_name_of(value, datatype)
+  }
 }
 
 ///|
@@ -442,29 +637,56 @@ fn decode_dataset_value(
   base_address : UInt64,
 ) -> DatasetValue raise Hdf5Error {
   match datatype.class {
-    0 => {
-      let raw = read_uint_at(
-        payload,
-        offset,
-        datatype.size,
-        datatype.little_endian,
-      )
-      if datatype.signed {
-        SignedInteger(decode_integer_signed(raw, datatype))
+    0 =>
+      if datatype.size <= 8 && datatype.bit_precision <= 64 {
+        let raw = read_uint_at(
+          payload,
+          offset,
+          datatype.size,
+          datatype.little_endian,
+        )
+        if datatype.signed {
+          SignedInteger(decode_integer_signed(raw, datatype))
+        } else {
+          UnsignedInteger(decode_integer_unsigned(raw, datatype))
+        }
       } else {
-        UnsignedInteger(decode_integer_unsigned(raw, datatype))
+        let raw = read_big_uint_at(
+          payload,
+          offset,
+          datatype.size,
+          datatype.little_endian,
+        )
+        if datatype.signed {
+          BigInteger(decode_big_integer_signed(raw, datatype))
+        } else {
+          BigInteger(decode_big_integer_unsigned(raw, datatype))
+        }
       }
-    }
     1 => FloatingPoint(read_float_value(payload, offset, datatype))
-    2 => {
-      let raw = read_uint_at(
-        payload,
-        offset,
-        datatype.size,
-        datatype.little_endian,
-      )
-      Time(masked_value(raw, 0, datatype.bit_precision))
-    }
+    2 =>
+      if datatype.size <= 8 && datatype.bit_precision <= 64 {
+        let raw = read_uint_at(
+          payload,
+          offset,
+          datatype.size,
+          datatype.little_endian,
+        )
+        Time(masked_value(raw, 0, datatype.bit_precision))
+      } else {
+        BigTime(
+          bigint_masked_value(
+            read_big_uint_at(
+              payload,
+              offset,
+              datatype.size,
+              datatype.little_endian,
+            ),
+            0,
+            datatype.bit_precision,
+          ),
+        )
+      }
     3 =>
       Text(
         read_fixed_string_at(
@@ -475,15 +697,29 @@ fn decode_dataset_value(
           datatype.string_charset,
         ),
       )
-    4 => {
-      let raw = read_uint_at(
-        payload,
-        offset,
-        datatype.size,
-        datatype.little_endian,
-      )
-      Bitfield(masked_value(raw, datatype.bit_offset, datatype.bit_precision))
-    }
+    4 =>
+      if datatype.size <= 8 && datatype.bit_precision <= 64 {
+        let raw = read_uint_at(
+          payload,
+          offset,
+          datatype.size,
+          datatype.little_endian,
+        )
+        Bitfield(masked_value(raw, datatype.bit_offset, datatype.bit_precision))
+      } else {
+        BigBitfield(
+          bigint_masked_value(
+            read_big_uint_at(
+              payload,
+              offset,
+              datatype.size,
+              datatype.little_endian,
+            ),
+            datatype.bit_offset,
+            datatype.bit_precision,
+          ),
+        )
+      }
     5 => Opaque(copied_value_bytes(payload, offset, datatype.size))
     6 => {
       let fields : Array[CompoundFieldValue] = []
@@ -505,15 +741,7 @@ fn decode_dataset_value(
       Compound(fields)
     }
     7 => Reference(copied_value_bytes(payload, offset, datatype.size))
-    8 => {
-      let raw = read_uint_at(
-        payload,
-        offset,
-        datatype.size,
-        datatype.little_endian,
-      )
-      Enumeration(enum_value_name(raw, datatype))
-    }
+    8 => Enumeration(read_enum_value_name(payload, offset, datatype))
     9 => {
       let declared = read_uint_at(payload, offset, 4, true)
       guard declared <= 0x7FFFFFFFUL else {
@@ -662,7 +890,25 @@ fn decode_values(
   }
   match datatype.class {
     c if c == datatype_class_fixed_point() =>
-      if datatype.signed {
+      if datatype.size > 8 || datatype.bit_precision > 64 {
+        let values : Array[@bigint.BigInt] = []
+        for i in 0..<n {
+          let raw = read_big_uint_at(
+            payload,
+            i * datatype.size,
+            datatype.size,
+            datatype.little_endian,
+          )
+          values.push(
+            if datatype.signed {
+              decode_big_integer_signed(raw, datatype)
+            } else {
+              decode_big_integer_unsigned(raw, datatype)
+            },
+          )
+        }
+        BigIntegers(values)
+      } else if datatype.signed {
         let values : Array[Int64] = []
         for i in 0..<n {
           let raw = read_uint_at(
@@ -712,13 +958,7 @@ fn decode_values(
     8 => {
       let values : Array[String] = []
       for i in 0..<n {
-        let raw = read_uint_at(
-          payload,
-          i * datatype.size,
-          datatype.size,
-          datatype.little_endian,
-        )
-        values.push(enum_value_name(raw, datatype))
+        values.push(read_enum_value_name(payload, i * datatype.size, datatype))
       }
       Enums(values)
     }

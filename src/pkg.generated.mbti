@@ -2,6 +2,7 @@
 package "Zz04321/moon-hdf5"
 
 import {
+  "moonbitlang/core/bigint",
   "moonbitlang/core/debug",
 }
 
@@ -132,6 +133,7 @@ pub fn DatasetSelectionResult::to_repr(Self) -> @debug.Repr
 pub(all) enum DatasetValue {
   SignedInteger(Int64)
   UnsignedInteger(UInt64)
+  BigInteger(@bigint.BigInt)
   FloatingPoint(Double)
   Text(String)
   Enumeration(String)
@@ -145,6 +147,8 @@ pub(all) enum DatasetValue {
   Reference(Bytes)
   Sequence(Array[DatasetValue])
   Time(UInt64)
+  BigTime(@bigint.BigInt)
+  BigBitfield(@bigint.BigInt)
   Complex(Double, Double)
 }
 pub fn DatasetValue::equal(Self, Self) -> Bool
@@ -155,6 +159,7 @@ pub fn DatasetValue::to_repr(Self) -> @debug.Repr
 pub(all) enum DatasetValues {
   Integers(Array[Int64])
   UnsignedIntegers(Array[UInt64])
+  BigIntegers(Array[@bigint.BigInt])
   Floats(Array[Double])
   Strings(Array[String])
   Enums(Array[String])
@@ -243,6 +248,7 @@ pub fn EnumMember::to_repr(Self) -> @debug.Repr
 pub(all) enum EnumValue {
   Signed(Int64)
   Unsigned(UInt64)
+  Big(@bigint.BigInt)
 }
 pub fn EnumValue::equal(Self, Self) -> Bool
 pub fn EnumValue::not_equal(Self, Self) -> Bool
@@ -428,6 +434,7 @@ pub(all) enum Hdf5WriteValues {
   UInt16Values(Array[UInt32])
   UInt32Values(Array[UInt32])
   UInt64Values(Array[UInt64])
+  BigIntegerValues(Array[@bigint.BigInt], Int32, Bool)
   Float16Values(Array[Float])
   Float32Values(Array[Float])
   Float64Values(Array[Double])

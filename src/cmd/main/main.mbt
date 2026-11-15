@@ -11,6 +11,11 @@ fn describe_values(values : @lib.DatasetValues) -> String {
       items.length().to_string() +
       "] " +
       (if items.length() > 0 { items[0].to_string() } else { "" })
+    BigIntegers(items) =>
+      "bigint[" +
+      items.length().to_string() +
+      "] " +
+      (if items.length() > 0 { items[0].to_string() } else { "" })
     Floats(items) =>
       "float[" +
       items.length().to_string() +
@@ -286,6 +291,10 @@ fn preview_values(values : @lib.DatasetValues) -> String {
       for index in 0..<items.length().min(16) {
         output = append_preview(output, items[index].to_string(), index)
       }
+    BigIntegers(items) =>
+      for index in 0..<items.length().min(16) {
+        output = append_preview(output, items[index].to_string(), index)
+      }
     Floats(items) =>
       for index in 0..<items.length().min(16) {
         output = append_preview(output, items[index].to_string(), index)
@@ -425,6 +434,7 @@ fn stats_text(values : @lib.DatasetValues) -> String {
   match values {
     Integers(items) => integer_stats(items)
     UnsignedIntegers(items) => unsigned_stats(items)
+    BigIntegers(items) => "count=" + items.length().to_string()
     Floats(items) => float_stats(items)
     Strings(items) => {
       let mut empty = 0

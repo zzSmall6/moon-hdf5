@@ -105,6 +105,12 @@ fn patch_values_match_datatype(
       !datatype.signed &&
       datatype.bit_offset == 0 &&
       datatype.bit_precision == 64
+    BigIntegerValues(_, size, signed) =>
+      datatype.class == 0 &&
+      datatype.size == size &&
+      datatype.signed == signed &&
+      datatype.bit_offset == 0 &&
+      datatype.bit_precision == size * 8
     Float32Values(_) =>
       datatype.class == 1 &&
       datatype.size == 4 &&

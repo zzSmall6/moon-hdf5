@@ -164,7 +164,12 @@ test "custom binary float subnormal with a wide mantissa stays finite" {
     opaque_tag: "",
     reference_kind: 0,
   }
-  assert_eq(binary_float_to_double(1UL << 55, datatype), 0.0078125)
+  let raw = 1UL << 55
+  let buffer = @buffer.Buffer::Buffer(size_hint=8)
+  for index in 0..<8 {
+    buffer.write_byte(((raw >> (index * 8)) & 0xFFUL).to_byte())
+  }
+  assert_eq(read_big_float_value(buffer.to_bytes(), 0, datatype), 0.0078125)
 }
 
 ///|

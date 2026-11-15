@@ -67,8 +67,8 @@ test "invalid integer storage and bit layouts are rejected" {
       InvalidField("invalid integer offset or precision"),
     ),
     (
-      b"\x10\x08\x00\x00\x09\x00\x00\x00\x00\x00\x40\x00",
-      UnsupportedFeature("integer width is outside 1..8 bytes"),
+      b"\x10\x08\x00\x00\x09\x00\x00\x00\x08\x00\x50\x00",
+      InvalidField("invalid integer offset or precision"),
     ),
     (
       b"\x10\x10\x00\x00\x04\x00\x00\x00\x00\x00\x20\x00",

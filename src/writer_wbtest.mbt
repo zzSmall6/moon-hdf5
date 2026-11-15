@@ -4034,13 +4034,13 @@ test "writer round-trips variable-length sequences" {
 ///|
 test "writer rejects invalid time bitfield opaque and sequence types" {
   let invalid_time : Hdf5Error? = try {
-    Datatype::write_time(3) |> ignore
+    Datatype::write_time(0) |> ignore
     None
   } catch {
     error => Some(error)
   }
   let invalid_bitfield : Hdf5Error? = try {
-    Datatype::write_bitfield(2, 13, offset=4) |> ignore
+    Datatype::write_bitfield(2, 14, offset=4) |> ignore
     None
   } catch {
     error => Some(error)
