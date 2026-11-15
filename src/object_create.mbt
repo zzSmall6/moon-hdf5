@@ -461,9 +461,11 @@ fn created_values_need_objects(values : Hdf5WriteValues) -> Bool {
 ///
 /// The fixed-array chunk index and chunk payloads are appended at aligned EOF
 /// offsets. Built-in Shuffle, deflate, Fletcher32 and scale-offset filters are
-/// supported; custom filters cannot be registered on this entry point. When
-/// `maximum_dimensions` contains `None`, the dataset uses an extensible-array
-/// index for one unlimited axis or a v2 B-tree for multiple unlimited axes.
+/// supported. Caller-defined filters are supplied through `custom_filters` and
+/// referenced by `Custom(id, parameters)` pipeline entries; IDs must be unique
+/// and cannot replace built-in filters. When `maximum_dimensions` contains
+/// `None`, the dataset uses an extensible-array index for one unlimited axis or
+/// a v2 B-tree for multiple unlimited axes.
 pub fn Hdf5File::add_chunked_dataset(
   self : Hdf5File,
   parent_path : String,
@@ -474,6 +476,7 @@ pub fn Hdf5File::add_chunked_dataset(
   fill_value? : Hdf5WriteValues,
   maximum_dimensions? : Array[UInt64?],
   filters~ : Array[Hdf5WriteFilter] = [],
+  custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> Bytes raise Hdf5Error {
   validate_editable_link_name(name)
   let (parent_address, header, links) = self.editable_group(parent_path)
@@ -514,8 +517,11 @@ pub fn Hdf5File::add_chunked_dataset(
     chunk_dimensions,
     writer_value_element_size(values),
   )
-  let custom_filters : Array[&Hdf5CustomFilter] = []
-  validate_write_filters(filters, custom_filters)
+  let registered_filters : Array[&Hdf5CustomFilter] = []
+  for filter in custom_filters {
+    register_custom_filter(registered_filters, filter)
+  }
+  validate_write_filters(filters, registered_filters)
   validate_writer_filters_for_values(values, filters)
   let copied_fill = validated_write_fill(
     values,
@@ -579,7 +585,7 @@ pub fn Hdf5File::add_chunked_dataset(
       chunk_dataset,
       heap,
       objects,
-      custom_filters,
+      registered_filters,
       offset_size~,
       length_size~,
       base_address=self.superblock.base_address,
@@ -592,7 +598,7 @@ pub fn Hdf5File::add_chunked_dataset(
       chunk_dataset,
       heap,
       objects,
-      custom_filters,
+      registered_filters,
       offset_size~,
       length_size~,
       base_address=self.superblock.base_address,
@@ -605,7 +611,7 @@ pub fn Hdf5File::add_chunked_dataset(
       chunk_dataset,
       heap,
       objects,
-      custom_filters,
+      registered_filters,
       offset_size~,
       length_size~,
       base_address=self.superblock.base_address,
@@ -673,7 +679,7 @@ pub fn Hdf5File::add_chunked_dataset(
         writer_chunk_element_count(chunk_dimensions),
         values,
         fill_payload,
-        custom_filters,
+        registered_filters,
       ),
       creation_order: 0UL,
     })

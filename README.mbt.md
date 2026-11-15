@@ -154,7 +154,8 @@ Fixed-size values support Shuffle, deflate, Fletcher32 and scale-offset.
 Variable-length values support Shuffle/deflate and must use fixed-size sequence
 bases. Nested variable-length and reference members are encoded recursively.
 Register custom encoders with `Hdf5Writer::add_custom_filter` before adding a
-dataset that uses `Custom(id, parameters)`.
+dataset that uses `Custom(id, parameters)`. Existing-file
+`add_chunked_dataset` accepts the same filters through `custom_filters=[filter]`.
 
 Version-4 references are opt-in per datatype; legacy references remain the
 writer default. Use the `Datatype::write_version4_*_reference` constructors for
@@ -214,9 +215,9 @@ errors and 2 for invalid arguments.
 
 moon-hdf5 is not a drop-in replacement for libhdf5.
 
-- Not yet implemented: streaming output, free-space reclamation, custom encoders
-  for appended chunked datasets, multiple SOHM tables/heaps, extended
-  floating-point output, virtual datasets, SWMR and parallel HDF5.
+- Not yet implemented: streaming output, free-space reclamation, multiple SOHM
+  tables/heaps, extended floating-point output, virtual datasets, SWMR and
+  parallel HDF5.
 - Fixed boundaries: readers and writers are memory-resident at the API surface;
   editing is append-only; writer/patch references must target existing same-file
   objects; external raw data is resolver-only, contiguous and unfiltered; dense

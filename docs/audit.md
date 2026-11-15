@@ -9,8 +9,8 @@ The MoonBit release checks pass on the current worktree with the stable
 MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
 `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 393 tests passed;
-- native: 393 tests passed;
+- wasm: 395 tests passed;
+- native: 395 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output remain
   covered by prior h5py 3.13.0/HDF5 1.14.6 verification, and the new v1 B-tree
@@ -51,9 +51,10 @@ MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
   existing bytes-backed files, with fill values and file-width address/length
   metadata. MoonBit tests cover fixed-array chunks with Shuffle, deflate,
   Fletcher32 and scale-offset, chunked variable-length strings and object
-  references, external raw-data slots, 4- and 8-byte files, resolver reads and
-  point selections; mixed-width release-demo outputs are independently re-read
-  by h5py 3.13.0/HDF5 1.14.6;
+  references, caller-registered custom filters across fixed-array,
+  extensible-array and v2 B-tree indexes, external raw-data slots, 4- and
+  8-byte files, resolver reads and point selections; mixed-width release-demo
+  outputs are independently re-read by h5py 3.13.0/HDF5 1.14.6;
 - resizable chunked datasets can be created with `maximum_dimensions`. One
   unlimited axis emits an extensible-array index, multiple unlimited axes emit a
   v2 B-tree, and MoonBit tests cover 4- and 8-byte files with filtered chunks;
@@ -119,7 +120,7 @@ structures raise errors; detection is not exhaustive.
 | Attribute patching | Existing fixed-size inline, dense and creation-order-tracked attributes on objects, including compact attributes, big-endian numeric values, large dense values, variable-length UTF-8 strings, sequences, legacy object references, legacy region references and same-file version-4 object/region/attribute references, plus references and variable-length values nested in compound, fixed-array and sequence members; object-header/OCHK and fractal-heap direct-block checksums are refreshed, variable-length, region-reference and indirect version-4 values append a global heap and update the superblock EOF, while attribute message metadata and indexes remain unchanged |
 | Attribute editing | Add, rename and delete on v1/v2 object headers, including compact-to-dense and dense-to-compact conversion, ordered-dense creation-order preservation, variable-length string and sequence addition, committed datatypes, shared compact/dense attributes, 4-byte-address dense heaps/B-trees, aligned continuation chunks, OCHK/OHDR checksum refresh, dense heap/name/order index rebuilding and superblock EOF repair; v1, 4-byte and shared fixture edits are independently readable by h5py 3.13.0/HDF5 1.14.6 |
 | Link editing | Add, rename and delete for hard, soft and external links in v2 link-message groups and symbol-table groups, including symbol-table-to-link-message conversion, compact/dense conversion, creation-order preservation, 4-/8-byte target addresses, mixed 4-byte-address/8-byte-length files, in-place version 1 to version 2 object-header upgrades, multi-block dense heaps, huge external-link objects, huge-object v2 B-tree records, aligned continuation chunks, OCHK/OHDR checksum refresh and superblock EOF repair; writer-demo edits and separate 4/8-width compact and dense edits are independently readable by h5py 3.13.0/HDF5 1.14.6 |
-| Object creation | `add_group`, fixed-size contiguous `add_dataset`, finite or resizable `add_chunked_dataset` and `add_external_dataset` append version 2 object headers to bytes-backed files, link them into the parent, honor 4-/8-byte address and length widths, support v1/v2 and symbol-table parents, and remain editable through the attribute, link and object-creation APIs; datasets support numeric, fixed-string, complex, fixed-size structured, variable-length UTF-8 string, variable-length sequence, object-reference and region-reference values, including members nested in compound, fixed-array and fixed-base sequence datatypes, with variable-length descriptors, reference slots and heap addresses sized to the file address width; all creation forms accept fill values, chunked creation supports fixed-array indexes, extensible-array indexes for one unlimited axis and v2 B-tree indexes for multiple unlimited axes, built-in Shuffle, deflate, Fletcher32 and scale-offset filters plus nested and top-level vlen/reference snapshots, and external creation writes unfiltered fixed-size raw-data slots through an appended external-data local heap. MoonBit tests cover nested group/dataset creation, 4-byte symbol-table parents, subsequent attribute/link edits, variable-length strings and sequences, object and region references, filtered chunk values, vlen/reference chunks, resizable maximum dimensions and external resolver/selection reads in 4- and 8-byte files; the mixed 4/8 release demo is independently readable and resizable by h5py 3.13.0/HDF5 1.14.6, with raw reference slots used because h5py's high-level multi-reference conversion misreads 4-byte slots |
+| Object creation | `add_group`, fixed-size contiguous `add_dataset`, finite or resizable `add_chunked_dataset` and `add_external_dataset` append version 2 object headers to bytes-backed files, link them into the parent, honor 4-/8-byte address and length widths, support v1/v2 and symbol-table parents, and remain editable through the attribute, link and object-creation APIs; datasets support numeric, fixed-string, complex, fixed-size structured, variable-length UTF-8 string, variable-length sequence, object-reference and region-reference values, including members nested in compound, fixed-array and fixed-base sequence datatypes, with variable-length descriptors, reference slots and heap addresses sized to the file address width; all creation forms accept fill values, chunked creation supports fixed-array indexes, extensible-array indexes for one unlimited axis and v2 B-tree indexes for multiple unlimited axes, built-in Shuffle, deflate, Fletcher32 and scale-offset filters, caller-registered custom filters passed through `custom_filters`, plus nested and top-level vlen/reference snapshots, and external creation writes unfiltered fixed-size raw-data slots through an appended external-data local heap. MoonBit tests cover nested group/dataset creation, 4-byte symbol-table parents, subsequent attribute/link edits, variable-length strings and sequences, object and region references, filtered chunk values, custom filters on all three chunk-index paths, vlen/reference chunks, resizable maximum dimensions and external resolver/selection reads in 4- and 8-byte files; the mixed 4/8 release demo is independently readable and resizable by h5py 3.13.0/HDF5 1.14.6, with raw reference slots used because h5py's high-level multi-reference conversion misreads 4-byte slots |
 | Producers | h5py, hdf5storage and netCDF4 fixtures; HDF5 1.14.6 and 2.0 datatype messages |
 
 ## Reader findings
@@ -359,10 +360,11 @@ heaps and heap extension across multiple blocks are not emitted.
   resizing. Addresses, lengths, chunk entries and external heap fields follow
   the file's 4- or 8-byte widths. Four-byte files reject custom fills for
   structured values containing variable-length members because HDF5 1.14.6
-  cannot represent the fill size consistently. Caller-registered creation
-  filters, virtual storage and physical free-space reclamation are not
-  supported. New parents can be edited afterwards, and superseded parent
-  metadata remains unreferenced because no free-space manager is written.
+  cannot represent the fill size consistently. Appended chunked datasets accept
+  caller-registered filters through `custom_filters`; virtual storage and
+  physical free-space reclamation are not supported. New parents can be edited
+  afterwards, and superseded parent metadata remains unreferenced because no
+  free-space manager is written.
 - Dot-segment path normalization is lexical; combinations where `..` follows a
   soft-link component are not fixture-verified against every HDF5 path rule.
 - Version-4 references to external files and high-level netCDF-4/MATLAB
@@ -588,3 +590,10 @@ heaps and heap extension across multiple blocks are not emitted.
   fills survive reopen and HDF5 resize, with the new gap reading back as the
   fill record. The release demo's nested values are independently read,
   filtered and resized by h5py 3.13.0/HDF5 1.14.6.
+- 2026-11-15: existing-file `add_chunked_dataset` accepts caller-registered
+  `Hdf5CustomFilter` implementations through `custom_filters`. The registry
+  validates IDs, names and duplicates before encoding the pipeline, and the
+  filter is applied through fixed-array, extensible-array and v2 B-tree chunk
+  storage alike. MoonBit tests create and read custom-filtered datasets for all
+  three index paths, including a named ID above 255, and cover duplicate,
+  built-in-ID and unregistered-filter errors.

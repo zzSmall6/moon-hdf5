@@ -416,8 +416,10 @@ accepted only with eight-byte file addresses; HDF5 1.14.6 requires a fill size
 that matches the file datatype while its fill initializer also uses the native
 datatype size, so a four-byte structured layout cannot satisfy both and is
 rejected instead of producing a file HDF5 may corrupt on resize. Custom filters
-on appended chunked datasets and virtual storage remain unsupported by this
-entry point.
+for appended chunked datasets are supplied through the `custom_filters`
+argument, registered with the same ID/name validation as `Hdf5Writer`, and used
+by the fixed-array, extensible-array and v2 B-tree storage encoders. Virtual
+storage remains unsupported by this entry point.
 The parent may use link messages or a symbol table; symbol-table parents are
 converted during attachment. Created objects participate in later attribute,
 link and object-creation edits. Object deletion is available as hard-link

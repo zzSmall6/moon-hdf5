@@ -277,7 +277,7 @@ pub struct Hdf5File {
   // private fields
 }
 pub fn Hdf5File::add_attribute(Self, String, String, Array[UInt64], Hdf5WriteValues) -> Bytes raise Hdf5Error
-pub fn Hdf5File::add_chunked_dataset(Self, String, String, Array[UInt64], Array[UInt32], Hdf5WriteValues, fill_value? : Hdf5WriteValues, maximum_dimensions? : Array[UInt64?], filters? : Array[Hdf5WriteFilter]) -> Bytes raise Hdf5Error
+pub fn Hdf5File::add_chunked_dataset(Self, String, String, Array[UInt64], Array[UInt32], Hdf5WriteValues, fill_value? : Hdf5WriteValues, maximum_dimensions? : Array[UInt64?], filters? : Array[Hdf5WriteFilter], custom_filters? : Array[&Hdf5CustomFilter]) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_dataset(Self, String, String, Array[UInt64], Hdf5WriteValues, fill_value? : Hdf5WriteValues) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_external_dataset(Self, String, String, Array[UInt64], Hdf5WriteValues, Array[Hdf5ExternalSlot], fill_value? : Hdf5WriteValues) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_external_link(Self, String, String, String, String) -> Bytes raise Hdf5Error

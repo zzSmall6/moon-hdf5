@@ -596,3 +596,128 @@ test "custom filters encode newly allocated missing chunks" {
     expected.map(value => value.to_int64()),
   )
 }
+
+///|
+test "existing-file chunked creation accepts registered custom filters" {
+  let base_writer = Hdf5Writer::new()
+  base_writer.add_dataset("/seed", [1UL], Int32Values([0]))
+  let base = base_writer.encode()
+  let custom : &Hdf5CustomFilter = { marker: 1, }
+  let named : &Hdf5CustomFilter = NamedEncodingFilter::{ }
+  let finite = Hdf5File::parse(base).add_chunked_dataset(
+    "/",
+    "finite",
+    [8UL],
+    [4U],
+    Int32Values([1, 2, 3, 4, 5, 6, 7, 8]),
+    fill_value=Int32Values([-1]),
+    filters=[Shuffle, Custom(42, [6U])],
+    custom_filters=[custom],
+  ) catch {
+    error => fail("create custom-filtered finite dataset: " + error.message())
+  }
+  let resizable = Hdf5File::parse(finite).add_chunked_dataset(
+    "/",
+    "resizable",
+    [8UL],
+    [4U],
+    UInt32Values([1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U]),
+    maximum_dimensions=[None],
+    filters=[Custom(256, [165U])],
+    custom_filters=[named],
+  ) catch {
+    error =>
+      fail("create custom-filtered resizable dataset: " + error.message())
+  }
+  let btree = Hdf5File::parse(resizable).add_chunked_dataset(
+    "/",
+    "btree",
+    [4UL, 4UL],
+    [2U, 2U],
+    Int32Values([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
+    maximum_dimensions=[None, None],
+    filters=[Custom(42, [9U])],
+    custom_filters=[custom],
+  ) catch {
+    error =>
+      fail("create custom-filtered v2 B-tree dataset: " + error.message())
+  }
+  let file = Hdf5File::parse(btree)
+    .with_custom_filter(custom)
+    .with_custom_filter(named)
+  assert_eq(integer_values(file.read_dataset("/finite")), [
+    1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L,
+  ])
+  match file.read_dataset("/resizable").values {
+    UnsignedIntegers(values) =>
+      assert_eq(values, [1UL, 2UL, 3UL, 4UL, 5UL, 6UL, 7UL, 8UL])
+    _ => fail("expected unsigned integer values")
+  }
+  assert_eq(integer_values(file.read_dataset("/btree")), [
+    0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L, 13L, 14L, 15L,
+  ])
+}
+
+///|
+test "existing-file chunked creation validates custom filter registration" {
+  let base_writer = Hdf5Writer::new()
+  base_writer.add_dataset("/seed", [1UL], Int32Values([0]))
+  let base = base_writer.encode()
+  let custom : &Hdf5CustomFilter = { marker: 1, }
+  let duplicate = try {
+    Hdf5File::parse(base).add_chunked_dataset(
+      "/",
+      "duplicate",
+      [2UL],
+      [2U],
+      Int32Values([1, 2]),
+      filters=[Custom(42, [])],
+      custom_filters=[custom, custom],
+    )
+    |> ignore
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    duplicate,
+    Some(InvalidArgument("custom filter is already registered: 42")),
+  )
+  let builtin : &Hdf5CustomFilter = BuiltinTestFilter::{ }
+  let overridden = try {
+    Hdf5File::parse(base).add_chunked_dataset(
+      "/",
+      "builtin",
+      [2UL],
+      [2U],
+      Int32Values([1, 2]),
+      custom_filters=[builtin],
+    )
+    |> ignore
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    overridden,
+    Some(InvalidArgument("custom filters cannot replace built-in filter IDs")),
+  )
+  let missing = try {
+    Hdf5File::parse(base).add_chunked_dataset(
+      "/",
+      "missing",
+      [2UL],
+      [2U],
+      Int32Values([1, 2]),
+      filters=[Custom(99, [])],
+    )
+    |> ignore
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    missing,
+    Some(InvalidArgument("custom filter is not registered: 99")),
+  )
+}
