@@ -255,7 +255,7 @@ test "version-4 references reject malformed slots and flags" {
   let external_region = replace_reference_byte(regions[0], 1, b'\x01')
   let external_attribute = replace_reference_byte(attributes[0], 1, b'\x01')
   let external_error = UnsupportedFeature(
-    "version-4 references to external files are not supported",
+    "version-4 references to external files require Hdf5Resolver",
   )
   assert_eq(
     version4_error_of(() => {

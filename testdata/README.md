@@ -14,6 +14,7 @@ python3 -m venv /tmp/moon-hdf5-h5py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_datatype_fixtures.py v114
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_metadata_fixtures.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_external_storage_fixture.py
+/tmp/moon-hdf5-h5py/bin/python scripts/generate_external_reference_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_shared_messages_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_reference_fixtures.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_nested_reference_fixture.py
@@ -64,6 +65,7 @@ Independent verifiers run with the HDF5 1.14.6 environment:
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_scaleoffset_fixture.py testdata/scaleoffset.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_vlen_fill_fixture.py testdata/vlen_fills.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_external_storage_fixture.py testdata/external_storage.h5
+/tmp/moon-hdf5-h5py/bin/python scripts/verify_external_reference_fixture.py testdata/external_references.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_shared_messages_fixture.py testdata/shared_messages.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_hard_links_fixture.py testdata/hard_links.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_matlab73_fixture.py testdata/matlab73_compatible.mat
@@ -90,6 +92,7 @@ verifies the committed files.
 | `datatypes_v114*.h5`, `datatypes_v200.h5` | HDF5 1.14.6 and 2.0 datatype-message versions, including compound/array/complex |
 | `interop_earliest.h5`, `interop_v108.h5`, `interop_v110.h5`, `interop_32.h5` | Cross-version object matrix and 4-/8-byte addresses |
 | `references*.h5`, `references_layouts_32.h5`, `references_v4.h5`, `nested_reference_32.h5` | Legacy object/region references, version-4 object/region/attribute references, null/dangling targets, layouts, selection versions and 4-byte compound references |
+| `external_references.h5`, `external_reference_target.h5` | Version-4 object, region and attribute references into a registered external HDF5 file, plus a same-file target and null references |
 | `shared_messages.h5` | SOHM table/indexes/heaps, reserved indexes, field, fill and filter-pipeline sharing, dense shared records and committed targets |
 | `external_storage*.h5`, `external_storage_*.bin` | Multi-file/offset/unaligned raw-data slots and 4-byte-address storage |
 | `vlen_fills.h5` | Default/custom variable-length string fills from producer files |

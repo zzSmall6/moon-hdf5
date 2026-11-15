@@ -95,6 +95,17 @@ else
 fi
 
 if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> External-reference fixture verification skipped (SKIP_H5PY=1)"
+elif [ ! -f testdata/external_references.h5 ] ||
+  [ ! -f testdata/external_reference_target.h5 ]; then
+  echo "==> External-reference fixture verification skipped (fixture unavailable)"
+else
+  echo "==> External-reference fixture verification"
+  "$python" scripts/verify_external_reference_fixture.py \
+    testdata/external_references.h5
+fi
+
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
   echo "==> Shared-message fixture verification skipped (SKIP_H5PY=1)"
 elif [ ! -f testdata/shared_messages.h5 ]; then
   echo "==> Shared-message fixture verification skipped (fixture unavailable)"

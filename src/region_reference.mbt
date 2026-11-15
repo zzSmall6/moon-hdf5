@@ -312,7 +312,7 @@ fn Hdf5File::read_reference_heap_object(
 ///
 /// The all-zero null reference returns `None`. The target must be a dataset in
 /// the same file. Legacy and version-4 encoded references are supported, but
-/// version-4 references to external files are not.
+/// version-4 references to external files require `Hdf5Resolver`.
 pub fn Hdf5File::resolve_region_reference(
   self : Hdf5File,
   reference : Bytes,
@@ -397,22 +397,20 @@ fn Hdf5File::version4_region_reference_target(
     }
     raise InvalidField("invalid version-4 reference type")
   }
-  let payload = self.version4_indirect_payload(flags, reader)
-  let blob = Reader::new(payload)
-  let token_size = blob.read_u8().to_int()
-  guard token_size == offset_size else {
+  guard flags == 0 else {
+    raise UnsupportedFeature(
+      "version-4 references to external files require Hdf5Resolver",
+    )
+  }
+  let body = self.version4_reference_body(kind, flags, reader)
+  guard body.token_size == offset_size else {
     raise UnsupportedFeature(
       "version-4 reference token size " +
-      token_size.to_string() +
+      body.token_size.to_string() +
       " does not match the file address size",
     )
   }
-  let address = blob.read_uint_le(token_size)
-  let selection_size = blob.read_u32_le().reinterpret_as_int()
-  let rank = blob.read_u32_le().reinterpret_as_int()
-  guard selection_size >= 0 && selection_size <= blob.remaining() else {
-    raise InvalidField("version-4 region reference selection is truncated")
-  }
+  let address = body.token_address
   let header = self.object_header_at(address) catch {
     error =>
       raise InvalidField(
@@ -428,10 +426,14 @@ fn Hdf5File::version4_region_reference_target(
     offset_size,
     self.superblock.length_size,
   )
-  guard rank == metadata.dataspace.dimensions.length() else {
+  guard body.rank == metadata.dataspace.dimensions.length() else {
     raise InvalidField("version-4 region selection rank does not match")
   }
-  let selection_reader = blob.sub(blob.position(), selection_size)
+  let selection_bytes = match body.selection {
+    Some(bytes) => bytes
+    None => raise InvalidField("version-4 region reference has no selection")
+  }
+  let selection_reader = Reader::new(selection_bytes)
   let selection = parse_region_selection(selection_reader, metadata.dataspace)
   let path = self.find_reference_path(address)
   Some({

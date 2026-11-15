@@ -63,16 +63,20 @@ fn version4_reference_header(
 }
 
 ///|
+priv struct Version4ReferenceBody {
+  token_size : Int32
+  token_address : UInt64
+  external_file : String?
+  selection : Bytes?
+  rank : Int32
+  attribute_name : String?
+}
+
+///|
 fn Hdf5File::version4_indirect_payload(
   self : Hdf5File,
-  flags : Int32,
   reader : Reader,
 ) -> Bytes raise Hdf5Error {
-  guard flags == 0 else {
-    raise UnsupportedFeature(
-      "version-4 references to external files are not supported",
-    )
-  }
   let offset_size = self.superblock.offset_size
   let blob_size = reader.read_u32_le()
   guard blob_size <= 0x7FFFFFFFU else {
@@ -94,6 +98,69 @@ fn Hdf5File::version4_indirect_payload(
     raise InvalidField("version-4 reference blob size does not match the heap")
   }
   payload
+}
+
+///|
+fn Hdf5File::version4_reference_body(
+  self : Hdf5File,
+  kind : Int32,
+  flags : Int32,
+  reader : Reader,
+) -> Version4ReferenceBody raise Hdf5Error {
+  let payload = self.version4_indirect_payload(reader)
+  let blob = Reader::new(payload)
+  let token_size = blob.read_u8().to_int()
+  guard token_size == 4 || token_size == 8 else {
+    raise UnsupportedFeature(
+      "version-4 reference token size " +
+      token_size.to_string() +
+      " is not 4 or 8 bytes",
+    )
+  }
+  let token_address = blob.read_uint_le(token_size)
+  let external_file = if (flags & 0x01) != 0 {
+    let length = blob.read_u16_le().to_int()
+    guard length > 0 && length <= blob.remaining() else {
+      raise InvalidField("truncated version-4 external file name")
+    }
+    let bytes = blob.read_bytes(length)
+    Some(
+      @utf8.decode(bytes.get_view().unwrap()) catch {
+        _ => raise InvalidField("invalid UTF-8 external file name")
+      },
+    )
+  } else {
+    None
+  }
+  let mut selection : Bytes? = None
+  let mut rank = 0
+  let mut attribute_name : String? = None
+  if kind == 3 {
+    let selection_size = blob.read_u32_le().reinterpret_as_int()
+    rank = blob.read_u32_le().reinterpret_as_int()
+    guard selection_size >= 0 && selection_size <= blob.remaining() else {
+      raise InvalidField("version-4 region reference selection is truncated")
+    }
+    selection = Some(blob.read_bytes(selection_size))
+  } else if kind == 4 {
+    let name_length = blob.read_u16_le().to_int()
+    guard name_length > 0 && name_length <= blob.remaining() else {
+      raise InvalidField("truncated version-4 attribute reference name")
+    }
+    let name_bytes = blob.read_bytes(name_length)
+    attribute_name = Some(
+      @utf8.decode(name_bytes.get_view().unwrap()) catch {
+        _ => raise InvalidField("invalid UTF-8 attribute reference name")
+      },
+    )
+  }
+  let trailing = blob.read_bytes(blob.remaining())
+  for byte in trailing {
+    guard byte == b'\x00' else {
+      raise InvalidField("version-4 reference has trailing bytes")
+    }
+  }
+  { token_size, token_address, external_file, selection, rank, attribute_name, }
 }
 
 ///|
@@ -123,7 +190,7 @@ fn Hdf5File::version4_object_reference_target(
   }
   guard flags == 0 else {
     raise UnsupportedFeature(
-      "version-4 references to external files are not supported",
+      "version-4 references to external files require Hdf5Resolver",
     )
   }
   let token_size = reader.read_u8().to_int()
@@ -290,27 +357,23 @@ pub fn Hdf5File::resolve_attribute_reference(
     }
     raise InvalidField("invalid version-4 reference type")
   }
-  let payload = self.version4_indirect_payload(flags, reader)
-  let blob = Reader::new(payload)
-  let token_size = blob.read_u8().to_int()
-  guard token_size == offset_size else {
+  guard flags == 0 else {
+    raise UnsupportedFeature(
+      "version-4 references to external files require Hdf5Resolver",
+    )
+  }
+  let body = self.version4_reference_body(kind, flags, reader)
+  guard body.token_size == offset_size else {
     raise UnsupportedFeature(
       "version-4 reference token size " +
-      token_size.to_string() +
+      body.token_size.to_string() +
       " does not match the file address size",
     )
   }
-  let address = blob.read_uint_le(token_size)
-  let name_length = blob.read_u16_le().to_int()
-  guard name_length <= blob.remaining() else {
-    raise InvalidField("truncated version-4 attribute reference name")
-  }
-  let name_bytes = blob.read_bytes(name_length)
-  guard blob.remaining() == 0 else {
-    raise InvalidField("version-4 attribute reference has trailing bytes")
-  }
-  let attribute_name = @utf8.decode(name_bytes.get_view().unwrap()) catch {
-    _ => raise InvalidField("invalid UTF-8 attribute reference name")
+  let address = body.token_address
+  let attribute_name = match body.attribute_name {
+    Some(name) => name
+    None => raise InvalidField("version-4 attribute reference has no name")
   }
   let header = self.object_header_at(address) catch {
     error =>

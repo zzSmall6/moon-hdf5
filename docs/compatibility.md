@@ -13,8 +13,8 @@ evidence, not part of the 1.14.6 baseline.
 
 Outside the profile: virtual datasets, SWMR, parallel HDF5, metadata editing
 beyond attribute add/delete/rename and value patching, netCDF-4/MATLAB
-high-level semantics, version-4 references to external files, numeric storage
-wider than 8 bytes and non-implied-MSB binary floats.
+high-level semantics, numeric storage wider than 8 bytes and non-implied-MSB
+binary floats.
 
 The release gate is `scripts/release_check.sh`: formatting, documentation and
 package checks; wasm/native tests; writer demo; and independent h5py
@@ -26,13 +26,13 @@ verification with h5py 3.13.0/HDF5 1.14.6.
 | --- | --- | --- |
 | Framing | Superblocks v0–v3, user blocks, 4- and 8-byte addresses | Other address/length combinations are not fully tested |
 | Groups | Symbol-table, compact and dense groups, creation-order indexes, soft links with relative and `.`/`..` targets, all named hard-link paths | Traversal stops at an address already in the current ancestor chain; dot-segment normalization is lexical |
-| Cross-file links | `Hdf5Resolver` follows chained external links and relative targets | `Hdf5File` alone does not open external targets |
+| Cross-file links | `Hdf5Resolver` follows chained external links, relative targets and version-4 references into registered external HDF5 files | `Hdf5File` alone does not open external targets |
 | Attributes | Inline v1–v3, dense, SOHM wrappers, shared datatype/dataspace fields | Unsupported attribute datatypes fail the read instead of returning empty values |
 | Layouts and indexes | Compact, contiguous, chunked; v1 B-tree, single-chunk, implicit, fixed-array, extensible-array and v2 B-tree indexes | Unsupported index variants are rejected |
 | Filters | Deflate, shuffle, Fletcher32, integer and f32/f64 decimal scale-offset, masks and fill markers; caller-registered dataset chunk and fractal-heap metadata decoders through `Hdf5CustomFilter` | Other scale modes are rejected; overrides of built-in filter IDs are unsupported; unregistered required filters raise `UnsupportedFeature` |
 | Numeric values | 1–8-byte fixed-point with byte order, bit offset/precision and padding; IEEE float16/32/64; implied-MSB binary floats | Wider storage and other normalizations are rejected |
 | Structured values | Compound, enum, array, vlen sequence, bitfield, opaque, time, reference, complex; datatype messages v1–v5 | Reference values decode as bytes; resolution is separate |
-| References | Legacy object and dataset-region references under 4- and 8-byte addresses; version-4 object, dataset-region and attribute references; compact, contiguous and filtered targets; point, hyperslab, block, all and empty selections | Version-4 external-file references are rejected; region and attribute targets must be in the same file; unresolved object targets keep a null path |
+| References | Legacy object and dataset-region references under 4- and 8-byte addresses; version-4 object, dataset-region and attribute references; same-file resolution on `Hdf5File`; registered external HDF5 targets through `Hdf5Resolver`; compact, contiguous and filtered targets; point, hyperslab, block, all and empty selections | The writer and value patcher do not emit or rewrite external-file references; `Hdf5File` requires same-file targets; unresolved object targets keep a null path |
 | Fill values | Default, fixed-size, structured, custom vlen-string and vlen-sequence fills; undefined and `FILL_TIME_NEVER` policies; disabled or absent fills zero unallocated storage | Malformed fill messages and unresolvable global-heap targets are rejected |
 | Selections | Hyperslabs, ordered points, bounded-memory tile iteration and bounded-memory selection pages | A single `read_dataset_selection` result is memory resident; use `selection_iterator` for large selections |
 | Shared messages | SOHM table/indexes/heaps, reserved indexes without heaps, wrappers v1–v3, committed targets, fills, filter pipelines, field sharing and dense shared records | Other shared message types are not fixture-verified |
@@ -40,8 +40,8 @@ verification with h5py 3.13.0/HDF5 1.14.6.
 | Producer files | netCDF4 1.7.5/libnetcdf 4.10.1/HDF5 2.2.0 structures; hdf5storage 0.2.2 MATLAB metadata | Verifies encoded HDF5 structures, not complete netCDF-4 or MATLAB semantics |
 
 Fixtures cover superblock v0/v2/v3 matrices, HDF5 1.14.6 default/`latest` and
-HDF5 2.0 datatypes, scale-offset, hard links, dense/fractal heaps, references,
-shared messages and producer files.
+HDF5 2.0 datatypes, scale-offset, hard links, dense/fractal heaps, same-file and
+external version-4 references, shared messages and producer files.
 
 ## External raw data
 
@@ -49,7 +49,7 @@ This post-v1.0 reader extension is resolver-only.
 
 | Area | Verified | Boundary |
 | --- | --- | --- |
-| External raw data | Registered 4-/8-byte-address files, multiple slots, offsets, element-unaligned boundaries, full/selection reads and chunk iteration | `Hdf5File` cannot dereference it; filters, chunked external layouts and remote URLs are unsupported; short sources are zero-filled |
+| External raw data | Registered 4-/8-byte-address files, multiple slots, offsets, element-unaligned boundaries, full/selection reads and chunk iteration | `Hdf5File` cannot dereference it; HDF5 external storage is contiguous and unfiltered by format, so chunked/filtered combinations are not representable; remote URLs are unsupported; short sources are zero-filled |
 
 `Hdf5Writer::add_external_dataset` writes the same contiguous, unfiltered subset
 for fixed-size values. Callers create the external files and exact slot sizes.

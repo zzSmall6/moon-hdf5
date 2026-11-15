@@ -354,6 +354,13 @@ pub fn Hdf5RegionSelection::equal(Self, Self) -> Bool
 pub fn Hdf5RegionSelection::not_equal(Self, Self) -> Bool
 pub fn Hdf5RegionSelection::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
+pub(all) struct Hdf5ResolvedAttributeReference {
+  file : String
+  target : Hdf5AttributeReferenceTarget
+}
+pub fn Hdf5ResolvedAttributeReference::to_repr(Self) -> @debug.Repr
+
 #derive(Eq, @debug.Debug)
 pub(all) struct Hdf5ResolvedNode {
   file : String
@@ -365,6 +372,20 @@ pub fn Hdf5ResolvedNode::equal(Self, Self) -> Bool
 pub fn Hdf5ResolvedNode::not_equal(Self, Self) -> Bool
 pub fn Hdf5ResolvedNode::to_repr(Self) -> @debug.Repr
 
+#derive(@debug.Debug)
+pub(all) struct Hdf5ResolvedObjectReference {
+  file : String
+  target : Hdf5ReferenceTarget
+}
+pub fn Hdf5ResolvedObjectReference::to_repr(Self) -> @debug.Repr
+
+#derive(@debug.Debug)
+pub(all) struct Hdf5ResolvedRegionReference {
+  file : String
+  target : Hdf5RegionReferenceTarget
+}
+pub fn Hdf5ResolvedRegionReference::to_repr(Self) -> @debug.Repr
+
 pub struct Hdf5Resolver {
   // private fields
 }
@@ -374,10 +395,15 @@ pub fn Hdf5Resolver::attributes(Self, String) -> Array[Attribute] raise Hdf5Erro
 pub fn Hdf5Resolver::chunk_iterator(Self, String, Array[UInt64]) -> DatasetChunkIterator raise Hdf5Error
 pub fn Hdf5Resolver::new(&Hdf5Source) -> Self
 pub fn Hdf5Resolver::open(Self, String) -> Hdf5File raise Hdf5Error
+pub fn Hdf5Resolver::read_attribute_reference(Self, Bytes) -> Attribute? raise Hdf5Error
 pub fn Hdf5Resolver::read_dataset(Self, String) -> Dataset raise Hdf5Error
 pub fn Hdf5Resolver::read_dataset_metadata(Self, String) -> DatasetMetadata raise Hdf5Error
 pub fn Hdf5Resolver::read_dataset_selection(Self, String, DatasetSelection) -> DatasetSelectionResult raise Hdf5Error
+pub fn Hdf5Resolver::read_region_reference(Self, Bytes) -> DatasetSelectionResult? raise Hdf5Error
 pub fn Hdf5Resolver::resolve(Self, String) -> Hdf5ResolvedNode raise Hdf5Error
+pub fn Hdf5Resolver::resolve_attribute_reference(Self, Bytes) -> Hdf5ResolvedAttributeReference? raise Hdf5Error
+pub fn Hdf5Resolver::resolve_object_reference(Self, Bytes) -> Hdf5ResolvedObjectReference? raise Hdf5Error
+pub fn Hdf5Resolver::resolve_region_reference(Self, Bytes) -> Hdf5ResolvedRegionReference? raise Hdf5Error
 pub fn Hdf5Resolver::selection_iterator(Self, String, DatasetSelection, Int32) -> DatasetSelectionIterator raise Hdf5Error
 
 #derive(Eq, @debug.Debug)

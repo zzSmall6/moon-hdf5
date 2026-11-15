@@ -145,6 +145,12 @@ while pages.next() is Some(page) {
 let resolver = @lib.Hdf5Resolver::new(bytes)
 resolver.add_source("other-file.h5", @fs.read_file_to_bytes("other-file.h5"))
 let remote = resolver.read_dataset("/experiment/remote_counts")
+
+///|
+// Resolve reference values stored in the root or a registered external file.
+let object = resolver.resolve_object_reference(reference_bytes)
+let region = resolver.read_region_reference(region_bytes)
+let attribute = resolver.read_attribute_reference(attribute_bytes)
 ```
 
 Simple values use `Integers`, `UnsignedIntegers`, `Floats`, `Strings` or
@@ -152,13 +158,16 @@ Simple values use `Integers`, `UnsignedIntegers`, `Floats`, `Strings` or
 version-4 references are returned as encoded bytes and can be resolved with
 `resolve_object_reference`, `resolve_region_reference`,
 `read_region_reference`, `resolve_attribute_reference` or
-`read_attribute_reference`. Region and attribute targets must be in the same
-file.
+`read_attribute_reference`. The `Hdf5File` methods resolve same-file targets;
+the matching `Hdf5Resolver` methods also follow version-4 references into
+registered external HDF5 sources.
 
 `Hdf5Resolver` follows hard, soft and external links across registered
 `Hdf5Source` values, rejects cycles and reports unregistered targets. It also
-reads contiguous, unfiltered external raw-data slots. `Hdf5File` intentionally
-leaves external targets and external raw data unresolved.
+reads contiguous, unfiltered external raw-data slots and resolves version-4
+object, region and attribute references stored in one registered source that
+target another. `Hdf5File` intentionally leaves external targets, external raw
+data and external-file references unresolved.
 
 Third-party dataset chunk filters use `Hdf5CustomFilter` with
 `Hdf5File::with_custom_filter` or `Hdf5Resolver::add_custom_filter`. Decoders
@@ -605,11 +614,13 @@ the items below summarize the main user-visible gaps.
   exist. Custom variable-length string and sequence fills are stored through
   the global heap.
 - **References:** support covers legacy object and dataset-region forms plus
-  version-4 object, dataset-region and attribute forms. Version-4 references to
-  external files are unsupported, and region and attribute targets must be in
-  the same file. An object target with no named hard link resolves with a null
-  path. The writer keeps legacy references unless a version-4 datatype is
-  requested explicitly. Value patching can rewrite legacy object-reference
+  version-4 object, dataset-region and attribute forms. `Hdf5File` resolves
+  targets in the same file; `Hdf5Resolver` additionally resolves version-4
+  references whose target is a registered external HDF5 source, returning the
+  target source name with the resolved target. The writer keeps legacy
+  references unless a version-4 datatype is requested explicitly and does not
+  emit references to external HDF5 files. An object target with no named hard
+  link resolves with a null path. Value patching can rewrite legacy object-reference
   datasets and attributes when the slot width matches the file address size. It
   can also rewrite legacy region-reference datasets and attributes when their
   slot width is the address size plus four bytes, the selection is empty, all,
