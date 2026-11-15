@@ -21,6 +21,7 @@ python3 -m venv /tmp/moon-hdf5-h5py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_scaleoffset_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_vlen_fill_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_nested_vlen_fixture.py
+/tmp/moon-hdf5-h5py/bin/python scripts/generate_filtered_attribute_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_hard_link_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_matlab73_fixture.py
 ```
@@ -84,6 +85,7 @@ verifies the committed files.
 | `layout_v4.h5` | Compact/contiguous/chunked layouts, filter masks and all common chunk indexes |
 | `fixed_array*.h5`, `extensible_array*.h5`, `btree_v2*.h5` | Paged/super-block fixed and extensible arrays; v2 B-tree chunk indexes |
 | `fractal_heap_advanced.h5` | Filtered/raw huge objects, indirect blocks and v2 B-tree heap records |
+| `filtered_attributes.h5` | Dense attributes whose fractal heap uses the deflate filter |
 | `enums_v108.h5`, `enums_v110.h5` | Enum bases, byte orders, name padding and enum attributes |
 | `datatypes_v114*.h5`, `datatypes_v200.h5` | HDF5 1.14.6 and 2.0 datatype-message versions, including compound/array/complex |
 | `interop_earliest.h5`, `interop_v108.h5`, `interop_v110.h5`, `interop_32.h5` | Cross-version object matrix and 4-/8-byte addresses |

@@ -46,7 +46,7 @@ fn Hdf5File::find_patchable_attribute(
   self : Hdf5File,
   header : ObjectHeader,
   name : String,
-) -> PatchableAttribute raise Hdf5Error {
+) -> PatchableAttribute? raise Hdf5Error {
   for message in header.find(msg_attribute_info) {
     let reader = Reader::new(message.data)
     guard reader.read_u8() == b'\x00' else {
@@ -108,13 +108,13 @@ fn Hdf5File::find_patchable_attribute(
           shared_messages=Some(self.shared_messages),
         )
         if attribute.name == name {
-          guard (record.flags.to_int() & shared_message_flag) == 0 else {
-            raise UnsupportedFeature(
-              "shared dense attributes cannot be patched",
-            )
+          let shared = (record.flags.to_int() & shared_message_flag) != 0
+          let id_type = (record.heap_id.unsafe_get(0).to_int() >> 4) & 3
+          if shared || heap.filter_len > 0 || id_type == 2 {
+            return None
           }
           let (value_offset, value_length) = attribute_value_offset(payload)
-          return {
+          return Some({
             attribute,
             value_offset,
             value_length,
@@ -123,7 +123,7 @@ fn Hdf5File::find_patchable_attribute(
             checksum_offset: -1,
             heap: Some(heap),
             heap_id: Some(record.heap_id),
-          }
+          })
         }
       }
     } else {
@@ -143,11 +143,11 @@ fn Hdf5File::find_patchable_attribute(
         shared_messages=Some(self.shared_messages),
       )
       if attribute.name == name {
-        guard (message.flags.to_int() & shared_message_flag) == 0 else {
-          raise UnsupportedFeature("shared attributes cannot be patched")
+        if (message.flags.to_int() & shared_message_flag) != 0 {
+          return None
         }
         let (value_offset, value_length) = attribute_value_offset(message.data)
-        return {
+        return Some({
           attribute,
           value_offset,
           value_length,
@@ -156,7 +156,7 @@ fn Hdf5File::find_patchable_attribute(
           checksum_offset: message.checksum_offset,
           heap: None,
           heap_id: None,
-        }
+        })
       }
     }
   }
@@ -164,39 +164,13 @@ fn Hdf5File::find_patchable_attribute(
 }
 
 ///|
-/// Replaces the values of an existing fixed-size attribute and returns a new
-/// byte image. Variable-length UTF-8 strings and fixed-base variable-length
-/// sequences are also supported; their new values are placed in an appended
-/// global heap. The attribute datatype, dataspace, name and creation order are
-/// preserved. Inline messages are updated in their object-header chunk; dense
-/// attributes are updated through their fractal-heap record. Legacy same-file
-/// object references are rewritten in their existing address-width slots;
-/// region references append deduplicated target-address plus selection payloads
-/// to a global heap and rewrite their existing heap-address/index slots.
-/// Same-file version-4 object references rewrite direct address tokens; version-4
-/// region and attribute references append indirect global-heap payloads and
-/// rewrite their kind, length, heap-address and index fields. References and
-/// variable-length strings or sequences nested in compound, array and sequence
-/// members are encoded recursively. External-file version-4 references and
-/// shared attribute messages are rejected. Legacy
-/// object-reference slots must match the file address size; legacy
-/// region-reference slots must be four bytes wider and target existing datasets
-/// with non-null dataspaces. Version-4 region and attribute targets follow the
-/// same dataset and existing-attribute rules. Adding, removing or renaming
-/// attributes is not supported.
-pub fn Hdf5File::patch_attribute_values(
+fn Hdf5File::encode_attribute_patch_payload(
   self : Hdf5File,
-  path : String,
-  name : String,
+  attribute : Attribute,
   values : Hdf5WriteValues,
+  tail : @buffer.Buffer,
 ) -> Bytes raise Hdf5Error {
-  guard self.source is None else {
-    raise InvalidArgument("attribute patching requires a bytes-backed Hdf5File")
-  }
-  let node = self.resolve(path)
-  let header = self.object_header_at(node.address)
-  let slot = self.find_patchable_attribute(header, name)
-  let datatype = slot.attribute.datatype
+  let datatype = attribute.datatype
   let variable_length = datatype.class == 9
   let legacy_object_reference = patch_legacy_object_reference(
     values,
@@ -239,15 +213,13 @@ pub fn Hdf5File::patch_attribute_values(
   guard patch_values_match_datatype(values, datatype) else {
     raise InvalidArgument("patched values must match the attribute datatype")
   }
-  let dimensions = slot.attribute.dataspace.dimensions
+  let dimensions = attribute.dataspace.dimensions
   validate_patch_write_values(dimensions, values)
-  let count = slot.attribute.dataspace.element_count()
+  let count = attribute.dataspace.element_count()
   guard count >= 0 && count <= 0x7FFFFFFFL / datatype.size.to_int64() else {
     raise InvalidField("attribute byte size is too large")
   }
   let full_size = count.to_int() * datatype.size
-  let output = self.bytes.to_fixedarray()
-  let tail = @buffer.Buffer::Buffer()
   let payload = if variable_length {
     self.encode_patch_vlen_values(
       values,
@@ -338,34 +310,137 @@ pub fn Hdf5File::patch_attribute_values(
   guard payload.length() == full_size else {
     raise InvalidArgument("patched values do not match the attribute shape")
   }
-  guard payload.length() <= slot.value_length else {
+  payload
+}
+
+///|
+fn Hdf5File::rebuild_patched_attribute(
+  self : Hdf5File,
+  address : UInt64,
+  header : ObjectHeader,
+  name : String,
+  values : Hdf5WriteValues,
+  tail : @buffer.Buffer,
+) -> Bytes raise Hdf5Error {
+  let attributes = self.editable_attributes(header)
+  let index = match editable_attribute_index(attributes, name) {
+    Some(index) => index
+    None => raise InvalidArgument("attribute does not exist: " + name)
+  }
+  let target = attributes[index]
+  let attribute = parse_attribute_data(
+    target.data,
+    target.flags,
+    self.bytes,
+    self.superblock.offset_size,
+    self.superblock.length_size,
+    self.superblock.base_address,
+    shared_messages=Some(self.shared_messages),
+  )
+  let (value_offset, value_length) = attribute_value_offset(target.data)
+  let payload = self.encode_attribute_patch_payload(attribute, values, tail)
+  guard payload.length() <= value_length else {
     raise InvalidArgument("patched attribute value exceeds its message storage")
   }
-  match slot.heap {
-    Some(heap) => {
-      let heap_id = match slot.heap_id {
-        Some(heap_id) => heap_id
-        None => raise InvalidField("dense attribute has no heap ID")
-      }
-      heap.patch_data(heap_id, slot.value_offset, payload, output)
-    }
+  let data = @buffer.Buffer::Buffer(size_hint=value_offset + payload.length())
+  writer_write_bytes(
+    data,
+    target.data.get_view(start=0, end=value_offset).unwrap().to_owned(),
+  )
+  writer_write_bytes(data, payload)
+  attributes[index] = {
+    name: target.name,
+    creation_order: target.creation_order,
+    flags: target.flags,
+    data: data.to_bytes(),
+  }
+  self.write_rebuilt_attributes(address, header, attributes, tail)
+}
+
+///|
+/// Replaces the values of an existing fixed-size attribute and returns a new
+/// byte image. Variable-length UTF-8 strings and fixed-base variable-length
+/// sequences are also supported; their new values are placed in an appended
+/// global heap. The attribute datatype, dataspace, name and creation order are
+/// preserved. Inline messages are updated in their object-header chunk; dense
+/// attributes are updated through their fractal-heap record. Legacy same-file
+/// object references are rewritten in their existing address-width slots;
+/// region references append deduplicated target-address plus selection payloads
+/// to a global heap and rewrite their existing heap-address/index slots.
+/// Same-file version-4 object references rewrite direct address tokens; version-4
+/// region and attribute references append indirect global-heap payloads and
+/// rewrite their kind, length, heap-address and index fields. References and
+/// variable-length strings or sequences nested in compound, array and sequence
+/// members are encoded recursively. External-file version-4 references are
+/// rejected. Legacy object-reference slots must match the file address size;
+/// legacy region-reference slots must be four bytes wider and target existing
+/// datasets with non-null dataspaces. Version-4 region and attribute targets
+/// follow the same dataset and existing-attribute rules. Shared attribute
+/// messages, filtered fractal-heap records, and tiny dense records are rebuilt
+/// as a local attribute collection; this may change compact/dense storage and
+/// drops metadata-heap filters from the rebuilt collection. Adding, removing or
+/// renaming attributes is not supported.
+pub fn Hdf5File::patch_attribute_values(
+  self : Hdf5File,
+  path : String,
+  name : String,
+  values : Hdf5WriteValues,
+) -> Bytes raise Hdf5Error {
+  guard self.source is None else {
+    raise InvalidArgument("attribute patching requires a bytes-backed Hdf5File")
+  }
+  let node = self.resolve(path)
+  let header = self.object_header_at(node.address)
+  let slot = self.find_patchable_attribute(header, name)
+  match slot {
     None =>
-      patch_heap_output_bytes(
-        output,
-        slot.inline_offset + slot.value_offset,
-        payload,
+      self.rebuild_patched_attribute(
+        node.address,
+        header,
+        name,
+        values,
+        @buffer.Buffer::Buffer(),
       )
-  }
-  if slot.checksum_offset >= 0 {
-    patch_metadata_checksum_in_place(
-      output,
-      slot.chunk_start,
-      slot.checksum_offset,
-    )
-  }
-  if tail.length() > 0 {
-    self.finish_appended_image(output, tail)
-  } else {
-    Bytes::from_array(output)
+    Some(slot) => {
+      let tail = @buffer.Buffer::Buffer()
+      let payload = self.encode_attribute_patch_payload(
+        slot.attribute,
+        values,
+        tail,
+      )
+      guard payload.length() <= slot.value_length else {
+        raise InvalidArgument(
+          "patched attribute value exceeds its message storage",
+        )
+      }
+      let output = self.bytes.to_fixedarray()
+      match slot.heap {
+        Some(heap) => {
+          let heap_id = match slot.heap_id {
+            Some(heap_id) => heap_id
+            None => raise InvalidField("dense attribute has no heap ID")
+          }
+          heap.patch_data(heap_id, slot.value_offset, payload, output)
+        }
+        None =>
+          patch_heap_output_bytes(
+            output,
+            slot.inline_offset + slot.value_offset,
+            payload,
+          )
+      }
+      if slot.checksum_offset >= 0 {
+        patch_metadata_checksum_in_place(
+          output,
+          slot.chunk_start,
+          slot.checksum_offset,
+        )
+      }
+      if tail.length() > 0 {
+        self.finish_appended_image(output, tail)
+      } else {
+        Bytes::from_array(output)
+      }
+    }
   }
 }

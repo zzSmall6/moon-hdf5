@@ -250,6 +250,105 @@ test "dense variable-length string attributes are patched" {
 }
 
 ///|
+test "shared compact and dense attributes are rebuilt when patched" {
+  let file = Hdf5File::parse(
+    @fs.read_file_to_bytes("testdata/shared_messages.h5"),
+  )
+  let compact = file.patch_attribute_values(
+    "/d1",
+    "common",
+    Int32Values([101, 202]),
+  ) catch {
+    error => fail("compact patch: " + error.message())
+  }
+  let compact_file = Hdf5File::parse(compact)
+  assert_eq(
+    values_integers(
+      find_attribute(compact_file.attributes("/d1"), "common").values.unwrap(),
+    ),
+    [101L, 202L],
+  )
+  assert_eq(
+    values_integers(
+      find_attribute(compact_file.attributes("/d2"), "common").values.unwrap(),
+    ),
+    [7L, 42L],
+  )
+
+  let dense = compact_file.patch_attribute_values(
+    "/dense0",
+    "common",
+    Int32Values([
+      303, 304, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317,
+      318,
+    ]),
+  ) catch {
+    error => fail("dense patch: " + error.message())
+  }
+  let dense_file = Hdf5File::parse(dense)
+  let attributes = dense_file.attributes("/dense0")
+  assert_eq(attributes.length(), 13)
+  assert_eq(
+    values_integers(find_attribute(attributes, "common").values.unwrap()),
+    [
+      303L, 304L, 305L, 306L, 307L, 308L, 309L, 310L, 311L, 312L, 313L, 314L, 315L,
+      316L, 317L, 318L,
+    ],
+  )
+  assert_eq(
+    values_integers(
+      find_attribute(attributes, "dense0_unique00").values.unwrap(),
+    ),
+    [0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L, 13L, 14L, 15L],
+  )
+  assert_eq(
+    values_integers(
+      find_attribute(dense_file.attributes("/dense1"), "common").values.unwrap(),
+    ),
+    [
+      7L, 8L, 9L, 10L, 11L, 12L, 13L, 14L, 15L, 16L, 17L, 18L, 19L, 20L, 21L, 22L,
+    ],
+  )
+}
+
+///|
+test "filtered dense attribute heaps are rebuilt when patched" {
+  let file = Hdf5File::parse(
+    @fs.read_file_to_bytes("testdata/filtered_attributes.h5"),
+  )
+  let before = file.attributes("/filtered")
+  assert_eq(before.length(), 24)
+  assert_eq(
+    values_integers(find_attribute(before, "value_05").values.unwrap()),
+    [5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L, 13L, 14L, 15L, 16L, 17L, 18L, 19L, 20L],
+  )
+  let patched = file.patch_attribute_values(
+    "/filtered",
+    "value_05",
+    Int32Values([
+      500, 501, 502, 503, 504, 505, 506, 507, 508, 509, 510, 511, 512, 513, 514,
+      515,
+    ]),
+  ) catch {
+    error => fail("filtered patch: " + error.message())
+  }
+  let patched_file = Hdf5File::parse(patched)
+  let after = patched_file.attributes("/filtered")
+  assert_eq(after.length(), 24)
+  assert_eq(
+    values_integers(find_attribute(after, "value_05").values.unwrap()),
+    [
+      500L, 501L, 502L, 503L, 504L, 505L, 506L, 507L, 508L, 509L, 510L, 511L, 512L,
+      513L, 514L, 515L,
+    ],
+  )
+  assert_eq(
+    values_integers(find_attribute(after, "value_06").values.unwrap()),
+    [6L, 7L, 8L, 9L, 10L, 11L, 12L, 13L, 14L, 15L, 16L, 17L, 18L, 19L, 20L, 21L],
+  )
+}
+
+///|
 test "attribute patching rejects missing incompatible source and reference values" {
   let file = Hdf5File::parse(
     @fs.read_file_to_bytes("testdata/attribute_storage.h5"),

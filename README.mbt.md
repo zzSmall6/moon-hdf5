@@ -564,10 +564,13 @@ the items below summarize the main user-visible gaps.
   order and inline/dense storage are preserved. Variable-length,
   region-reference and indirect version-4 values are appended as a new global
   heap collection and the superblock EOF is updated; old heap collections are
-  not reclaimed. Shared
-  attribute messages and filtered fractal-heap storage are rejected. Value
-  patching does not change names or storage form; use the attribute editing APIs
-  above for those operations.
+  not reclaimed. Attribute values stored through shared messages, filtered
+  fractal heaps or tiny dense records are rebuilt as a local attribute
+  collection. That fallback preserves names, creation order, datatypes and
+  values, but may change compact/dense placement and does not retain a metadata
+  heap filter. Ordinary inline and dense records are patched without changing
+  storage form. Use the attribute editing APIs above to change names or
+  storage explicitly.
 - **Read coverage:** virtual datasets, SWMR and parallel HDF5 are outside the
   profile. Built-in filters are decoded directly; other filter IDs in dataset
   chunk and fractal-heap metadata pipelines can be supplied through
