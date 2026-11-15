@@ -358,6 +358,22 @@ after the tail is placed. This path is append-only: old attribute messages,
 dense heaps and B-trees remain unreferenced because no free-space manager is
 written.
 
+`add_hard_link`, `add_soft_link`, `add_external_link`, `rename_link` and
+`delete_link` use the same object-message rebuild machinery. The reader
+collects compact link messages or dense-heap link objects, their creation order
+and their targets, then re-encodes the complete group link set. Up to eight
+links use compact link-info and v1 link messages; larger sets use a newly
+appended fractal heap plus name and creation-order v2 B-tree indexes. Dense
+storage reuses the multi-block/heap-object encoder, so link payloads larger than
+65,535 bytes use huge heap IDs. Link-info addresses, hard-link target addresses
+and dense B-tree pointers all honor the file's 4- or 8-byte address width.
+Hard-link targets are resolved to an existing object before rebuilding; soft
+and external targets are stored without resolution. Rebuilding preserves
+creation order and never deletes target objects. Symbol-table groups, object
+creation and object deletion are outside this path. Link edits are append-only
+and leave the previous compact messages, dense heap and indexes unreferenced
+because no free-space manager is written.
+
 ## Errors and verification
 
 Unsupported structures raise `UnsupportedFeature`; malformed metadata normally

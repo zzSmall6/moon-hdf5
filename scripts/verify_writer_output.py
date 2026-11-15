@@ -171,6 +171,37 @@ def verify_file(path: Path) -> None:
         assert isinstance(external, h5py.ExternalLink)
         assert external.filename == "external-target.h5"
         assert external.path == "/experiment/counts"
+        link_edit = handle["metadata/link_edit"]
+        assert sorted(link_edit) == [
+            "alias_2",
+            "alias_3",
+            "alias_4",
+            "alias_5",
+            "alias_6",
+            "alias_7",
+            "alias_renamed",
+            "external_edited",
+            "soft_edited",
+            "target",
+        ]
+        assert isinstance(
+            link_edit.get("alias_renamed", getlink=True), h5py.HardLink
+        )
+        np.testing.assert_array_equal(link_edit["alias_renamed"][:], [21, 22])
+        assert h5py.h5o.get_info(
+            link_edit["alias_renamed"].id
+        ).addr == h5py.h5o.get_info(link_edit["target"].id).addr
+        soft_edited = link_edit.get("soft_edited", getlink=True)
+        assert isinstance(soft_edited, h5py.SoftLink)
+        assert soft_edited.path == "target"
+        assert h5py.h5o.get_info(
+            link_edit["soft_edited"].id
+        ).addr == h5py.h5o.get_info(link_edit["target"].id).addr
+        external_edited = link_edit.get("external_edited", getlink=True)
+        assert isinstance(external_edited, h5py.ExternalLink)
+        assert external_edited.filename == "external-target.h5"
+        assert external_edited.path == "/experiment/counts"
+        assert "alias_1" not in link_edit
         external_raw = handle["experiment/external_raw"]
         assert external_raw.external == [
             ("moon-hdf5-demo-external-0.bin", 4, 8),

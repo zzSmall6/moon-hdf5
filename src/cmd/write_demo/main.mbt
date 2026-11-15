@@ -963,6 +963,12 @@ fn run(args : Array[String]) -> Int32 {
     writer.resize_dataset("/structured/states", [4UL])
     writer.add_group("/metadata")
     writer.add_dataset("/metadata/values", [], UInt64Values([42UL]))
+    writer.add_group("/metadata/link_edit")
+    writer.add_dataset(
+      "/metadata/link_edit/target",
+      [2UL],
+      Int64Values([21L, 22L]),
+    )
     for index in 0..<2500 {
       writer.add_attribute(
         "/metadata/values",
@@ -1061,7 +1067,28 @@ fn run(args : Array[String]) -> Int32 {
         FixedStringValues([multi_value], 60000),
       )
     }
-    @fs.write_bytes_to_file(args[1], writer.encode())
+    let mut edited = writer.encode()
+    for index in 0..<8 {
+      let file = @lib.Hdf5File::parse(edited)
+      edited = file.add_hard_link(
+        "/metadata/link_edit",
+        "alias_" + index.to_string(),
+        "/metadata/link_edit/target",
+      )
+    }
+    let edited = @lib.Hdf5File::parse(edited).add_soft_link(
+      "/metadata/link_edit", "soft_edited", "target",
+    )
+    let edited = @lib.Hdf5File::parse(edited).add_external_link(
+      "/metadata/link_edit", "external_edited", "external-target.h5", "/experiment/counts",
+    )
+    let edited = @lib.Hdf5File::parse(edited).rename_link(
+      "/metadata/link_edit", "alias_0", "alias_renamed",
+    )
+    let output = @lib.Hdf5File::parse(edited).delete_link(
+      "/metadata/link_edit", "alias_1",
+    )
+    @fs.write_bytes_to_file(args[1], output)
     println("wrote " + args[1])
     0
   } catch {

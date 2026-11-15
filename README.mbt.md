@@ -40,7 +40,12 @@ moon-hdf5 implements a documented subset of HDF5. The
   variable-length UTF-8 strings or sequences, and legacy or version-4 object,
   region and attribute references, including references nested in compound and
   fixed-array members.
-- Other general metadata editing remains unsupported.
+- `add_hard_link`, `add_soft_link`, `add_external_link`, `rename_link` and
+  `delete_link` rebuild a group's complete link collection on bytes-backed
+  files, preserving creation order and switching between compact and dense
+  storage as needed.
+- General object creation, object deletion and symbol-table-group link editing
+  remain unsupported.
 
 ## Installation
 
@@ -85,6 +90,9 @@ instead, use the commands in [Quick Start](#quick-start).
 - Attribute addition, deletion and renaming for v1 and v2 object headers, with
   automatic compact/dense rebuilding, retained creation order and appended
   metadata in a bytes-backed file.
+- Hard, soft and external link addition, renaming and deletion for v2
+  link-message groups, with compact/dense rebuilding, retained creation order,
+  4- and 8-byte addresses and multi-block or huge dense heap objects.
 
 ## Quick Start
 
@@ -522,8 +530,9 @@ the items below summarize the main user-visible gaps.
   fixed-size inline or dense attributes, variable-length UTF-8 strings and
   fixed-base variable-length sequences, plus legacy and version-4 references,
   while `add_attribute`, `rename_attribute` and `delete_attribute` rebuild the
-  complete attribute collection. Streaming output and general metadata editing
-  outside attributes are unsupported. Multi-unlimited resizing and v2 B-tree
+  complete attribute collection and the link operations rebuild the complete
+  link collection. Streaming output, object creation/deletion and link editing
+  of symbol-table groups are unsupported. Multi-unlimited resizing and v2 B-tree
   output are rebuilt for the current in-memory shape.
 - **Attribute editing:** supported on bytes-backed files with v1 or v2 object
   headers. Shared attribute messages are resolved and rebuilt as local messages;
@@ -533,6 +542,16 @@ the items below summarize the main user-visible gaps.
   rebuilding and reference slots honor 4- and 8-byte address layouts.
   Conversion between compact and dense forms is append-only; old metadata stays
   unreferenced because no free-space reclamation is written.
+- **Link editing:** supported on bytes-backed files with v2 link-message groups,
+  including compact groups and groups using dense fractal-heap storage. Hard
+  links must target an existing object in the same file; soft-link targets may
+  be unresolved. External links store the target file and path without opening
+  it. Rebuilding preserves creation order, switches at the eight-link compact
+  threshold, honors 4- and 8-byte address widths, and writes multi-block or huge
+  dense metadata when required. Symbol-table groups, object creation and object
+  deletion are not handled by link editing. Conversion is append-only and old
+  link metadata remains unreferenced because no free-space reclamation is
+  written.
 - **Value patching:** allocation is limited to an unallocated contiguous payload,
   an undefined slot already represented by the single-chunk layout or a
   fixed-/extensible-array entry, a missing fixed-array data block, a missing

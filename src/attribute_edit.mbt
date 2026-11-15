@@ -851,6 +851,104 @@ fn append_contiguous_dense_metadata(
 }
 
 ///|
+/// Replaces selected messages in an object header with a rebuilt message set.
+/// The new messages are encoded with the same object-header order size as the
+/// copied messages.
+fn Hdf5File::write_rebuilt_object_messages(
+  self : Hdf5File,
+  address : UInt64,
+  header : ObjectHeader,
+  replaced_types : Array[Int32],
+  new_messages : Array[Bytes],
+  tracking : Bool,
+  tail : @buffer.Buffer,
+) -> Bytes raise Hdf5Error {
+  let offset_size = self.superblock.offset_size
+  let length_size = self.superblock.length_size
+  let header_offset = address_to_offset(address, self.superblock.base_address)
+  let plan = object_header_rewrite_plan(
+    self.bytes,
+    header_offset,
+    offset_size,
+    length_size,
+  )
+  let order_size = if plan.version == 2 && tracking { 2 } else { 0 }
+  let messages : Array[Bytes] = []
+  for message in header.messages {
+    if message.msg_type == _msg_nil ||
+      message.msg_type == msg_object_continuation ||
+      replaced_types.contains(message.msg_type) {
+      continue
+    }
+    messages.push(
+      encode_edit_message(
+        plan.version,
+        order_size,
+        message.msg_type,
+        message.flags,
+        message.data,
+        0UL,
+      ),
+    )
+  }
+  for message in new_messages {
+    messages.push(message)
+  }
+  let mut message_bytes = 0
+  for message in messages {
+    message_bytes = message_bytes + message.length()
+  }
+  let chunk_offset = next_aligned_tail_start(
+    self.bytes.length(),
+    tail.length(),
+    "append object header continuation",
+  )
+  let chunk = @buffer.Buffer::Buffer(
+    size_hint=message_bytes + (if plan.version == 1 { 0 } else { 8 }),
+  )
+  if plan.version == 1 {
+    for message in messages {
+      writer_write_bytes(chunk, message)
+    }
+  } else {
+    writer_write_bytes(chunk, b"OCHK")
+    for message in messages {
+      writer_write_bytes(chunk, message)
+    }
+    chunk.write_uint_le(metadata_checksum(chunk.to_bytes(), 0, chunk.length()))
+  }
+  let chunk_bytes = chunk.to_bytes()
+  guard editable_uint_fits_width(chunk_bytes.length().to_uint64(), length_size) else {
+    raise UnsupportedFeature("object header continuation is too large")
+  }
+  let start = append_aligned_bytes_to_tail(
+    tail,
+    self.bytes.length(),
+    chunk_bytes,
+    "append object header continuation",
+  )
+  guard start == chunk_offset else {
+    raise InvalidField("object header continuation address changed")
+  }
+  let continuation_address = file_offset_to_stored_address(
+    start,
+    self.superblock.base_address,
+  )
+  let output = self.bytes.to_fixedarray()
+  rewrite_initial_object_header(
+    output,
+    plan,
+    offset_size,
+    length_size,
+    continuation_address,
+    chunk_bytes.length().to_uint64(),
+    tracking,
+    messages.length(),
+  )
+  self.finish_appended_image(output, tail)
+}
+
+///|
 /// Rebuilds all attributes of an object into compact or dense storage and
 /// replaces the object's initial header chunk with a continuation. Existing
 /// non-attribute messages are copied into the new continuation chunk.
@@ -939,24 +1037,6 @@ fn Hdf5File::write_rebuilt_attributes(
   let tracking = plan.track_order || dense
   let order_size = if plan.version == 2 && tracking { 2 } else { 0 }
   let new_messages : Array[Bytes] = []
-  for message in header.messages {
-    if message.msg_type == _msg_nil ||
-      message.msg_type == msg_object_continuation ||
-      message.msg_type == msg_attribute_info ||
-      message.msg_type == msg_attribute {
-      continue
-    }
-    new_messages.push(
-      encode_edit_message(
-        plan.version,
-        order_size,
-        message.msg_type,
-        message.flags,
-        message.data,
-        0UL,
-      ),
-    )
-  }
   if attributes.length() > 0 {
     match dense_addresses {
       Some((heap_address, index_address, order_address)) =>
@@ -1000,58 +1080,14 @@ fn Hdf5File::write_rebuilt_attributes(
       }
     }
   }
-  let mut message_bytes = 0
-  for message in new_messages {
-    message_bytes = message_bytes + message.length()
-  }
-  let chunk_offset = next_aligned_tail_start(
-    self.bytes.length(),
-    tail.length(),
-    "append object header continuation",
-  )
-  let chunk = @buffer.Buffer::Buffer(
-    size_hint=message_bytes + (if plan.version == 1 { 0 } else { 8 }),
-  )
-  if plan.version == 1 {
-    for message in new_messages {
-      writer_write_bytes(chunk, message)
-    }
-  } else {
-    writer_write_bytes(chunk, b"OCHK")
-    for message in new_messages {
-      writer_write_bytes(chunk, message)
-    }
-    chunk.write_uint_le(metadata_checksum(chunk.to_bytes(), 0, chunk.length()))
-  }
-  let chunk_bytes = chunk.to_bytes()
-  guard editable_uint_fits_width(chunk_bytes.length().to_uint64(), length_size) else {
-    raise UnsupportedFeature("object header continuation is too large")
-  }
-  let start = append_aligned_bytes_to_tail(
-    tail,
-    self.bytes.length(),
-    chunk_bytes,
-    "append object header continuation",
-  )
-  guard start == chunk_offset else {
-    raise InvalidField("object header continuation address changed")
-  }
-  let continuation_address = file_offset_to_stored_address(
-    start,
-    self.superblock.base_address,
-  )
-  let output = self.bytes.to_fixedarray()
-  rewrite_initial_object_header(
-    output,
-    plan,
-    offset_size,
-    length_size,
-    continuation_address,
-    chunk_bytes.length().to_uint64(),
+  self.write_rebuilt_object_messages(
+    address,
+    header,
+    [_msg_nil, msg_object_continuation, msg_attribute_info, msg_attribute],
+    new_messages,
     tracking,
-    new_messages.length(),
+    tail,
   )
-  self.finish_appended_image(output, tail)
 }
 
 ///|

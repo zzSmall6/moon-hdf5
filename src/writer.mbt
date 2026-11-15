@@ -5950,9 +5950,12 @@ fn encode_hard_link(
   address : UInt64,
   creation_order : UInt64,
   track_order : Bool,
+  address_size~ : Int32 = 8,
 ) -> Bytes {
   let encoded = @utf8.encode(name)
-  let buffer = @buffer.Buffer::Buffer(size_hint=20 + encoded.length())
+  let buffer = @buffer.Buffer::Buffer(
+    size_hint=12 + address_size + encoded.length(),
+  )
   buffer.write_byte(b'\x01')
   buffer.write_byte(if track_order { b'\x15' } else { b'\x11' })
   if track_order {
@@ -5961,7 +5964,7 @@ fn encode_hard_link(
   buffer.write_byte(b'\x01')
   buffer.write_uint16_le(encoded.length().to_uint16())
   writer_write_bytes(buffer, encoded)
-  buffer.write_uint64_le(address)
+  write_uint_width(buffer, address, address_size)
   buffer.to_bytes()
 }
 
@@ -5998,11 +6001,14 @@ fn encode_external_link(
   target_path : String,
   creation_order : UInt64,
   track_order : Bool,
-) -> Bytes {
+) -> Bytes raise Hdf5Error {
   let encoded_name = @utf8.encode(name)
   let encoded_file = @utf8.encode(target_file)
   let encoded_path = @utf8.encode(target_path)
   let info_size = 1 + encoded_file.length() + 1 + encoded_path.length() + 1
+  guard info_size <= 65535 else {
+    raise InvalidArgument("external link information is too long")
+  }
   let buffer = @buffer.Buffer::Buffer(
     size_hint=8 + encoded_name.length() + info_size,
   )
@@ -6089,8 +6095,9 @@ fn encode_dense_storage_info(
   heap_address : UInt64,
   index_address : UInt64,
   order_index_address : UInt64,
+  offset_size~ : Int32 = 8,
 ) -> Bytes {
-  let buffer = @buffer.Buffer::Buffer(size_hint=28)
+  let buffer = @buffer.Buffer::Buffer(size_hint=10 + 3 * offset_size)
   buffer.write_byte(b'\x00')
   buffer.write_byte(b'\x03')
   if group {
@@ -6098,9 +6105,9 @@ fn encode_dense_storage_info(
   } else {
     buffer.write_uint16_le(max_creation_order.to_uint16())
   }
-  buffer.write_uint64_le(heap_address)
-  buffer.write_uint64_le(index_address)
-  buffer.write_uint64_le(order_index_address)
+  write_uint_width(buffer, heap_address, offset_size)
+  write_uint_width(buffer, index_address, offset_size)
+  write_uint_width(buffer, order_index_address, offset_size)
   buffer.to_bytes()
 }
 

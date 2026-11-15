@@ -104,6 +104,25 @@ test "attributes can be added renamed and deleted on groups and datasets" {
 }
 
 ///|
+test "attribute rebuilding copies non-attribute messages once" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/values", [2UL], Int32Values([1, 2]))
+  let file = Hdf5File::parse(writer.encode())
+  let added = file.add_attribute(
+    "/values",
+    "units",
+    [],
+    FixedStringValues(["items"], 8),
+  )
+  let edited = Hdf5File::parse(added)
+  let header = edited.object_header_at(edited.resolve("/values").address)
+  assert_eq(header.find(msg_dataspace).length(), 1)
+  assert_eq(header.find(msg_datatype).length(), 1)
+  assert_eq(header.find(msg_data_layout).length(), 1)
+  assert_eq(header.find(msg_attribute).length(), 1)
+}
+
+///|
 test "adding variable-length strings appends a global heap" {
   let writer = Hdf5Writer::new()
   writer.add_dataset("/values", [2UL], Int32Values([3, 4]))
