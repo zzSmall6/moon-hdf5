@@ -392,13 +392,16 @@ link edits can replace it with an aligned continuation. Group headers contain a
 compact link-info message. Dataset headers contain dataspace, datatype and
 contiguous-layout messages; their payload is appended first and the layout uses
 the file's offset and length widths. Fixed-size numeric, string, complex and
-structured values are supported. Variable-length UTF-8 strings receive an
-appended global heap and descriptors whose length, heap-address and object-index
-fields use the file address width (`4 + address_width + 4` bytes). Top-level
-object references resolve against the current root and traversal nodes and use
-the same address width for every slot, including 4-byte-address files where
-h5py's high-level multi-reference conversion expects 8-byte slots. The release
-verifier therefore reads raw reference slots with the HDF5 low-level API.
+structured values are supported. Structured writes recursively encode
+variable-length strings and sequences plus object and region references nested
+in compound, fixed-array and fixed-base sequence members. Variable-length
+descriptors, reference slots and heap addresses use the file address width, so
+a descriptor is `4 + address_width + 4` bytes and a legacy object reference is
+`address_width` bytes. Object references resolve against the current root and
+traversal nodes; the writer uses the same address width for every slot,
+including 4-byte-address files where h5py's high-level multi-reference
+conversion expects 8-byte slots. The release verifier therefore reads raw
+reference slots with the HDF5 low-level API.
 Finite chunked datasets append a width-aware fixed-array header, data block and
 chunk payloads before the object header; built-in Shuffle, deflate, Fletcher32
 and scale-offset messages use the normal filter pipeline. Supplying
@@ -407,10 +410,14 @@ unlimited axis or a width-aware v2 B-tree for multiple unlimited axes, and the
 dataspace advertises those maxima so HDF5 can resize the dataset later. External
 datasets append a width-aware local heap for slot names and write the
 external-data message plus an undefined contiguous layout. Fill values use the
-shared fill message encoder for contiguous, chunked and external storage. Nested
-variable-length or reference members in structured values, custom filters on
-appended chunked datasets and virtual storage remain unsupported by this entry
-point.
+shared fill message encoder for contiguous, chunked and external storage.
+Custom fills for structured values containing variable-length members are
+accepted only with eight-byte file addresses; HDF5 1.14.6 requires a fill size
+that matches the file datatype while its fill initializer also uses the native
+datatype size, so a four-byte structured layout cannot satisfy both and is
+rejected instead of producing a file HDF5 may corrupt on resize. Custom filters
+on appended chunked datasets and virtual storage remain unsupported by this
+entry point.
 The parent may use link messages or a symbol table; symbol-table parents are
 converted during attachment. Created objects participate in later attribute,
 link and object-creation edits. Object deletion is available as hard-link

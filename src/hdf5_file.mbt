@@ -103,6 +103,12 @@ pub fn Hdf5File::superblock_version(self : Hdf5File) -> Int32 {
 }
 
 ///|
+/// Returns the on-disk address width in bytes.
+pub fn Hdf5File::address_size(self : Hdf5File) -> Int32 {
+  self.superblock.offset_size
+}
+
+///|
 /// Returns the file address of the root group object header.
 fn Hdf5File::root_address(self : Hdf5File) -> UInt64 {
   self.superblock.root_group_object_header

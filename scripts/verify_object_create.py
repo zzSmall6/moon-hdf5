@@ -40,6 +40,40 @@ def reference_addresses(handle, dataset):
     ]
 
 
+def reference_name(handle, reference):
+    """Return the target path for a non-null HDF5 reference."""
+    try:
+        name = h5py.h5r.get_name(reference, handle.id)
+    except RuntimeError:
+        return None
+    return name.decode() if name else None
+
+
+def assert_first_nested_record(record, handle, offset_size):
+    assert record[0] == b"moon"
+    np.testing.assert_array_equal(record[1], np.array([1, -2], dtype=np.int32))
+    assert [label.decode() for label in record[2]] == ["一", ""]
+    assert reference_name(handle, record[3]) == "/matrix"
+    assert reference_name(handle, record[4][0]) == "/matrix"
+    # HDF5 1.14.6 cannot reliably convert the second slot of a legacy
+    # four-byte reference array in a compound. The file test covers the raw
+    # slot, while h5py can verify the eight-byte layout end to end.
+    if offset_size == 8:
+        assert reference_name(handle, record[4][1]) is None
+    assert reference_name(handle, record[5]) == "/matrix"
+
+
+def assert_second_nested_record(record, handle, offset_size):
+    assert record[0] == b""
+    assert record[1].size == 0
+    assert [label.decode() for label in record[2]] == ["", "二"]
+    assert reference_name(handle, record[3]) is None
+    if offset_size == 8:
+        pair = [reference_name(handle, item) for item in record[4]]
+        assert pair == [None, "/matrix"]
+    assert reference_name(handle, record[5]) is None
+
+
 def verify(path: Path) -> None:
     data = path.read_bytes()
     version = data[8]
@@ -63,6 +97,9 @@ def verify(path: Path) -> None:
             "external",
             "growable",
             "labels",
+            "nested_chunked",
+            "nested_records",
+            "nested_resizable",
             "numbers",
             "references",
             "resizable",
@@ -138,6 +175,34 @@ def verify(path: Path) -> None:
             0,
             h5py.h5o.get_info(handle[second_target].id).addr,
         ]
+        nested_records = handle["created_root/nested_records"]
+        assert nested_records.shape == (2,)
+        assert_first_nested_record(nested_records[0], handle, offset_size)
+        assert_second_nested_record(nested_records[1], handle, offset_size)
+        nested_chunked = handle["created_root/nested_chunked"]
+        assert nested_chunked.shape == (3,)
+        assert nested_chunked.chunks == (2,)
+        assert nested_chunked.shuffle
+        assert nested_chunked.compression == "gzip"
+        assert_first_nested_record(nested_chunked[0], handle, offset_size)
+        assert_first_nested_record(nested_chunked[2], handle, offset_size)
+        assert_second_nested_record(nested_chunked[1], handle, offset_size)
+        nested_resizable = handle["created_root/nested_resizable"]
+        assert nested_resizable.shape == (1,)
+        assert nested_resizable.maxshape == (None,)
+        assert nested_resizable.chunks == (1,)
+        assert not nested_resizable.shuffle
+        assert nested_resizable.compression == "gzip"
+        assert_first_nested_record(nested_resizable[0], handle, offset_size)
+        if offset_size == 4:
+            try:
+                nested_resizable.fillvalue
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError(
+                    "four-byte nested variable-length fill should be undefined"
+                )
         assert handle["created_root/numbers"].attrs["unit"].tobytes() == b"count"
         np.testing.assert_array_equal(
             handle["group/created_leaf/fixed"][:], [100, 200]
@@ -192,6 +257,12 @@ def verify(path: Path) -> None:
             growable.resize((5, 4))
             assert growable.shape == (5, 4)
             np.testing.assert_array_equal(growable[4, :], [99, 99, 99, 99])
+            nested_resizable = handle["created_root/nested_resizable"]
+            nested_resizable.resize((3,))
+            assert nested_resizable.shape == (3,)
+            assert_first_nested_record(nested_resizable[0], handle, offset_size)
+            if offset_size == 8:
+                assert_second_nested_record(nested_resizable[2], handle, offset_size)
     Path(str(path) + ".external.bin").unlink(missing_ok=True)
     print(
         f"Verified {path} with h5py {h5py.__version__} "

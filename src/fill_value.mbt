@@ -71,12 +71,12 @@ fn dataset_fill_value(
   if size == 0 {
     return b""
   }
-  guard size == datatype.size else {
+  guard size >= datatype.size else {
     raise InvalidField("fill value size does not match datatype")
   }
   let fill = reader.read_bytes(size)
   if fill_enabled {
-    fill
+    Reader::new(fill).read_bytes(datatype.size)
   } else {
     b""
   }

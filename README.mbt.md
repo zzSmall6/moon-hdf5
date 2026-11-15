@@ -47,7 +47,9 @@ moon-hdf5 implements a documented subset of HDF5. The
 - `add_group`, `add_dataset`, `add_chunked_dataset` and `add_external_dataset`
   append new objects to bytes-backed files, including contiguous or finite
   or resizable chunked values, built-in chunk filters, external raw-data slots,
-  fill values, variable-length strings and top-level object references.
+  fill values, and variable-length strings, sequences and reference values,
+  including members nested in compound, fixed-array and fixed-base sequence
+  datatypes.
   `delete_object` removes every hard link to an object so aliases cannot keep it
   reachable.
 
@@ -290,8 +292,13 @@ let output = writer.encode()
   SOHM table and heap. Equal fills, attributes and pipelines reuse one heap ID.
   Committed datatypes use wrapper version 3 storage type 2 and are referenced by
   datasets and attributes with matching encoded datatypes.
-- Variable-length strings and sequences share a global heap. Sequence bases must
-  be fixed-size; legacy and version-4 region references may appear in a base.
+- Variable-length strings and sequences share a global heap. Nested descriptors,
+  reference slots and heap addresses use the file's address width through
+  `write_vlen_string_with_address_size`,
+  `write_vlen_sequence_with_address_size`,
+  `write_object_reference_with_address_size` and
+  `write_region_reference_with_address_size`. Sequence bases must be fixed-size;
+  legacy and version-4 region references may appear in a base.
 
 Version-4 references are opt-in per datatype; existing code keeps writing the
 legacy 8-byte object and 12-byte region forms:
@@ -519,187 +526,66 @@ errors and 2 for invalid arguments.
 ## Limitations
 
 moon-hdf5 is a documented subset, not a drop-in replacement for libhdf5. The
-[compatibility matrix](docs/compatibility.md) is the authoritative boundary;
-the items below summarize the main user-visible gaps.
+[compatibility matrix](docs/compatibility.md) is the authoritative boundary.
+The notes below group user-visible gaps by whether they are unfinished work or
+fixed design boundaries.
 
-- **Memory and streaming:** `Hdf5File::parse` requires the complete file bytes.
-  `parse_source` provides bounded random access, but `read_dataset` and a single
-  `read_dataset_selection` result are materialized in memory. Use
-  `chunk_iterator` for large datasets or `selection_iterator` for large
-  selections; both read in bounded pages and never allocate the complete
-  result.
-- **Writer lifecycle:** `Hdf5Writer` is an in-memory builder and `encode` returns
-  the complete file. `patch_contiguous_dataset` and `patch_dataset_values`
-  return another complete byte image. `patch_attribute_values` updates existing
-  fixed-size inline or dense attributes, variable-length UTF-8 strings and
-  fixed-base variable-length sequences, plus legacy and version-4 references,
-  while `add_attribute`, `rename_attribute` and `delete_attribute` rebuild the
-  complete attribute collection and the link operations rebuild the complete
-  link collection. Symbol-table groups are converted to compact or dense
-  link-message groups when edited. Streaming output is unsupported, and
-  append-only edits do not reclaim superseded metadata or raw data.
-  Multi-unlimited resizing and v2 B-tree output are rebuilt for the current
-  in-memory shape.
-- **Attribute editing:** supported on bytes-backed files with v1 or v2 object
-  headers. Shared attribute messages are resolved and rebuilt as local messages;
-  added reference values must target existing same-file objects, datasets or
-  attributes, and registered custom filters can decode existing dense metadata
-  heaps. Rebuilt attribute heaps use built-in storage without filters. Dense
-  rebuilding and reference slots honor 4- and 8-byte address layouts.
-  Conversion between compact and dense forms is append-only; old metadata stays
-  unreferenced because no free-space reclamation is written.
-- **Link editing:** supported on bytes-backed files with v2 link-message groups
-  and with symbol-table groups. Symbol-table links are read through their
-  B-tree/local-heap representation and converted to compact or dense
-  link-message storage. Hard links must target an existing object in the same
-  file; soft-link targets may be unresolved. External links store the target
-  file and path without opening it and therefore require conversion away from
-  the symbol-table representation. Rebuilding preserves creation order when it
-  exists, switches at the eight-link compact threshold, honors 4- and 8-byte
-  address widths including mixed 4-byte-address/8-byte-length files, and writes
-  multi-block or huge dense metadata when required. Version 1 object headers are
-  upgraded in place to version 2 when a version 1 continuation cannot be
-  eight-byte aligned. Conversion is append-only and old link metadata remains
-  unreferenced because no free-space reclamation is written.
-- **Object creation:** `add_group` creates empty groups below an existing group.
-  `add_dataset` creates fixed-size contiguous datasets from numeric, fixed-string,
-  complex, fixed-size structured, variable-length UTF-8 string and object-reference
-  values. Variable-length string descriptors and object-reference slots use the
-  file address width; string payloads are appended in a global heap. New objects
-  use version 2 object headers, honor 4- and 8-byte address/length widths, and can
-  themselves become parents for later attributes, links, groups and datasets.
-  Existing symbol-table parents are converted by the link rebuild path.
-  `add_dataset` accepts a fill value. `add_chunked_dataset` creates finite
-  fixed-array chunk indexes with built-in Shuffle, deflate, Fletcher32 and
-  scale-offset filters. Passing `maximum_dimensions` with one `None` creates an
-  extensible-array index, while multiple `None` values create a v2 B-tree; HDF5
-  can then resize the dataset up to those maxima. `add_external_dataset` writes
-  unfiltered fixed-size external raw-data slots. Both accept fill values, and
-  all addresses, lengths, chunk-index slots and external-data heap fields follow
-  the file widths. Variable-length or reference members nested in structured
-  values, custom-appended-filter registration and virtual storage remain
-  unsupported. Creation is append-only and leaves superseded parent metadata
-  unreferenced because no free-space manager is written.
-- **Object deletion:** `delete_object` resolves an object and removes every hard
-  link that names its object header, including links in other groups. Soft and
-  external links are left untouched and may dangle. The root group cannot be
-  deleted. Deletion is implemented as unlink and does not reclaim the object
-  header, attributes or raw data.
-- **Value patching:** allocation is limited to an unallocated contiguous payload,
-  an undefined slot already represented by the single-chunk layout or a
-  fixed-/extensible-array entry, a missing fixed-array data block, a missing
-  extensible-array data, EAIB or EASB block, or a missing fixed- or
-  extensible-array page inside an existing data block, or a missing v1 or v2
-  B-tree chunk record. Rebuilding a missing EAIB may create the direct and
-  super-block hierarchy and updates the EAHD maximum set, block counts and
-  sizes, realized-element count and checksum. Adding or relocating v1 or v2
-  B-tree records rebuilds the complete chunk index and links it through the
-  layout address; v1 rebuilds use the superblock's indexed-storage K, including
-  a non-default K from the superblock-extension message.
-  Filtered chunk growth is handled by appending a relocated chunk at the aligned
-  file end and updating the index, stored size, checksum and superblock
-  end-of-file address. Relocation and allocation are append-only; unreferenced
-  old chunk bytes are not reclaimed because no free-space manager is written.
-  Built-in Shuffle, deflate, Fletcher32 and scale-offset pipelines can be
-  re-encoded, including supported big-endian numeric data; scale-offset
-  requires a stored fill marker. Registered caller-defined filters can be
-  re-encoded when their implementation provides `encode`. Missing chunks in an
-  index without a writable record path continue to read as fill values.
-  Variable-length UTF-8 strings and sequences can be patched in compact,
-  contiguous and chunked storage. Their new values share one appended global
-  heap collection; only chunked Shuffle and deflate pipelines are supported,
-  and creating a missing fixed-array data block or extensible-array metadata is
-  rejected for these datatypes. Variable-length values nested in compound,
-  array or sequence members are patched recursively, including sequences whose
-  bases contain variable-length values. Legacy object-reference datasets can be patched when
-  their fixed-width slots match the file address size. Legacy region-reference
-  datasets can be patched when their slots are four bytes wider and every
-  target is an existing dataset with a non-null dataspace. Same-file 18-byte
-  version-4 object, region and attribute references can also be patched;
-  region targets follow the legacy rules, attribute names must already exist,
-  and external-file flags are rejected. References nested in compound,
-  fixed-array and fixed-base sequence datatypes are patched recursively,
-  including legacy and same-file version-4 forms. Old global heaps are not
-  reclaimed.
-- **Attribute patching:** `patch_attribute_values` updates only an existing
-  fixed-size, variable-length UTF-8 string, fixed-base variable-length sequence,
-  legacy same-file object-reference or legacy same-file region-reference
-  attribute, or same-file version-4 object-, region- or attribute-reference
-  attribute, including references and variable-length values nested in
-  compound, fixed-array and sequence members. The attribute must remain the
-  same shape and datatype, and its name, creation
-  order and inline/dense storage are preserved. Variable-length,
-  region-reference and indirect version-4 values are appended as a new global
-  heap collection and the superblock EOF is updated; old heap collections are
-  not reclaimed. Attribute values stored through shared messages, filtered
-  fractal heaps or tiny dense records are rebuilt as a local attribute
-  collection. That fallback preserves names, creation order, datatypes and
-  values, but may change compact/dense placement and does not retain a metadata
-  heap filter. Ordinary inline and dense records are patched without changing
-  storage form. Use the attribute editing APIs above to change names or
-  storage explicitly.
-- **Read coverage:** virtual datasets, SWMR and parallel HDF5 are outside the
-  profile. Built-in filters are decoded directly; other filter IDs in dataset
-  chunk and fractal-heap metadata pipelines can be supplied through
-  `Hdf5CustomFilter`, and built-in filter IDs cannot be overridden. Writing
-  requires a registered encoder and a preceding
-  `Hdf5Writer::add_custom_filter` call. Unsupported layouts, indexes, datatypes
-  and unregistered filters raise `UnsupportedFeature`; detection of unsupported
-  input is not exhaustive. Unsupported attribute datatypes fail the read instead
-  of returning empty values.
-- **Writer coverage:** output uses superblock v3 and v2 object headers; older
-  output formats and virtual storage are not selected. Fixed-size values accept
-  shuffle, deflate, Fletcher32 and scale-offset; scale-offset must lead the
-  pipeline, and floating-point scale-offset cannot be combined with Fletcher32.
-  Variable-length values accept shuffle and deflate; Fletcher32 and
-  scale-offset are rejected for them. Registered custom filters can be combined
-  with built-in filters and participate in per-chunk masks and shared pipelines.
-- **Dense and shared metadata:** dense output is limited to 9–65,535 records.
-  Managed objects up to 65,535 bytes are packed into multiple FHDB direct
-  blocks with an FHIB indirect root when needed; larger encoded objects use
-  huge heap IDs and a type-1 v2 B-tree. Name and creation-order indexes use
-  multi-level BTHD/BTIN/BTLF v2 B-trees. A free-space manager is not emitted.
-  One SOHM table and heap are written; multiple tables, multiple heaps and heap
-  extension across blocks are not.
-- **External raw data:** only contiguous, unfiltered, fixed-size storage is
-  supported. It requires `Hdf5Resolver` and caller-registered, caller-managed
-  files; `Hdf5File` alone cannot dereference it. Remote URLs, filtered/chunked
-  external layouts and automatic external-file creation are unsupported, and
-  short sources are zero-filled for the declared remainder.
-- **Numeric and string constraints:** the reader decodes fixed-point storage
-  wider than 8 bytes without truncation and returns `BigInt` values, and it
-  converts extended binary-float layouts (including x87 80-bit and explicit-
-  or implied-MSB normalization) to `Double`. The writer accepts integer widths
-  up to 8,191 bytes through `BigIntegerValues`, `BigInteger`, `BigTime` and
-  `BigBitfield`, including wide enums, but floating-point output remains
-  IEEE float16/32/64 only, and scale-offset remains limited to 32/64-bit floats.
-- **Variable-length structures:** writer sequence bases must be fixed-size. They
-  may contain legacy or version-4 region references when those targets already
-  exist. Custom variable-length string and sequence fills are stored through
-  the global heap.
-- **References:** support covers legacy object and dataset-region forms plus
-  version-4 object, dataset-region and attribute forms. `Hdf5File` resolves
-  targets in the same file; `Hdf5Resolver` additionally resolves version-4
-  references whose target is a registered external HDF5 source, returning the
-  target source name with the resolved target. The writer keeps legacy
-  references unless a version-4 datatype is requested explicitly and does not
-  emit references to external HDF5 files. An object target with no named hard
-  link resolves with a null path. Value patching can rewrite legacy object-reference
-  datasets and attributes when the slot width matches the file address size. It
-  can also rewrite legacy region-reference datasets and attributes when their
-  slot width is the address size plus four bytes, the selection is empty, all,
-  points, hyperslab or blocks, and each target is an existing same-file dataset
-  with a non-null dataspace. Same-file version-4 object, region and attribute
-  references can be rewritten in their 18-byte slots; attribute targets must
-  already exist and external-file flags are unsupported. References and
-  variable-length values nested inside compound, fixed-array and sequence
-  datatypes can be patched recursively.
-- **Unlimited dimensions:** `append_dataset` writes only at the trailing edge of
-  every unlimited axis. Use `write_dataset_slab` for interior writes and
-  arbitrary rectangular placement; unlimited axes grow to the slab's trailing
-  edge.
+### Remaining implementation work
+
+- **Streaming and reclamation:** readers and writers remain memory-resident at
+  the API boundary. `Hdf5File::parse`, `Hdf5Writer::encode`, patch results and a
+  single selection allocate complete byte images; use `chunk_iterator` or
+  `selection_iterator` for bounded reads. Streaming output and free-space
+  reclamation are not implemented, so edits append data and leave superseded
+  metadata and raw bytes unreferenced.
+- **Creation and metadata extensions:** appended chunked datasets accept only
+  built-in filters, not caller-registered custom encoders. Only one SOHM
+  table/heap is written and heap blocks are not extended. Multiple SOHM
+  tables/heaps, a free-space manager, tiny dense heap objects and virtual
+  datasets remain unimplemented.
+- **Format and datatype coverage:** extended floating-point output and
+  scale-offset outside 32/64-bit floats are absent. Virtual datasets, SWMR and
+  parallel HDF5 are outside the profile. Detection of unsupported input is not
+  exhaustive; unsupported layouts, indexes, datatypes and unregistered filters
+  normally raise `UnsupportedFeature`, while unsupported attribute datatypes
+  fail the read instead of returning empty values.
+- **External storage:** only contiguous, unfiltered, fixed-size external raw
+  data is supported. It requires `Hdf5Resolver` plus caller-registered,
+  caller-managed files; remote URLs, filtered or chunked external layouts and
+  automatic external-file creation are unsupported, and short sources are
+  zero-filled.
 - **High-level semantics:** netCDF-4 and MATLAB metadata are read as HDF5
   structures, not as complete netCDF-4 or MATLAB semantics.
+
+### Design boundaries
+
+- **Append-only mutation:** attribute and link edits rebuild complete
+  collections, and object creation attaches through that link rebuild path.
+  Symbol-table groups are converted to compact or dense link-message storage.
+  Value patching can allocate only into existing writable layout or index
+  storage; filtered chunk re-encoding and relocated chunks append at an aligned
+  EOF.
+- **Writer profile and filters:** output uses superblock v3 and v2 object
+  headers. Fixed-size values accept Shuffle, deflate, Fletcher32 and
+  scale-offset with the pipeline restrictions in the compatibility matrix;
+  variable-length values accept Shuffle or deflate. Dense collections are
+  limited to 9–65,535 records. Sequence bases must be fixed-size.
+  `append_dataset` writes at the trailing corner, while `write_dataset_slab`
+  handles arbitrary placement.
+- **Same-file targets:** writing and patching accept existing same-file
+  reference targets only. The writer does not emit external-file references,
+  external version-4 flags are unsupported, and an object target with no named
+  hard link resolves with a null path.
+- **HDF5 1.14.6 interoperability:** custom fills for structured values that
+  contain variable-length members require eight-byte file addresses; four-byte
+  files reject them rather than emit a fill size that HDF5 cannot reopen safely.
+  h5py 3.13.0/HDF5 1.14.6 also cannot reliably convert the second slot of some
+  legacy four-byte reference arrays; MoonBit validates the raw slots, and the
+  release verifier checks the supported subset.
+- **Rebuild fallbacks:** shared attribute messages are flattened into local
+  messages, dense metadata-heap filters are not retained when rebuilt, and
+  symbol-table creation order falls back to traversal order. These operations
+  preserve values but can change storage placement.
 
 Unsupported structures raise `UnsupportedFeature`; malformed input raises
 `InvalidField` or `UnexpectedEof`; invalid caller input raises

@@ -85,6 +85,135 @@ fn created_dataset_values_supported(values : Hdf5WriteValues) -> Bool {
 }
 
 ///|
+fn validate_created_fill_layout(
+  fill : Hdf5WriteValues?,
+  address_size : Int32,
+) -> Unit raise Hdf5Error {
+  match fill {
+    Some(StructuredValues(datatype, _)) =>
+      if address_size == 4 && datatype_contains_vlen(datatype) {
+        raise UnsupportedFeature(
+          "custom fills for structured variable-length values require eight-byte file addresses",
+        )
+      }
+    _ => ()
+  }
+}
+
+///|
+fn Hdf5File::collect_created_heap_values(
+  self : Hdf5File,
+  strings : Array[String],
+  regions : Array[Bytes],
+  reference_attributes : Array[WritableAttribute],
+  values : Hdf5WriteValues,
+  objects : Array[WritableObject],
+  reference_address_size : Int32,
+) -> Unit raise Hdf5Error {
+  collect_heap_strings(strings, values)
+  match values {
+    StructuredValues(datatype, items) =>
+      for item in items {
+        collect_heap_structured_strings(strings, datatype, item)
+        self.collect_editable_attribute_references(
+          datatype, item, reference_attributes,
+        )
+        collect_heap_regions(
+          regions,
+          datatype,
+          item,
+          objects,
+          reference_attributes,
+          reference_address_size~,
+        )
+      }
+    _ => ()
+  }
+}
+
+///|
+fn Hdf5File::append_created_values_heap(
+  self : Hdf5File,
+  tail : @buffer.Buffer,
+  values : Hdf5WriteValues,
+  fill_value : Hdf5WriteValues?,
+  objects : Array[WritableObject],
+  address_size : Int32,
+) -> WritableGlobalHeap raise Hdf5Error {
+  let strings : Array[String] = []
+  let regions : Array[Bytes] = []
+  let reference_attributes : Array[WritableAttribute] = []
+  self.collect_created_heap_values(
+    strings, regions, reference_attributes, values, objects, address_size,
+  )
+  match fill_value {
+    Some(fill) =>
+      self.collect_created_heap_values(
+        strings, regions, reference_attributes, fill, objects, address_size,
+      )
+    None => ()
+  }
+  let region_address = if regions.length() > 0 {
+    let start = append_aligned_bytes_to_tail(
+      tail,
+      self.bytes.length(),
+      encode_heap_objects(regions),
+      "append dataset region-reference heap",
+    )
+    file_offset_to_stored_address(start, self.superblock.base_address)
+  } else {
+    0UL
+  }
+  let base_heap : WritableGlobalHeap = {
+    address: 0UL,
+    region_address,
+    strings,
+    regions,
+    sequences: [],
+  }
+  let sequences : Array[Bytes] = []
+  let collect_sequences = fn(values : Hdf5WriteValues) -> Unit raise Hdf5Error {
+    match values {
+      StructuredValues(datatype, items) =>
+        for item in items {
+          collect_heap_sequences(
+            sequences,
+            datatype,
+            item,
+            heap=base_heap,
+            objects~,
+            reference_address_size=address_size,
+            vlen_address_size=address_size,
+          )
+        }
+      _ => ()
+    }
+  }
+  collect_sequences(values)
+  if fill_value is Some(fill) {
+    collect_sequences(fill)
+  }
+  let heap_address = if strings.length() > 0 || sequences.length() > 0 {
+    let start = append_aligned_bytes_to_tail(
+      tail,
+      self.bytes.length(),
+      encode_global_heap({
+        address: 0UL,
+        region_address,
+        strings,
+        regions,
+        sequences,
+      }),
+      "append dataset global heap",
+    )
+    file_offset_to_stored_address(start, self.superblock.base_address)
+  } else {
+    0UL
+  }
+  { address: heap_address, region_address, strings, regions, sequences, }
+}
+
+///|
 fn Hdf5File::created_reference_objects(
   self : Hdf5File,
 ) -> Array[WritableObject] raise Hdf5Error {
@@ -98,12 +227,19 @@ fn Hdf5File::created_reference_objects(
     },
   ]
   for node in self.walk() {
+    let (kind, dataspace) = match node.kind {
+      Dataset => {
+        let metadata = self.read_dataset_metadata(node.path)
+        (WritableDatasetObject(0), Some(metadata.dataspace))
+      }
+      _ => (WritableGroup, None)
+    }
     objects.push({
       path: node.path,
-      kind: WritableGroup,
+      kind,
       address: node.address,
       raw_address: 0UL,
-      dataspace: None,
+      dataspace,
     })
   }
   objects
@@ -186,9 +322,10 @@ pub fn Hdf5File::add_group(
 /// first and the new dataset object header links it through a contiguous layout
 /// message using the file's address and length widths. Variable-length string
 /// descriptors use the file address width, and object references use the file
-/// address width rather than a host-sized reference slot. Nested variable-length
-/// or reference members in structured values remain unsupported. An optional
-/// fill value is written through the normal fill-value message.
+/// address width rather than a host-sized reference slot. Nested
+/// variable-length and reference members in compound, fixed-array and sequence
+/// values are encoded recursively. An optional fill value is written through
+/// the normal fill-value message.
 pub fn Hdf5File::add_dataset(
   self : Hdf5File,
   parent_path : String,
@@ -202,11 +339,6 @@ pub fn Hdf5File::add_dataset(
   guard editable_link_index(links, name) is None else {
     raise InvalidArgument("link name already exists: " + name)
   }
-  guard created_dataset_values_supported(values) else {
-    raise UnsupportedFeature(
-      "dataset creation does not support nested variable-length or reference values",
-    )
-  }
   let offset_size = self.superblock.offset_size
   let length_size = self.superblock.length_size
   validate_write_values(
@@ -214,56 +346,22 @@ pub fn Hdf5File::add_dataset(
     values,
     reference_address_size=Some(offset_size),
   )
-  let copied_fill = validated_write_fill(values, fill_value)
-  if copied_fill is Some(fill) && !created_dataset_values_supported(fill) {
-    raise UnsupportedFeature(
-      "dataset creation does not support nested variable-length or reference fills",
-    )
-  }
+  let copied_fill = validated_write_fill(
+    values,
+    fill_value,
+    reference_address_size=Some(offset_size),
+  )
+  validate_created_fill_layout(copied_fill, offset_size)
   let tail = @buffer.Buffer::Buffer()
-  let strings : Array[String] = []
-  collect_heap_strings(strings, values)
-  if copied_fill is Some(fill) {
-    collect_heap_strings(strings, fill)
-  }
-  let mut heap = empty_writable_heap()
-  if strings.length() > 0 {
-    let heap_offset = next_aligned_tail_start(
-      self.bytes.length(),
-      tail.length(),
-      "append dataset heap",
-    )
-    let heap_address = file_offset_to_stored_address(
-      heap_offset,
-      self.superblock.base_address,
-    )
-    guard editable_uint_fits_width(heap_address, offset_size) else {
-      raise UnsupportedFeature(
-        "dataset heap address exceeds the file address width",
-      )
-    }
-    heap = {
-      address: heap_address,
-      region_address: 0UL,
-      strings,
-      regions: [],
-      sequences: [],
-    }
-    ignore(
-      append_aligned_bytes_to_tail(
-        tail,
-        self.bytes.length(),
-        encode_global_heap(heap),
-        "append dataset heap",
-      ),
-    )
-  }
   let objects = if created_values_need_objects(values) ||
     (copied_fill is Some(fill) && created_values_need_objects(fill)) {
     self.created_reference_objects()
   } else {
     []
   }
+  let heap = self.append_created_values_heap(
+    tail, values, copied_fill, objects, offset_size,
+  )
   let encoded = encode_write_values(
     values,
     heap~,
@@ -304,7 +402,13 @@ pub fn Hdf5File::add_dataset(
           messages.push({
             msg_type: msg_fill_value,
             flags: b'\x00',
-            data: encode_fill_value(fill, heap~, objects~),
+            data: encode_fill_value(
+              fill,
+              heap~,
+              objects~,
+              reference_address_size=offset_size,
+              vlen_address_size=offset_size,
+            ),
             creation_order: 0UL,
           })
         }
@@ -346,6 +450,7 @@ pub fn Hdf5File::add_dataset(
 fn created_values_need_objects(values : Hdf5WriteValues) -> Bool {
   match values {
     ObjectReferenceValues(_) => true
+    StructuredValues(datatype, _) => datatype_contains_reference(datatype)
     _ => false
   }
 }
@@ -374,11 +479,6 @@ pub fn Hdf5File::add_chunked_dataset(
   let (parent_address, header, links) = self.editable_group(parent_path)
   guard editable_link_index(links, name) is None else {
     raise InvalidArgument("link name already exists: " + name)
-  }
-  guard created_dataset_values_supported(values) else {
-    raise UnsupportedFeature(
-      "dataset creation does not support nested variable-length or reference values",
-    )
   }
   let offset_size = self.superblock.offset_size
   let length_size = self.superblock.length_size
@@ -417,57 +517,22 @@ pub fn Hdf5File::add_chunked_dataset(
   let custom_filters : Array[&Hdf5CustomFilter] = []
   validate_write_filters(filters, custom_filters)
   validate_writer_filters_for_values(values, filters)
-  let copied_fill = validated_write_fill(values, fill_value)
-  if copied_fill is Some(fill) && !created_dataset_values_supported(fill) {
-    raise UnsupportedFeature(
-      "dataset creation does not support nested variable-length or reference fills",
-    )
-  }
-
+  let copied_fill = validated_write_fill(
+    values,
+    fill_value,
+    reference_address_size=Some(offset_size),
+  )
+  validate_created_fill_layout(copied_fill, offset_size)
   let tail = @buffer.Buffer::Buffer()
-  let strings : Array[String] = []
-  collect_heap_strings(strings, values)
-  if copied_fill is Some(fill) {
-    collect_heap_strings(strings, fill)
-  }
-  let mut heap = empty_writable_heap()
-  if strings.length() > 0 {
-    let heap_offset = next_aligned_tail_start(
-      self.bytes.length(),
-      tail.length(),
-      "append dataset heap",
-    )
-    let heap_address = file_offset_to_stored_address(
-      heap_offset,
-      self.superblock.base_address,
-    )
-    guard editable_uint_fits_width(heap_address, offset_size) else {
-      raise UnsupportedFeature(
-        "dataset heap address exceeds the file address width",
-      )
-    }
-    heap = {
-      address: heap_address,
-      region_address: 0UL,
-      strings,
-      regions: [],
-      sequences: [],
-    }
-    ignore(
-      append_aligned_bytes_to_tail(
-        tail,
-        self.bytes.length(),
-        encode_global_heap(heap),
-        "append dataset heap",
-      ),
-    )
-  }
   let objects = if created_values_need_objects(values) ||
     (copied_fill is Some(fill) && created_values_need_objects(fill)) {
     self.created_reference_objects()
   } else {
     []
   }
+  let heap = self.append_created_values_heap(
+    tail, values, copied_fill, objects, offset_size,
+  )
   let encoded = encode_write_values(
     values,
     heap~,
@@ -588,7 +653,13 @@ pub fn Hdf5File::add_chunked_dataset(
     messages.push({
       msg_type: msg_fill_value,
       flags: b'\x00',
-      data: encode_fill_value(fill, heap~, objects~),
+      data: encode_fill_value(
+        fill,
+        heap~,
+        objects~,
+        reference_address_size=offset_size,
+        vlen_address_size=offset_size,
+      ),
       creation_order: 0UL,
     })
   }
@@ -681,7 +752,12 @@ pub fn Hdf5File::add_external_dataset(
     values,
     reference_address_size=Some(offset_size),
   )
-  let copied_fill = validated_write_fill(values, fill_value)
+  let copied_fill = validated_write_fill(
+    values,
+    fill_value,
+    reference_address_size=Some(offset_size),
+  )
+  validate_created_fill_layout(copied_fill, offset_size)
   if copied_fill is Some(fill) &&
     (
       !created_dataset_values_supported(fill) ||
@@ -753,7 +829,13 @@ pub fn Hdf5File::add_external_dataset(
     messages.push({
       msg_type: msg_fill_value,
       flags: b'\x00',
-      data: encode_fill_value(fill, heap=empty_heap, objects~),
+      data: encode_fill_value(
+        fill,
+        heap=empty_heap,
+        objects~,
+        reference_address_size=offset_size,
+        vlen_address_size=offset_size,
+      ),
       creation_order: 0UL,
     })
   }

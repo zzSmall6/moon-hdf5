@@ -1,4 +1,59 @@
 ///|
+fn created_record_type(
+  reference_size : Int32,
+) -> @lib.Datatype raise @lib.Hdf5Error {
+  let text = @lib.Datatype::write_vlen_string_with_address_size(reference_size)
+  let object_reference = @lib.Datatype::write_object_reference_with_address_size(
+    reference_size,
+  )
+  @lib.Datatype::write_compound([
+    ("name", text),
+    (
+      "counts",
+      @lib.Datatype::write_vlen_sequence_with_address_size(
+        @lib.Datatype::write_integer(true, 4),
+        reference_size,
+      ),
+    ),
+    ("labels", @lib.Datatype::write_array(text, [2UL])),
+    ("target", object_reference),
+    ("pair", @lib.Datatype::write_array(object_reference, [2UL])),
+    (
+      "region",
+      @lib.Datatype::write_region_reference_with_address_size(reference_size),
+    ),
+  ])
+}
+
+///|
+fn created_record(
+  name : String,
+  counts : Array[@lib.DatasetValue],
+  labels : Array[String],
+  target : String?,
+  pair : Array[String?],
+  region_path : String?,
+) -> @lib.DatasetValue {
+  @lib.Compound([
+    { name: "name", value: @lib.Text(name), },
+    { name: "counts", value: @lib.Sequence(counts), },
+    {
+      name: "labels",
+      value: @lib.Elements(labels.map(label => @lib.Text(label))),
+    },
+    { name: "target", value: @lib.ObjectReference(target), },
+    {
+      name: "pair",
+      value: @lib.Elements(pair.map(path => @lib.ObjectReference(path))),
+    },
+    {
+      name: "region",
+      value: @lib.RegionReference(region_path, @lib.RegionPoints([[0UL, 0UL]])),
+    },
+  ])
+}
+
+///|
 fn run(args : Array[String]) -> Int32 {
   if args.length() != 3 {
     eprintln(
@@ -61,6 +116,73 @@ fn run(args : Array[String]) -> Int32 {
       [3UL],
       @lib.ObjectReferenceValues([Some("/matrix"), None, Some(reference_target)]),
     )
+    let record_type = created_record_type(file.address_size())
+    let first_record = created_record(
+      "moon",
+      [@lib.SignedInteger(1L), @lib.SignedInteger(-2L)],
+      ["一", ""],
+      Some("/matrix"),
+      [Some("/matrix"), None],
+      Some("/matrix"),
+    )
+    let empty_record = created_record(
+      "",
+      [],
+      ["", "二"],
+      None,
+      [None, Some("/matrix")],
+      None,
+    )
+    edited = @lib.Hdf5File::parse(edited).add_dataset(
+      "/created_root",
+      "nested_records",
+      [2UL],
+      @lib.StructuredValues(record_type, [first_record, empty_record]),
+    )
+    if file.address_size() == 8 {
+      let fill = @lib.StructuredValues(record_type, [empty_record])
+      edited = @lib.Hdf5File::parse(edited).add_chunked_dataset(
+        "/created_root",
+        "nested_chunked",
+        [3UL],
+        [2U],
+        @lib.StructuredValues(record_type, [
+          first_record, empty_record, first_record,
+        ]),
+        fill_value=fill,
+        filters=[Shuffle, Deflate(3)],
+      )
+      edited = @lib.Hdf5File::parse(edited).add_chunked_dataset(
+        "/created_root",
+        "nested_resizable",
+        [1UL],
+        [1U],
+        @lib.StructuredValues(record_type, [first_record]),
+        maximum_dimensions=[None],
+        fill_value=fill,
+        filters=[Deflate(3)],
+      )
+    } else {
+      edited = @lib.Hdf5File::parse(edited).add_chunked_dataset(
+        "/created_root",
+        "nested_chunked",
+        [3UL],
+        [2U],
+        @lib.StructuredValues(record_type, [
+          first_record, empty_record, first_record,
+        ]),
+        filters=[Shuffle, Deflate(3)],
+      )
+      edited = @lib.Hdf5File::parse(edited).add_chunked_dataset(
+        "/created_root",
+        "nested_resizable",
+        [1UL],
+        [1U],
+        @lib.StructuredValues(record_type, [first_record]),
+        maximum_dimensions=[None],
+        filters=[Deflate(3)],
+      )
+    }
     edited = @lib.Hdf5File::parse(edited).add_chunked_dataset(
       "/created_root",
       "chunked",

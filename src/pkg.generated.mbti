@@ -235,7 +235,9 @@ pub fn Datatype::write_version4_object_reference_with_address_size(Int32) -> Sel
 pub fn Datatype::write_version4_region_reference() -> Self
 pub fn Datatype::write_version4_region_reference_with_address_size(Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_vlen_sequence(Self) -> Self raise Hdf5Error
+pub fn Datatype::write_vlen_sequence_with_address_size(Self, Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_vlen_string() -> Self
+pub fn Datatype::write_vlen_string_with_address_size(Int32) -> Self raise Hdf5Error
 
 #derive(@debug.Debug)
 pub(all) struct EnumMember {
@@ -282,6 +284,7 @@ pub fn Hdf5File::add_external_link(Self, String, String, String, String) -> Byte
 pub fn Hdf5File::add_group(Self, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_hard_link(Self, String, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_soft_link(Self, String, String, String) -> Bytes raise Hdf5Error
+pub fn Hdf5File::address_size(Self) -> Int32
 pub fn Hdf5File::attributes(Self, String) -> Array[Attribute] raise Hdf5Error
 pub fn Hdf5File::chunk_iterator(Self, String, Array[UInt64]) -> DatasetChunkIterator raise Hdf5Error
 pub fn Hdf5File::delete_attribute(Self, String, String) -> Bytes raise Hdf5Error

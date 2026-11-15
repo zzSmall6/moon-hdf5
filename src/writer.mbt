@@ -193,16 +193,47 @@ pub fn Datatype::write_opaque(
 pub fn Datatype::write_vlen_sequence(
   base : Datatype,
 ) -> Datatype raise Hdf5Error {
+  Datatype::write_vlen_sequence_with_address_size(base, 8)
+}
+
+///|
+/// Creates a variable-length sequence datatype for a file with the given
+/// on-disk heap address width.
+pub fn Datatype::write_vlen_sequence_with_address_size(
+  base : Datatype,
+  address_size : Int32,
+) -> Datatype raise Hdf5Error {
+  guard address_size == 4 || address_size == 8 else {
+    raise InvalidArgument(
+      "writer variable-length address size must be 4 or 8 bytes",
+    )
+  }
   guard !datatype_contains_vlen(base) else {
     raise InvalidArgument("writer variable-length sequence base is invalid")
   }
-  writer_datatype(9, 16, base_types=[base])
+  writer_datatype(9, address_size + 8, base_types=[base])
 }
 
 ///|
 /// Creates a variable-length UTF-8 string datatype for structured writes.
 pub fn Datatype::write_vlen_string() -> Datatype {
   writer_datatype(9, 16, vlen_is_string=true, base_types=[writer_datatype(0, 1)])
+}
+
+///|
+/// Creates a variable-length UTF-8 string datatype for a file with the given
+/// on-disk heap address width.
+pub fn Datatype::write_vlen_string_with_address_size(
+  address_size : Int32,
+) -> Datatype raise Hdf5Error {
+  guard address_size == 4 || address_size == 8 else {
+    raise InvalidArgument(
+      "writer variable-length address size must be 4 or 8 bytes",
+    )
+  }
+  writer_datatype(9, address_size + 8, vlen_is_string=true, base_types=[
+    writer_datatype(0, 1),
+  ])
 }
 
 ///|
@@ -769,6 +800,69 @@ fn writer_value_element_size(values : Hdf5WriteValues) -> Int32 {
 }
 
 ///|
+/// Returns the size HDF5 assigns to a datatype in memory. Legacy references
+/// and variable-length fields use fixed native widths that can be wider than
+/// their file representation in four-byte-address files.
+fn writer_native_datatype_size(
+  datatype : Datatype,
+  depth~ : Int32 = 0,
+) -> Int32 raise Hdf5Error {
+  guard depth < 16 else {
+    raise InvalidArgument("writer datatype is too deeply nested")
+  }
+  match datatype.class {
+    6 => {
+      let mut size = 0
+      for field in datatype.compound_members {
+        let field_size = writer_native_datatype_size(
+          field.datatype,
+          depth=depth + 1,
+        )
+        guard size <= 0x7FFFFFFF - field_size else {
+          raise InvalidArgument("native compound datatype is too large")
+        }
+        size = size + field_size
+      }
+      size
+    }
+    7 =>
+      if datatype.version >= 4 {
+        18
+      } else if datatype.reference_kind == 0 {
+        8
+      } else {
+        12
+      }
+    8 => writer_native_datatype_size(datatype.base_types[0], depth=depth + 1)
+    9 => if datatype.vlen_is_string { 8 } else { 16 }
+    10 => {
+      let mut size = writer_native_datatype_size(
+        datatype.base_types[0],
+        depth=depth + 1,
+      ).to_int64()
+      for dimension in datatype.array_dimensions {
+        guard dimension > 0UL &&
+          size <= 0x7FFFFFFFL / dimension.reinterpret_as_int64() else {
+          raise InvalidArgument("native array datatype is too large")
+        }
+        size = size * dimension.reinterpret_as_int64()
+      }
+      size.to_int()
+    }
+    _ => datatype.size
+  }
+}
+
+///|
+fn writer_native_value_size(values : Hdf5WriteValues) -> Int32 raise Hdf5Error {
+  match values {
+    VariableStringValues(_) | ObjectReferenceValues(_) => 8
+    StructuredValues(datatype, _) => writer_native_datatype_size(datatype)
+    _ => writer_value_element_size(values)
+  }
+}
+
+///|
 fn copy_write_values(values : Hdf5WriteValues) -> Hdf5WriteValues {
   match values {
     Int8Values(items) => Int8Values(items.copy())
@@ -1091,7 +1185,11 @@ fn validate_writer_datatype(
       }
     }
     9 => {
-      guard datatype.size == 16 else {
+      let expected_size = match reference_address_size {
+        Some(address_size) => address_size + 8
+        None => 16
+      }
+      guard datatype.size == expected_size else {
         raise InvalidArgument("writer variable-length datatype is invalid")
       }
       if datatype.vlen_is_string {
@@ -1863,6 +1961,7 @@ pub fn Hdf5Writer::add_external_dataset(
 fn same_write_datatype(
   left : Hdf5WriteValues,
   right : Hdf5WriteValues,
+  reference_address_size~ : Int32? = None,
 ) -> Bool raise Hdf5Error {
   match (left, right) {
     (Int8Values(_), Int8Values(_)) => true
@@ -1887,7 +1986,14 @@ fn same_write_datatype(
     (Complex64Values(_), Complex64Values(_)) => true
     (Complex128Values(_), Complex128Values(_)) => true
     (StructuredValues(left_type, _), StructuredValues(right_type, _)) =>
-      encode_writer_datatype(left_type) == encode_writer_datatype(right_type)
+      encode_writer_datatype(
+        left_type,
+        reference_address_size=reference_address_size.unwrap_or(8),
+      ) ==
+      encode_writer_datatype(
+        right_type,
+        reference_address_size=reference_address_size.unwrap_or(8),
+      )
     _ => false
   }
 }
@@ -2077,15 +2183,17 @@ fn validate_writer_chunk_size(
 fn validated_write_fill(
   values : Hdf5WriteValues,
   fill_value : Hdf5WriteValues?,
+  reference_address_size~ : Int32? = None,
 ) -> Hdf5WriteValues? raise Hdf5Error {
   match fill_value {
     Some(fill) => {
-      guard writer_value_count(fill) == 1 && same_write_datatype(values, fill) else {
+      guard writer_value_count(fill) == 1 &&
+        same_write_datatype(values, fill, reference_address_size~) else {
         raise InvalidArgument(
           "fill value must be one value of the dataset type",
         )
       }
-      validate_write_values([], fill)
+      validate_write_values([], fill, reference_address_size~)
       Some(copy_write_values(fill))
     }
     None => None
@@ -3138,7 +3246,7 @@ fn encode_writer_datatype(
     }
     6 => {
       let buffer = @buffer.Buffer::Buffer()
-      buffer.write_byte(b'\x36')
+      buffer.write_byte(b'\x46')
       buffer.write_byte((datatype.compound_members.length() & 0xFF).to_byte())
       buffer.write_byte((datatype.compound_members.length() >> 8).to_byte())
       buffer.write_byte(b'\x00')
@@ -3244,7 +3352,7 @@ fn encode_writer_datatype(
     }
     10 => {
       let buffer = @buffer.Buffer::Buffer()
-      buffer.write_byte(b'\x3a')
+      buffer.write_byte(b'\x4a')
       buffer.write_byte(b'\x00')
       buffer.write_byte(b'\x00')
       buffer.write_byte(b'\x00')
@@ -3270,7 +3378,13 @@ fn encode_structured_value(
   heap~ : WritableGlobalHeap = empty_writable_heap(),
   objects~ : Array[WritableObject] = [],
   reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
 ) -> Bytes raise Hdf5Error {
+  let vlen_width = if vlen_address_size > 0 {
+    vlen_address_size
+  } else {
+    reference_address_size
+  }
   validate_structured_value(value, datatype, 0)
   let buffer = @buffer.Buffer::Buffer(size_hint=datatype.size)
   match datatype.class {
@@ -3397,6 +3511,7 @@ fn encode_structured_value(
               heap~,
               objects~,
               reference_address_size~,
+              vlen_address_size~,
             )
             output.blit_from_bytes(field.offset, encoded, 0, encoded.length())
           }
@@ -3441,7 +3556,11 @@ fn encode_structured_value(
                 buffer.write_byte(b'\x03')
                 buffer.write_byte(b'\x00')
                 buffer.write_uint_le(payload.length().reinterpret_as_uint())
-                buffer.write_uint64_le(heap.region_address)
+                write_uint_width(
+                  buffer,
+                  heap.region_address,
+                  reference_address_size,
+                )
                 buffer.write_uint_le(
                   writable_region_heap_index(heap, payload).reinterpret_as_uint(),
                 )
@@ -3465,7 +3584,11 @@ fn encode_structured_value(
                 buffer.write_byte(b'\x04')
                 buffer.write_byte(b'\x00')
                 buffer.write_uint_le(payload.length().reinterpret_as_uint())
-                buffer.write_uint64_le(heap.region_address)
+                write_uint_width(
+                  buffer,
+                  heap.region_address,
+                  reference_address_size,
+                )
                 buffer.write_uint_le(
                   writable_region_heap_index(heap, payload).reinterpret_as_uint(),
                 )
@@ -3496,7 +3619,11 @@ fn encode_structured_value(
                   selection,
                   reference_address_size~,
                 )
-                buffer.write_uint64_le(heap.region_address)
+                write_uint_width(
+                  buffer,
+                  heap.region_address,
+                  reference_address_size,
+                )
                 buffer.write_uint_le(
                   writable_region_heap_index(heap, payload).reinterpret_as_uint(),
                 )
@@ -3544,12 +3671,12 @@ fn encode_structured_value(
           Text(text) =>
             if @utf8.encode(text).length() == 0 {
               buffer.write_uint_le(0U)
-              buffer.write_uint64_le(0UL)
+              write_uint_width(buffer, 0UL, vlen_width)
               buffer.write_uint_le(0U)
             } else {
               let encoded = @utf8.encode(text)
               buffer.write_uint_le(encoded.length().reinterpret_as_uint())
-              buffer.write_uint64_le(heap.address)
+              write_uint_width(buffer, heap.address, vlen_width)
               buffer.write_uint_le(
                 writable_heap_index(heap, text).reinterpret_as_uint(),
               )
@@ -3561,7 +3688,7 @@ fn encode_structured_value(
           Sequence(items) =>
             if items.length() == 0 {
               buffer.write_uint_le(0U)
-              buffer.write_uint64_le(0UL)
+              write_uint_width(buffer, 0UL, vlen_width)
               buffer.write_uint_le(0U)
             } else {
               let encoded = @buffer.Buffer::Buffer()
@@ -3575,12 +3702,13 @@ fn encode_structured_value(
                     heap~,
                     objects~,
                     reference_address_size~,
+                    vlen_address_size~,
                   ),
                 )
               }
               let data = encoded.to_bytes()
               buffer.write_uint_le(items.length().reinterpret_as_uint())
-              buffer.write_uint64_le(heap.address)
+              write_uint_width(buffer, heap.address, vlen_width)
               buffer.write_uint_le(
                 writable_sequence_heap_index(heap, data).reinterpret_as_uint(),
               )
@@ -3600,6 +3728,7 @@ fn encode_structured_value(
                 heap~,
                 objects~,
                 reference_address_size~,
+                vlen_address_size~,
               ),
             )
           }
@@ -3869,6 +3998,7 @@ fn encode_write_values(
             heap~,
             objects~,
             reference_address_size~,
+            vlen_address_size~,
           ),
         )
       }
@@ -4100,13 +4230,27 @@ fn encode_fill_value(
   fill : Hdf5WriteValues,
   heap~ : WritableGlobalHeap,
   objects~ : Array[WritableObject],
+  reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
 ) -> Bytes raise Hdf5Error {
-  let encoded = encode_write_values(fill, heap~, objects~)
-  let buffer = @buffer.Buffer::Buffer(size_hint=6 + encoded.element_size)
+  let encoded = encode_write_values(
+    fill,
+    heap~,
+    objects~,
+    reference_address_size~,
+    vlen_address_size~,
+  )
+  let stored_size = if writer_native_value_size(fill) > encoded.element_size {
+    writer_native_value_size(fill)
+  } else {
+    encoded.element_size
+  }
+  let buffer = @buffer.Buffer::Buffer(size_hint=6 + stored_size)
   buffer.write_byte(b'\x03')
-  buffer.write_byte(b'\x22')
-  buffer.write_uint_le(encoded.element_size.reinterpret_as_uint())
+  buffer.write_byte(b'\x2b')
+  buffer.write_uint_le(stored_size.reinterpret_as_uint())
   writer_write_bytes(buffer, encoded.payload)
+  writer_write_zeros(buffer, stored_size - encoded.payload.length())
   buffer.to_bytes()
 }
 
@@ -8604,6 +8748,7 @@ fn collect_heap_sequences(
   heap~ : WritableGlobalHeap,
   objects~ : Array[WritableObject],
   reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
 ) -> Unit raise Hdf5Error {
   match datatype.class {
     6 =>
@@ -8617,6 +8762,7 @@ fn collect_heap_sequences(
               heap~,
               objects~,
               reference_address_size~,
+              vlen_address_size~,
             )
           }
         _ => ()
@@ -8637,6 +8783,7 @@ fn collect_heap_sequences(
                     heap~,
                     objects~,
                     reference_address_size~,
+                    vlen_address_size~,
                   ),
                 )
               }
@@ -8662,6 +8809,7 @@ fn collect_heap_sequences(
               heap~,
               objects~,
               reference_address_size~,
+              vlen_address_size~,
             )
           }
         _ => ()

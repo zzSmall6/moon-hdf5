@@ -466,6 +466,7 @@ fn editable_values_heap(
           heap=empty,
           objects~,
           reference_address_size~,
+          vlen_address_size=reference_address_size,
         )
       }
     _ => ()

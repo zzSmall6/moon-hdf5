@@ -549,3 +549,237 @@ test "resizable datasets can be created with maximum dimensions" {
     }
   }
 }
+
+///|
+fn created_nested_record_type(
+  reference_size : Int32,
+) -> Datatype raise Hdf5Error {
+  let text = Datatype::write_vlen_string_with_address_size(reference_size)
+  let object_reference = Datatype::write_object_reference_with_address_size(
+    reference_size,
+  )
+  Datatype::write_compound([
+    ("name", text),
+    (
+      "counts",
+      Datatype::write_vlen_sequence_with_address_size(
+        Datatype::write_integer(true, 4),
+        reference_size,
+      ),
+    ),
+    ("labels", Datatype::write_array(text, [2UL])),
+    ("target", object_reference),
+    ("pair", Datatype::write_array(object_reference, [2UL])),
+    (
+      "region",
+      Datatype::write_region_reference_with_address_size(reference_size),
+    ),
+  ])
+}
+
+///|
+fn created_nested_record(
+  name : String,
+  counts : Array[DatasetValue],
+  labels : Array[String],
+  target : String?,
+  pair : Array[String?],
+  region_path : String?,
+) -> DatasetValue {
+  Compound([
+    { name: "name", value: Text(name), },
+    { name: "counts", value: Sequence(counts), },
+    { name: "labels", value: Elements(labels.map(label => Text(label))), },
+    { name: "target", value: ObjectReference(target), },
+    { name: "pair", value: Elements(pair.map(path => ObjectReference(path))), },
+    {
+      name: "region",
+      value: RegionReference(region_path, RegionPoints([[0UL, 0UL]])),
+    },
+  ])
+}
+
+///|
+fn created_nested_fields(
+  file : Hdf5File,
+  path : String,
+) -> Array[Array[CompoundFieldValue]] raise Hdf5Error {
+  let values = match file.read_dataset(path).values {
+    Structured(values) => values
+    _ => raise InvalidField("expected structured created values")
+  }
+  let records : Array[Array[CompoundFieldValue]] = []
+  for value in values {
+    match value {
+      Compound(fields) => records.push(fields)
+      _ => raise InvalidField("expected created compound values")
+    }
+  }
+  records
+}
+
+///|
+test "nested variable-length and reference values can be created" {
+  let cases : Array[(String, Int32)] = [
+    ("testdata/symbol_table_32.h5", 4),
+    ("testdata/references.h5", 8),
+  ]
+  for (fixture, reference_size) in cases {
+    let record_type = created_nested_record_type(reference_size)
+    let first = created_nested_record(
+      "moon",
+      [SignedInteger(1L), SignedInteger(-2L)],
+      ["一", ""],
+      Some("/matrix"),
+      [Some("/matrix"), None],
+      Some("/matrix"),
+    )
+    let second = created_nested_record(
+      "",
+      [],
+      ["", "二"],
+      None,
+      [None, Some("/matrix")],
+      None,
+    )
+    let file = Hdf5File::parse(@fs.read_file_to_bytes(fixture))
+    let contiguous = file.add_dataset(
+      "/group",
+      "nested_records",
+      [2UL],
+      StructuredValues(record_type, [first, second]),
+    ) catch {
+      error => fail("create nested records: " + error.message())
+    }
+    let chunked = if reference_size == 8 {
+      Hdf5File::parse(contiguous).add_chunked_dataset(
+        "/group",
+        "nested_chunked",
+        [3UL],
+        [2U],
+        StructuredValues(record_type, [first, second, first]),
+        fill_value=StructuredValues(record_type, [second]),
+        filters=[Shuffle, Deflate(3)],
+      ) catch {
+        error => fail("create nested chunked records: " + error.message())
+      }
+    } else {
+      Hdf5File::parse(contiguous).add_chunked_dataset(
+        "/group",
+        "nested_chunked",
+        [3UL],
+        [2U],
+        StructuredValues(record_type, [first, second, first]),
+        filters=[Shuffle, Deflate(3)],
+      ) catch {
+        error => fail("create nested chunked records: " + error.message())
+      }
+    }
+    let resizable = if reference_size == 8 {
+      Hdf5File::parse(chunked).add_chunked_dataset(
+        "/group",
+        "nested_resizable",
+        [1UL],
+        [1U],
+        StructuredValues(record_type, [first]),
+        maximum_dimensions=[None],
+        fill_value=StructuredValues(record_type, [second]),
+        filters=[Deflate(3)],
+      ) catch {
+        error => fail("create nested resizable records: " + error.message())
+      }
+    } else {
+      Hdf5File::parse(chunked).add_chunked_dataset(
+        "/group",
+        "nested_resizable",
+        [1UL],
+        [1U],
+        StructuredValues(record_type, [first]),
+        maximum_dimensions=[None],
+        filters=[Deflate(3)],
+      ) catch {
+        error => fail("create nested resizable records: " + error.message())
+      }
+    }
+    let edited = Hdf5File::parse(resizable) catch {
+      error => fail("parse nested records: " + error.message())
+    }
+    assert_eq(edited.superblock.offset_size, reference_size)
+    let records = created_nested_fields(edited, "/group/nested_records")
+    assert_eq(records.length(), 2)
+    assert_eq(records[0][0].value, Text("moon"))
+    assert_eq(
+      records[0][1].value,
+      Sequence([SignedInteger(1L), SignedInteger(-2L)]),
+    )
+    assert_eq(records[0][2].value, Elements([Text("一"), Text("")]))
+    let target_bytes = match records[0][3].value {
+      Reference(bytes) => bytes
+      _ => fail("expected a nested object reference")
+    }
+    assert_eq(target_bytes.length(), reference_size)
+    assert_eq(
+      edited.resolve_object_reference(target_bytes).unwrap().path,
+      Some("/matrix"),
+    )
+    let pair = match records[0][4].value {
+      Elements(items) => items
+      _ => fail("expected a nested object-reference array")
+    }
+    match pair[1] {
+      Reference(bytes) => assert_eq(bytes, Bytes::make(reference_size, b'\x00'))
+      _ => fail("expected a null nested object reference")
+    }
+    let region_bytes = match records[0][5].value {
+      Reference(bytes) => bytes
+      _ => fail("expected a nested region reference")
+    }
+    assert_eq(
+      edited.resolve_region_reference(region_bytes).unwrap().path,
+      Some("/matrix"),
+    )
+
+    let chunked_records = created_nested_fields(edited, "/group/nested_chunked")
+    assert_eq(chunked_records.length(), 3)
+    assert_eq(chunked_records[1][2].value, Elements([Text(""), Text("二")]))
+    let resizable_metadata = edited.read_dataset_metadata(
+      "/group/nested_resizable",
+    )
+    assert_eq(resizable_metadata.layout.kind(), Chunked)
+    assert_eq(
+      resizable_metadata.dataspace.maximum_dimensions[0],
+      0xFFFFFFFFFFFFFFFFUL,
+    )
+    let header = edited.object_header_at(
+      edited.resolve("/group/nested_resizable").address,
+    )
+    if reference_size == 8 {
+      let fill = dataset_fill_value(header, resizable_metadata.datatype)
+      assert_eq(fill.length(), record_type.size)
+    } else {
+      assert_true(header.first(msg_fill_value) is None)
+      let rejected = try {
+        ignore(
+          Hdf5File::parse(resizable).add_dataset(
+            "/group",
+            "unsafe_nested_fill",
+            [1UL],
+            StructuredValues(record_type, [second]),
+            fill_value=StructuredValues(record_type, [second]),
+          ),
+        )
+        None
+      } catch {
+        error => Some(error)
+      }
+      assert_eq(
+        rejected,
+        Some(
+          UnsupportedFeature(
+            "custom fills for structured variable-length values require eight-byte file addresses",
+          ),
+        ),
+      )
+    }
+  }
+}
