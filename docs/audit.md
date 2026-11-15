@@ -149,10 +149,10 @@ dense-metadata, global-heap, external-slot and raw-data addresses are assigned
 before checksummed output is written.
 
 The writer emits a v3 superblock and v2 object headers. Large compact headers use
-checksummed OCHK continuations. Dense collections use one FHDB direct block and
-multi-level BTHD/BTIN/BTLF name and type 6/9 creation-order indexes. They are
-limited to 9–65,535 records with encoded heap objects up to 65,535 bytes;
-indirect/huge heap blocks and a free-space manager are not emitted.
+checksummed OCHK continuations. Dense collections use FHDB direct blocks, an
+FHIB indirect root when multiple blocks are needed, and a type-1 v2 B-tree for
+huge objects. Multi-level BTHD/BTIN/BTLF name and type 6/9 creation-order
+indexes are limited to 9–65,535 records. A free-space manager is not emitted.
 
 Compact datasets embed their payload in the data-layout message and enforce the
 65,535-byte limit before encoding. In-place patching locates compact payloads
@@ -232,8 +232,9 @@ heaps and heap extension across multiple blocks are not emitted.
   pipelines. Writing and patching require a registered encoder; overrides of
   built-in filter IDs are not accepted.
 - External raw data requires caller registration and caller-managed files.
-- Dense and SOHM output use compact single-block writer forms; larger producer
-  structures are reader-side features unless explicitly listed as writer output.
+- SOHM output uses one compact single-block table and heap. Dense metadata output
+  supports multiple direct blocks and huge objects but does not emit a free-space
+  manager or tiny heap objects.
 - V2 B-tree output is bulk-built for a completed in-memory shape; arbitrary
   incremental insertion at interior coordinates is not exposed.
 - Value patching can allocate raw data only into existing writable layout or
@@ -444,3 +445,10 @@ heaps and heap extension across multiple blocks are not emitted.
   and a 2,500-attribute collection are independently re-read by h5py
   3.13.0/HDF5 1.14.6; MoonBit tests exercise link and attribute indexes whose
   roots are internal nodes.
+- 2026-11-15: dense metadata writer storage now spans multiple FHDB direct
+  blocks with an FHIB indirect root and stores encoded messages larger than
+  65,535 bytes as huge heap objects indexed by a type-1 v2 B-tree. New writes
+  and dense attribute rebuilding share the same storage path. MoonBit tests
+  cover a multi-block 600,000-byte attribute collection and a huge attribute
+  message; writer demo output with dense collections remains independently
+  readable by h5py 3.13.0/HDF5 1.14.6.

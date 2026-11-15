@@ -520,64 +520,19 @@ fn encode_editable_dense_storage(
   }
   writer_sort_dense_entries(entries)
   let record_size = 17
-  let heap_offset_size = 5
   let max_heap_bits = 40
   let id_length = 8
   let minimum_block_size = 1024
-  let direct_overhead = 4 +
-    1 +
-    offset_size +
-    heap_offset_size +
-    metadata_checksum_size
-  let mut data_size = direct_overhead
-  let mut local_count = 0
-  for entry in entries {
-    if entry.shared_id is None {
-      local_count = local_count + 1
-      data_size = data_size + entry.data.length()
-    }
-  }
-  let block_size = writer_next_power_of_two(data_size, minimum_block_size)
-  let max_direct_size = writer_next_power_of_two(block_size, 65536)
-  let heap_header_size = writer_dense_heap_header_size(offset_size, length_size)
-  let root_address = if local_count > 0 {
-    heap_address + heap_header_size.to_uint64()
-  } else {
-    heap_undefined_address(offset_size)
-  }
-  let index_address = if local_count > 0 {
-    heap_address + heap_header_size.to_uint64() + block_size.to_uint64()
-  } else {
-    heap_address + heap_header_size.to_uint64()
-  }
-  let heap_header = encode_writer_dense_heap_header(
-    root_address,
+  let (heap_bytes, ids) = encode_writer_dense_heap_storage(
+    entries,
+    heap_address,
     id_length,
-    block_size,
-    if local_count > 0 {
-      block_size
-    } else {
-      0
-    },
-    max_direct_size,
+    minimum_block_size,
     max_heap_bits,
-    local_count,
-    writer_dense_max_managed_size,
-    4,
     offset_size~,
     length_size~,
   )
-  let (direct_block, ids) = if local_count > 0 {
-    encode_writer_dense_direct_block(
-      heap_address,
-      block_size,
-      heap_offset_size,
-      entries,
-      offset_size~,
-    )
-  } else {
-    (b"", encode_writer_dense_shared_ids(entries))
-  }
+  let index_address = heap_address + heap_bytes.length().to_uint64()
   let records : Array[Bytes] = []
   for index in 0..<entries.length() {
     let record = @buffer.Buffer::Buffer(size_hint=record_size)
@@ -629,11 +584,6 @@ fn encode_editable_dense_storage(
     offset_size~,
     length_size~,
   )
-  let heap_bytes = @buffer.Buffer::Buffer(
-    size_hint=heap_header.length() + direct_block.length(),
-  )
-  writer_write_bytes(heap_bytes, heap_header)
-  writer_write_bytes(heap_bytes, direct_block)
   let order_index_address = index_address + index_bytes.length().to_uint64()
   let order_bytes = encode_writer_metadata_btree(
     9,
@@ -644,7 +594,7 @@ fn encode_editable_dense_storage(
     offset_size~,
     length_size~,
   )
-  (heap_bytes.to_bytes(), index_bytes, order_bytes)
+  (heap_bytes, index_bytes, order_bytes)
 }
 
 ///|

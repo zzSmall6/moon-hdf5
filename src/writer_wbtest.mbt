@@ -1888,7 +1888,7 @@ test "writer enforces exact dense metadata limits" {
     shared_id: None,
   }
   assert_true(writer_dense_entries_fit(Array::make(9, at_limit)))
-  assert_true(!writer_dense_entries_fit(Array::make(9, over_limit)))
+  assert_true(writer_dense_entries_fit(Array::make(9, over_limit)))
 
   let btree_header = encode_writer_metadata_btree_header(
     8, 1024, 17, 0UL, 65535, 0, 65535UL,
@@ -2507,6 +2507,120 @@ test "writer stores large metadata in dense storage" {
   assert_true(
     !links_header.messages.any(message => message.msg_type == msg_link),
   )
+}
+
+///|
+test "writer dense attributes span multiple fractal heap direct blocks" {
+  let writer = Hdf5Writer::new()
+  let value = "m".repeat(60000)
+  writer.add_dataset("/multi_block", [], UInt64Values([1UL]))
+  for index in 0..<10 {
+    writer.add_attribute(
+      "/multi_block",
+      "multi_" + index.to_string(),
+      [],
+      FixedStringValues([value], 60000),
+    )
+  }
+
+  let bytes = writer.encode()
+  let file = Hdf5File::parse(bytes)
+  let attributes = file.attributes("/multi_block")
+  assert_eq(attributes.length(), 10)
+  for attribute in attributes {
+    match attribute.values {
+      Some(Strings(values)) => assert_eq(values, [value])
+      _ => abort("expected a multi-block dense string attribute")
+    }
+  }
+
+  let header = parse_object_header(
+    bytes,
+    file.resolve("/multi_block").address,
+    8,
+    8,
+    0UL,
+  )
+  let info = Reader::new(header.find(msg_attribute_info)[0].data)
+  ignore(info.read_u8())
+  if (info.read_u8().to_int() & 0x01) != 0 {
+    info.skip(2)
+  }
+  let heap = parse_fractal_heap(bytes, info.read_uint_le(8), 8, 8, 0UL)
+  assert_true(heap.blocks.length() > 1)
+  let mut managed_size = 0UL
+  for block in heap.blocks {
+    managed_size = managed_size + block.size.to_uint64()
+  }
+  assert_eq(managed_size, heap.managed_space_size)
+}
+
+///|
+test "writer dense attributes store huge objects through a v2 B-tree" {
+  let writer = Hdf5Writer::new()
+  let value = "h".repeat(60000)
+  writer.add_dataset("/huge_object", [], UInt64Values([1UL]))
+  for index in 0..<8 {
+    writer.add_attribute(
+      "/huge_object",
+      "small_" + index.to_string(),
+      [],
+      UInt64Values([index.to_uint64()]),
+    )
+  }
+  writer.add_attribute(
+    "/huge_object",
+    "huge",
+    [2UL],
+    FixedStringValues([value, value], 60000),
+  )
+
+  let bytes = writer.encode()
+  let file = Hdf5File::parse(bytes)
+  let attributes = file.attributes("/huge_object")
+  assert_eq(attributes.length(), 9)
+  match attributes.search_by(attribute => attribute.name == "huge") {
+    Some(index) =>
+      match attributes[index].values {
+        Some(Strings(values)) => assert_eq(values, [value, value])
+        _ => abort("expected the huge dense string attribute")
+      }
+    None => abort("expected the huge dense attribute")
+  }
+
+  let header = parse_object_header(
+    bytes,
+    file.resolve("/huge_object").address,
+    8,
+    8,
+    0UL,
+  )
+  let info = Reader::new(header.find(msg_attribute_info)[0].data)
+  ignore(info.read_u8())
+  if (info.read_u8().to_int() & 0x01) != 0 {
+    info.skip(2)
+  }
+  let heap = parse_fractal_heap(bytes, info.read_uint_le(8), 8, 8, 0UL)
+  assert_true(heap.huge_btree_address != heap_undefined_address(8))
+  let huge = read_v2_btree_records(
+    bytes,
+    heap.huge_btree_address,
+    8,
+    8,
+    0UL,
+    [1],
+    "huge object v2 B-tree",
+  )
+  assert_eq(huge.node_type, 1)
+  assert_eq(huge.records.length(), 1)
+  let record = Reader::new(huge.records[0])
+  let address = record.read_uint_le(8)
+  let stored_size = record.read_uint_le(8)
+  let object_id = record.read_uint_le(8)
+  assert_true(stored_size > 65535UL)
+  assert_eq(object_id, 1UL)
+  let huge_message = Reader::at(bytes, address.to_int())
+  assert_eq(huge_message.read_u8(), b'\x03')
 }
 
 ///|

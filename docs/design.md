@@ -134,12 +134,13 @@ float16/32/64 in either byte order. Half-precision values are rounded to
 nearest-even from their f32 representation, including subnormals, infinities and
 NaNs.
 
-Dense link and attribute collections are used for 9–65,535 records when every
-encoded heap object is at most 65,535 bytes. Each collection has one FRHP header,
-one FHDB direct block, one BTHD header and BTLF name index, plus a type 6 or 9
-creation-order index sharing the same heap IDs. Larger sets remain compact and
-use OCHK continuation when needed. Indirect/huge heap blocks and a free-space
-manager are not emitted.
+Dense link and attribute collections are used for 9–65,535 records. Managed
+heap objects up to 65,535 bytes are packed into one or more FHDB direct blocks,
+with an FHIB indirect root when more than one block is needed. Larger encoded
+objects use huge heap IDs and a type-1 v2 B-tree. Each collection has one FRHP
+header, a BTHD header and BTLF name index, plus a type 6 or 9 creation-order
+index sharing the same heap IDs. Larger sets remain compact and use OCHK
+continuation when needed. A free-space manager is not emitted.
 
 The writer supports compact datasets, contiguous datasets, contiguous external
 raw-data slots, finite chunked datasets with fixed-array indexes,
@@ -331,9 +332,9 @@ unreferenced because no free-space reclamation is written.
 metadata-rebuild path. The reader collects compact and dense attribute messages,
 their creation order and their original encoded payloads, then writes a new
 complete attribute collection. Up to eight attributes use compact storage; a
-larger collection is rebuilt as dense storage when every encoded attribute
-message is at most 65,535 bytes. Dense heap and B-tree headers use the file's
-address and length widths, so rebuilding works for 4- and 8-byte-address
+larger collection is rebuilt as dense storage, including multiple direct heap
+blocks and huge objects when needed. Dense heap and B-tree headers use the
+file's address and length widths, so rebuilding works for 4- and 8-byte-address
 layouts. Compact and dense shared attribute messages are resolved through SOHM
 and emitted as local attribute messages; editing does not mutate the existing
 shared-message table or heaps. Added variable-length strings and fixed-base

@@ -6309,11 +6309,6 @@ fn writer_dense_entries_fit(entries : Array[WritableDenseHeapEntry]) -> Bool {
     entries.length() > writer_dense_max_records {
     return false
   }
-  for entry in entries {
-    if entry.data.length() > writer_dense_max_managed_size {
-      return false
-    }
-  }
   true
 }
 
@@ -6370,6 +6365,12 @@ fn encode_writer_dense_heap_header(
   table_width : Int32,
   offset_size~ : Int32 = 8,
   length_size~ : Int32 = 8,
+  next_huge_id~ : UInt64 = 0UL,
+  huge_btree_address~ : UInt64? = None,
+  huge_object_size~ : UInt64 = 0UL,
+  huge_objects~ : UInt64 = 0UL,
+  current_rows~ : Int32 = 0,
+  starting_rows~ : Int32 = 1,
 ) -> Bytes {
   let buffer = @buffer.Buffer::Buffer(
     size_hint=writer_dense_heap_header_size(offset_size, length_size),
@@ -6380,25 +6381,32 @@ fn encode_writer_dense_heap_header(
   buffer.write_uint16_le(0)
   buffer.write_byte(b'\x02')
   buffer.write_uint_le(max_managed_size.reinterpret_as_uint())
-  write_uint_width(buffer, 0UL, length_size)
-  write_uint_width(buffer, heap_undefined_address(offset_size), offset_size)
+  write_uint_width(buffer, next_huge_id, length_size)
+  write_uint_width(
+    buffer,
+    match huge_btree_address {
+      Some(address) => address
+      None => heap_undefined_address(offset_size)
+    },
+    offset_size,
+  )
   write_uint_width(buffer, 0UL, length_size)
   write_uint_width(buffer, heap_undefined_address(offset_size), offset_size)
   write_uint_width(buffer, managed_size.to_uint64(), length_size)
   write_uint_width(buffer, managed_size.to_uint64(), length_size)
   write_uint_width(buffer, 0UL, length_size)
   write_uint_width(buffer, record_count.to_uint64(), length_size)
-  write_uint_width(buffer, 0UL, length_size)
-  write_uint_width(buffer, 0UL, length_size)
+  write_uint_width(buffer, huge_object_size, length_size)
+  write_uint_width(buffer, huge_objects, length_size)
   write_uint_width(buffer, 0UL, length_size)
   write_uint_width(buffer, 0UL, length_size)
   buffer.write_uint16_le(table_width.to_uint16())
   write_uint_width(buffer, start_block_size.to_uint64(), length_size)
   write_uint_width(buffer, max_direct_size.to_uint64(), length_size)
   buffer.write_uint16_le(max_heap_bits.to_uint16())
-  buffer.write_uint16_le(1)
+  buffer.write_uint16_le(starting_rows.to_uint16())
   write_uint_width(buffer, root_address, offset_size)
-  buffer.write_uint16_le(0)
+  buffer.write_uint16_le(current_rows.to_uint16())
   buffer.write_uint_le(metadata_checksum(buffer.to_bytes(), 0, buffer.length()))
   buffer.to_bytes()
 }
@@ -6476,25 +6484,478 @@ fn encode_writer_dense_direct_block(
 }
 
 ///|
-fn encode_writer_dense_shared_ids(
+fn writer_heap_direct_header_size(
+  offset_size : Int32,
+  block_offset_size : Int32,
+) -> Int32 {
+  9 + offset_size + block_offset_size
+}
+
+///|
+fn writer_heap_block_size_at(
+  index : Int32,
+  start_block_size : Int32,
+  table_width : Int32,
+  max_direct_size : Int32,
+) -> Int32 raise Hdf5Error {
+  guard index >= 0 && table_width > 0 && start_block_size > 0 else {
+    raise InvalidField("invalid writer fractal heap block index")
+  }
+  let row = index / table_width
+  let shift = if row > 1 { row - 1 } else { 0 }
+  guard shift <= 30 else {
+    raise InvalidArgument("writer fractal heap block is too large")
+  }
+  let size = start_block_size << shift
+  guard size > 0 && size <= max_direct_size else {
+    raise InvalidArgument("writer fractal heap exceeds its direct block limit")
+  }
+  size
+}
+
+///|
+fn writer_heap_max_direct_rows(
+  start_block_size : Int32,
+  max_direct_size : Int32,
+) -> Int32 raise Hdf5Error {
+  let start_bits = heap_log2(
+    start_block_size.to_uint64(),
+    "writer fractal heap starting block size",
+  )
+  let direct_bits = heap_log2(
+    max_direct_size.to_uint64(),
+    "writer fractal heap maximum direct block size",
+  )
+  guard direct_bits >= start_bits else {
+    raise InvalidField("writer fractal heap direct block size is too small")
+  }
+  direct_bits - start_bits + 2
+}
+
+///|
+fn writer_heap_indirect_block_size(
+  offset_size : Int32,
+  block_offset_size : Int32,
+  table_width : Int32,
+  rows : Int32,
+) -> Int32 raise Hdf5Error {
+  guard rows > 0 &&
+    table_width > 0 &&
+    rows.to_int64() * table_width.to_int64() <= 0x7FFFFFFFL else {
+    raise InvalidArgument("writer fractal heap indirect block is too large")
+  }
+  5 +
+  offset_size +
+  block_offset_size +
+  rows * table_width * offset_size +
+  metadata_checksum_size
+}
+
+///|
+fn encode_writer_heap_indirect_block(
+  heap_address : UInt64,
+  offset_size : Int32,
+  block_offset_size : Int32,
+  table_width : Int32,
+  rows : Int32,
+  max_direct_rows : Int32,
+  direct_addresses : Array[UInt64],
+) -> Bytes raise Hdf5Error {
+  guard rows > 0 &&
+    table_width > 0 &&
+    max_direct_rows > 0 &&
+    rows <= max_direct_rows &&
+    direct_addresses.length() > 0 &&
+    direct_addresses.length() <= rows * table_width else {
+    raise InvalidField("invalid writer fractal heap indirect block")
+  }
+  let entries = rows * table_width
+  let content_size = 5 + offset_size + block_offset_size + entries * offset_size
+  let buffer = @buffer.Buffer::Buffer(
+    size_hint=content_size + metadata_checksum_size,
+  )
+  writer_write_bytes(buffer, b"FHIB")
+  buffer.write_byte(b'\x00')
+  write_uint_width(buffer, heap_address, offset_size)
+  write_uint_width(buffer, 0UL, block_offset_size)
+  let undefined = heap_undefined_address(offset_size)
+  for index in 0..<entries {
+    let address = if index < direct_addresses.length() {
+      direct_addresses[index]
+    } else {
+      undefined
+    }
+    write_uint_width(buffer, address, offset_size)
+  }
+  guard buffer.length() == content_size else {
+    raise InvalidField("writer fractal heap indirect block size mismatch")
+  }
+  buffer.write_uint_le(metadata_checksum(buffer.to_bytes(), 0, buffer.length()))
+  buffer.to_bytes()
+}
+
+///|
+fn encode_writer_dense_heap_storage(
   entries : Array[WritableDenseHeapEntry],
-) -> Array[Bytes] raise Hdf5Error {
+  heap_address : UInt64,
+  id_length : Int32,
+  minimum_block_size : Int32,
+  max_heap_bits : Int32,
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+  max_managed_size~ : Int32 = writer_dense_max_managed_size,
+  table_width~ : Int32 = 4,
+) -> (Bytes, Array[Bytes]) raise Hdf5Error {
+  guard id_length > 1 &&
+    id_length <= 255 &&
+    minimum_block_size > 0 &&
+    max_heap_bits > 0 &&
+    max_heap_bits <= 64 &&
+    table_width > 0 &&
+    max_managed_size > 0 &&
+    id_length - 1 < offset_size + length_size else {
+    raise InvalidField("invalid writer fractal heap configuration")
+  }
+  let block_offset_size = (max_heap_bits + 7) / 8
+  let managed_offset_size = block_offset_size
   let ids : Array[Bytes] = []
-  for entry in entries {
-    match entry.shared_id {
+  for _ in 0..<entries.length() {
+    ids.push(b"")
+  }
+  let managed : Array[Int32] = []
+  let huge : Array[Int32] = []
+  let mut maximum_managed_object = 0
+  let mut huge_data_size = 0
+  for index in 0..<entries.length() {
+    match entries[index].shared_id {
       Some(id) => {
-        guard id.length() == 8 else {
+        guard id.length() == id_length else {
           raise InvalidField(
             "writer shared-message heap ID has an invalid size",
           )
         }
-        ids.push(id)
+        ids[index] = id
       }
-      None => raise InvalidField("writer dense heap has an unallocated object")
+      None => {
+        let length = entries[index].data.length()
+        guard length > 0 else {
+          raise InvalidField("writer fractal heap object is empty")
+        }
+        if length <= max_managed_size {
+          managed.push(index)
+          if length > maximum_managed_object {
+            maximum_managed_object = length
+          }
+        } else {
+          huge.push(index)
+          guard huge_data_size <= 0x7FFFFFFF - length else {
+            raise InvalidArgument(
+              "writer fractal heap huge objects are too large",
+            )
+          }
+          huge_data_size = huge_data_size + length
+        }
+      }
     }
   }
-  ids
+  let direct_header_size = writer_heap_direct_header_size(
+    offset_size, block_offset_size,
+  )
+  let mut managed_data_size = 0
+  for index in managed {
+    managed_data_size = managed_data_size + entries[index].data.length()
+  }
+  let single_block = managed_data_size + direct_header_size <= 65536
+  let mut start_block_size = minimum_block_size
+  let mut max_direct_size = 65536
+  if managed.length() > 0 && single_block {
+    start_block_size = writer_next_power_of_two(
+      managed_data_size + direct_header_size,
+      minimum_block_size,
+    )
+    max_direct_size = writer_next_power_of_two(start_block_size, 65536)
+  } else if managed.length() > 0 {
+    start_block_size = writer_next_power_of_two(
+      if maximum_managed_object + direct_header_size > minimum_block_size {
+        maximum_managed_object + direct_header_size
+      } else {
+        minimum_block_size
+      },
+      minimum_block_size,
+    )
+    max_direct_size = writer_next_power_of_two(
+      if managed_data_size > start_block_size {
+        managed_data_size
+      } else {
+        start_block_size
+      },
+      if start_block_size > 65536 {
+        start_block_size
+      } else {
+        65536
+      },
+    )
+  } else {
+    max_direct_size = writer_next_power_of_two(start_block_size, 65536)
+  }
+  let managed_length_size = heap_byte_width(
+    if max_direct_size.to_uint64() < max_managed_size.to_uint64() {
+      max_direct_size.to_uint64()
+    } else {
+      max_managed_size.to_uint64()
+    },
+  )
+  let managed_id_length = 1 + managed_offset_size + managed_length_size
+  guard managed_id_length <= id_length else {
+    raise InvalidField("writer fractal heap managed IDs are too large")
+  }
+  let max_direct_rows = writer_heap_max_direct_rows(
+    start_block_size, max_direct_size,
+  )
+  guard max_direct_rows <= 0xFFFF / table_width else {
+    raise InvalidArgument("writer fractal heap has too many direct rows")
+  }
+  let max_blocks = max_direct_rows * table_width
+  let block_sizes : Array[Int32] = []
+  let block_of_entry = Array::make(entries.length(), -1)
+  let offset_of_entry = Array::make(entries.length(), 0)
+  if managed.length() > 0 {
+    let mut block_index = 0
+    let mut cursor = direct_header_size
+    for entry_index in managed {
+      let length = entries[entry_index].data.length()
+      while true {
+        if block_index >= block_sizes.length() {
+          guard block_index < max_blocks else {
+            raise InvalidArgument(
+              "writer fractal heap needs more direct blocks than its limit",
+            )
+          }
+          block_sizes.push(
+            writer_heap_block_size_at(
+              block_index, start_block_size, table_width, max_direct_size,
+            ),
+          )
+          cursor = direct_header_size
+        }
+        let size = block_sizes[block_index]
+        if cursor + length <= size {
+          block_of_entry[entry_index] = block_index
+          offset_of_entry[entry_index] = cursor
+          cursor = cursor + length
+          break
+        }
+        block_index = block_index + 1
+        cursor = direct_header_size
+      }
+    }
+  }
+  let block_count = block_sizes.length()
+  let use_indirect = block_count > 0 && !single_block
+  let rows = if use_indirect {
+    (block_count + table_width - 1) / table_width
+  } else {
+    0
+  }
+  guard rows <= max_direct_rows else {
+    raise InvalidArgument(
+      "writer fractal heap indirect block has too many rows",
+    )
+  }
+  let heap_header_size = writer_dense_heap_header_size(offset_size, length_size)
+  let mut block_start = heap_header_size
+  if use_indirect {
+    block_start = block_start +
+      writer_heap_indirect_block_size(
+        offset_size, block_offset_size, table_width, rows,
+      )
+  }
+  let block_offsets : Array[UInt64] = []
+  let block_addresses : Array[UInt64] = []
+  let mut heap_offset = 0UL
+  let mut relative = block_start
+  for size in block_sizes {
+    block_offsets.push(heap_offset)
+    block_addresses.push(heap_address + relative.to_uint64())
+    heap_offset = heap_offset + size.to_uint64()
+    relative = relative + size
+  }
+  let managed_space_size = heap_offset
+  let mut huge_relative = writer_align(relative)
+  let huge_addresses : Array[UInt64] = []
+  for entry_index in huge {
+    huge_relative = writer_align(huge_relative)
+    huge_addresses.push(heap_address + huge_relative.to_uint64())
+    huge_relative = huge_relative + entries[entry_index].data.length()
+  }
+  let huge_btree_relative = writer_align(huge_relative)
+  let huge_id_size = id_length - 1
+  let huge_record_size = offset_size + length_size * 2
+  let huge_records : Array[Bytes] = []
+  for index in 0..<huge.length() {
+    let entry_index = huge[index]
+    let record = @buffer.Buffer::Buffer(size_hint=huge_record_size)
+    write_uint_width(record, huge_addresses[index], offset_size)
+    write_uint_width(
+      record,
+      entries[entry_index].data.length().to_uint64(),
+      length_size,
+    )
+    write_uint_width(record, (index + 1).to_uint64(), length_size)
+    guard record.length() == huge_record_size else {
+      raise InvalidField("writer fractal heap huge record size mismatch")
+    }
+    huge_records.push(record.to_bytes())
+  }
+  let huge_btree_address = heap_address + huge_btree_relative.to_uint64()
+  let huge_btree = if huge.length() > 0 {
+    encode_writer_metadata_btree(
+      1,
+      writer_dense_btree_node_size,
+      huge_record_size,
+      huge_records,
+      huge_btree_address,
+      offset_size~,
+      length_size~,
+    )
+  } else {
+    b""
+  }
+  for index in managed {
+    let block_index = block_of_entry[index]
+    guard block_index >= 0 && block_index < block_count else {
+      raise InvalidField("writer fractal heap object has no block")
+    }
+    let offset = block_offsets[block_index] + offset_of_entry[index].to_uint64()
+    let id = @buffer.Buffer::Buffer(size_hint=id_length)
+    id.write_byte(b'\x00')
+    write_uint_width(id, offset, managed_offset_size)
+    write_uint_width(
+      id,
+      entries[index].data.length().to_uint64(),
+      managed_length_size,
+    )
+    while id.length() < id_length {
+      id.write_byte(b'\x00')
+    }
+    ids[index] = id.to_bytes()
+  }
+  for index in 0..<huge.length() {
+    let id = @buffer.Buffer::Buffer(size_hint=id_length)
+    id.write_byte(b'\x10')
+    write_uint_width(id, (index + 1).to_uint64(), huge_id_size)
+    guard id.length() == id_length else {
+      raise InvalidField("writer fractal heap huge ID size mismatch")
+    }
+    ids[huge[index]] = id.to_bytes()
+  }
+  let direct_buffers : Array[@buffer.Buffer] = []
+  for index in 0..<block_count {
+    let buffer = @buffer.Buffer::Buffer(size_hint=block_sizes[index])
+    writer_write_bytes(buffer, b"FHDB")
+    buffer.write_byte(b'\x00')
+    write_uint_width(buffer, heap_address, offset_size)
+    write_uint_width(buffer, block_offsets[index], block_offset_size)
+    let checksum_offset = buffer.length()
+    buffer.write_uint_le(0U)
+    guard checksum_offset == direct_header_size - metadata_checksum_size else {
+      raise InvalidField("writer fractal heap direct block header mismatch")
+    }
+    direct_buffers.push(buffer)
+  }
+  for index in managed {
+    let block_index = block_of_entry[index]
+    let buffer = direct_buffers[block_index]
+    let expected = offset_of_entry[index]
+    guard buffer.length() <= expected else {
+      raise InvalidField("writer fractal heap direct block overlap")
+    }
+    writer_write_zeros(buffer, expected - buffer.length())
+    writer_write_bytes(buffer, entries[index].data)
+  }
+  let direct_blocks : Array[Bytes] = []
+  for index in 0..<block_count {
+    let size = block_sizes[index]
+    let buffer = direct_buffers[index]
+    guard buffer.length() <= size else {
+      raise InvalidField("writer fractal heap direct block is too small")
+    }
+    writer_write_zeros(buffer, size - buffer.length())
+    let checksum_offset = direct_header_size - metadata_checksum_size
+    direct_blocks.push(
+      patched_zeroed_checksum(buffer.to_bytes(), checksum_offset),
+    )
+  }
+  let root_address = if block_count == 0 {
+    heap_undefined_address(offset_size)
+  } else if use_indirect {
+    heap_address + heap_header_size.to_uint64()
+  } else {
+    block_addresses[0]
+  }
+  let header = encode_writer_dense_heap_header(
+    root_address,
+    id_length,
+    if block_count > 0 {
+      start_block_size
+    } else {
+      minimum_block_size
+    },
+    managed_space_size.to_int(),
+    max_direct_size,
+    max_heap_bits,
+    managed.length(),
+    max_managed_size,
+    table_width,
+    offset_size~,
+    length_size~,
+    next_huge_id=(huge.length() + 1).to_uint64(),
+    huge_btree_address=if huge.length() > 0 {
+      Some(huge_btree_address)
+    } else {
+      None
+    },
+    huge_object_size=huge_data_size.to_uint64(),
+    huge_objects=huge.length().to_uint64(),
+    current_rows=rows,
+  )
+  let output = @buffer.Buffer::Buffer(
+    size_hint=heap_header_size +
+      (if use_indirect {
+        writer_heap_indirect_block_size(
+          offset_size, block_offset_size, table_width, rows,
+        )
+      } else {
+        0
+      }) +
+      managed_space_size.to_int() +
+      huge_btree_relative +
+      huge_btree.length(),
+  )
+  writer_write_bytes(output, header)
+  if use_indirect {
+    writer_write_bytes(
+      output,
+      encode_writer_heap_indirect_block(
+        heap_address, offset_size, block_offset_size, table_width, rows, max_direct_rows,
+        block_addresses,
+      ),
+    )
+  }
+  for block in direct_blocks {
+    writer_write_bytes(output, block)
+  }
+  writer_write_zeros(output, writer_align(output.length()) - output.length())
+  for index in 0..<huge.length() {
+    writer_write_zeros(output, writer_align(output.length()) - output.length())
+    writer_write_bytes(output, entries[huge[index]].data)
+  }
+  writer_write_zeros(output, huge_btree_relative - output.length())
+  writer_write_bytes(output, huge_btree)
+  (output.to_bytes(), ids)
 }
+
+///|
 
 ///|
 priv struct WriterMetadataBTreeShape {
@@ -6938,54 +7399,13 @@ fn Hdf5Writer::encode_dense_metadata(
   }
   writer_sort_dense_entries(entries)
   let record_size = if group { 11 } else { 17 }
-  let heap_offset_size = if group { 4 } else { 5 }
   let max_heap_bits = if group { 32 } else { 40 }
   let id_length = if group { 7 } else { 8 }
   let minimum_block_size = if group { 512 } else { 1024 }
-  let direct_overhead = 4 + 1 + 8 + heap_offset_size + metadata_checksum_size
-  let mut data_size = direct_overhead
-  let mut local_count = 0
-  for entry in entries {
-    if entry.shared_id is None {
-      local_count = local_count + 1
-      data_size = data_size + entry.data.length()
-    }
-  }
-  let block_size = writer_next_power_of_two(data_size, minimum_block_size)
-  let max_direct_size = writer_next_power_of_two(block_size, 65536)
-  let heap_header_size = writer_dense_heap_header_size(8, 8)
-  let root_address = if local_count > 0 {
-    heap_address + heap_header_size.to_uint64()
-  } else {
-    0xFFFFFFFFFFFFFFFFUL
-  }
-  let index_address = if local_count > 0 {
-    heap_address + heap_header_size.to_uint64() + block_size.to_uint64()
-  } else {
-    heap_address + heap_header_size.to_uint64()
-  }
-  let heap_header = encode_writer_dense_heap_header(
-    root_address,
-    id_length,
-    block_size,
-    if local_count > 0 {
-      block_size
-    } else {
-      0
-    },
-    max_direct_size,
-    max_heap_bits,
-    local_count,
-    writer_dense_max_managed_size,
-    4,
+  let (heap_bytes, ids) = encode_writer_dense_heap_storage(
+    entries, heap_address, id_length, minimum_block_size, max_heap_bits,
   )
-  let (direct_block, ids) = if local_count > 0 {
-    encode_writer_dense_direct_block(
-      heap_address, block_size, heap_offset_size, entries,
-    )
-  } else {
-    (b"", encode_writer_dense_shared_ids(entries))
-  }
+  let index_address = heap_address + heap_bytes.length().to_uint64()
   let records : Array[Bytes] = []
   for index in 0..<entries.length() {
     let record = @buffer.Buffer::Buffer(size_hint=record_size)
@@ -7050,11 +7470,6 @@ fn Hdf5Writer::encode_dense_metadata(
     records,
     index_address,
   )
-  let heap_bytes = @buffer.Buffer::Buffer(
-    size_hint=heap_header.length() + direct_block.length(),
-  )
-  writer_write_bytes(heap_bytes, heap_header)
-  writer_write_bytes(heap_bytes, direct_block)
   let order_index_address = index_address + index_bytes.length().to_uint64()
   let order_bytes = encode_writer_metadata_btree(
     if group {
@@ -7067,7 +7482,7 @@ fn Hdf5Writer::encode_dense_metadata(
     order_records,
     order_index_address,
   )
-  (heap_bytes.to_bytes(), index_bytes, order_bytes)
+  (heap_bytes, index_bytes, order_bytes)
 }
 
 ///|

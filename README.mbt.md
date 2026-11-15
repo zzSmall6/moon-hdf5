@@ -268,10 +268,12 @@ let output = writer.encode()
 - Numeric output covers signed and unsigned 1–8-byte integers plus IEEE
   float16/32/64 in either byte order. `Float16Values` and
   `Datatype::write_float(2)` write half-precision values.
-- Dense link and attribute collections support 9–65,535 records with encoded
-  heap objects up to 65,535 bytes. Name and creation-order indexes use
-  multi-level v2 B-trees, so large collections span multiple leaf and internal
-  nodes. Larger sets remain compact and use OCHK continuation chunks.
+- Dense link and attribute collections support 9–65,535 records. Managed heap
+  objects up to 65,535 bytes are packed into one or more FHDB direct blocks,
+  using an FHIB indirect root when needed; larger encoded objects use huge heap
+  IDs and a type-1 v2 B-tree. Name and creation-order indexes use multi-level
+  v2 B-trees, so large collections span multiple leaf and internal nodes.
+  Larger sets remain compact and use OCHK continuation chunks.
 - Whole attributes, fills and encoded filter pipelines up to 65,535 bytes use one
   SOHM table and heap. Equal fills, attributes and pipelines reuse one heap ID.
   Committed datatypes use wrapper version 3 storage type 2 and are referenced by
@@ -464,13 +466,13 @@ let deleted = @lib.Hdf5File::parse(renamed).delete_attribute(
 
 These APIs accept groups, datasets and committed datatypes in bytes-backed
 `Hdf5File` images and return a complete new image. Compact storage is used for
-up to eight attributes; larger collections are rebuilt as dense storage when
-every encoded attribute message is at most 65,535 bytes. Existing creation order
-is retained. Adding fixed-size values and variable-length UTF-8 strings or
-sequences is supported, including vlen strings and sequences nested in compound
-and array members, as are legacy and version-4 object, region and attribute
-references. Reference targets must already exist in the same file; region
-targets must be datasets with a non-null dataspace, and version-4
+up to eight attributes; larger collections are rebuilt as dense storage,
+including multiple direct heap blocks and huge objects when needed. Existing
+creation order is retained. Adding fixed-size values and variable-length UTF-8
+strings or sequences is supported, including vlen strings and sequences nested
+in compound and array members, as are legacy and version-4 object, region and
+attribute references. Reference targets must already exist in the same file;
+region targets must be datasets with a non-null dataspace, and version-4
 attribute-reference names must name an existing attribute. New vlen and
 indirect-reference payloads use appended global-heap collections. Shared
 attribute messages are resolved and written back as local messages, leaving the
@@ -600,12 +602,13 @@ the items below summarize the main user-visible gaps.
   Variable-length values accept shuffle and deflate; Fletcher32 and
   scale-offset are rejected for them. Registered custom filters can be combined
   with built-in filters and participate in per-chunk masks and shared pipelines.
-- **Dense and shared metadata:** dense output is limited to 9–65,535 records
-  with encoded heap objects up to 65,535 bytes and one direct FHDB block. Name
-  and creation-order indexes use multi-level BTHD/BTIN/BTLF v2 B-trees.
-  Indirect/huge heap blocks and a free-space manager are not emitted. One SOHM
-  table and heap are written; multiple tables, multiple heaps and heap extension
-  across blocks are not.
+- **Dense and shared metadata:** dense output is limited to 9–65,535 records.
+  Managed objects up to 65,535 bytes are packed into multiple FHDB direct
+  blocks with an FHIB indirect root when needed; larger encoded objects use
+  huge heap IDs and a type-1 v2 B-tree. Name and creation-order indexes use
+  multi-level BTHD/BTIN/BTLF v2 B-trees. A free-space manager is not emitted.
+  One SOHM table and heap are written; multiple tables, multiple heaps and heap
+  extension across blocks are not.
 - **External raw data:** only contiguous, unfiltered, fixed-size storage is
   supported. It requires `Hdf5Resolver` and caller-registered, caller-managed
   files; `Hdf5File` alone cannot dereference it. Remote URLs, filtered/chunked
