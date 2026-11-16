@@ -82,7 +82,10 @@ Fletcher32, N-bit, integer scale-offset and f32/f64 decimal scale-offset.
 Per-chunk masks follow HDF5 filter order. N-bit parameters are parsed
 recursively for atomic fields, arrays, compounds and no-op members; decoding
 restores the declared precision and offset bits in the stored byte order.
-N-bit is read-only. Non-finite scale-offset inputs are rejected.
+Writer and patch pipelines emit the same recursive N-bit layout. N-bit must
+precede lossless filters, with Shuffle allowed only before it; Shuffle plus
+N-bit requires full-precision fields. Non-finite scale-offset inputs are
+rejected.
 Dataset chunk pipelines may also contain caller-registered IDs. Registration is
 owned by `Hdf5File` or `Hdf5Resolver`; callbacks receive the filter parameters,
 element width and expected decoded size, and the pipeline bounds intermediate

@@ -1678,3 +1678,165 @@ test "patch datatype equality tracks numeric and bitfield byte order" {
   let big_string = { ..little_string, little_endian: false, }
   assert_true(datatype_semantically_equal(little_string, big_string))
 }
+
+///|
+test "chunked N-bit datasets can be patched through their datatype" {
+  let file = Hdf5File::parse(@fs.read_file_to_bytes("testdata/nbit_filters.h5"))
+  let datatype = file.read_dataset_metadata("/padded_int32").datatype
+  let patched = file.patch_dataset_values(
+    "/padded_int32",
+    StructuredValues(datatype, [
+      SignedInteger(-1L),
+      SignedInteger(2047L),
+      SignedInteger(-2048L),
+      SignedInteger(123L),
+      SignedInteger(-456L),
+      SignedInteger(0L),
+      SignedInteger(7L),
+    ]),
+  )
+  let patched_file = Hdf5File::parse(patched)
+  assert_eq(integer_values(patched_file.read_dataset("/padded_int32")), [
+    -1L, 2047L, -2048L, 123L, -456L, 0L, 7L,
+  ])
+  assert_eq(
+    patched_file.read_dataset_metadata("/padded_int32").datatype.bit_precision,
+    12,
+  )
+}
+
+///|
+test "compound array and no-op N-bit datasets patch recursively" {
+  let file = Hdf5File::parse(@fs.read_file_to_bytes("testdata/nbit_filters.h5"))
+  let compound_type = file.read_dataset_metadata("/padded_compound").datatype
+  let compound_patch = file.patch_dataset_values(
+    "/padded_compound",
+    StructuredValues(compound_type, [
+      Compound([
+        { name: "left", value: SignedInteger(-1L), },
+        { name: "right", value: SignedInteger(1L), },
+      ]),
+      Compound([
+        { name: "left", value: SignedInteger(2047L), },
+        { name: "right", value: SignedInteger(-2L), },
+      ]),
+      Compound([
+        { name: "left", value: SignedInteger(-2048L), },
+        { name: "right", value: SignedInteger(3L), },
+      ]),
+      Compound([
+        { name: "left", value: SignedInteger(123L), },
+        { name: "right", value: SignedInteger(-4L), },
+      ]),
+      Compound([
+        { name: "left", value: SignedInteger(0L), },
+        { name: "right", value: SignedInteger(5L), },
+      ]),
+    ]),
+  ) catch {
+    error => fail("compound N-bit patch: " + error.message())
+  }
+  match
+    Hdf5File::parse(compound_patch).read_dataset("/padded_compound").values {
+    Structured(values) =>
+      assert_eq(values, [
+        Compound([
+          { name: "left", value: SignedInteger(-1L), },
+          { name: "right", value: SignedInteger(1L), },
+        ]),
+        Compound([
+          { name: "left", value: SignedInteger(2047L), },
+          { name: "right", value: SignedInteger(-2L), },
+        ]),
+        Compound([
+          { name: "left", value: SignedInteger(-2048L), },
+          { name: "right", value: SignedInteger(3L), },
+        ]),
+        Compound([
+          { name: "left", value: SignedInteger(123L), },
+          { name: "right", value: SignedInteger(-4L), },
+        ]),
+        Compound([
+          { name: "left", value: SignedInteger(0L), },
+          { name: "right", value: SignedInteger(5L), },
+        ]),
+      ])
+    _ => fail("expected patched N-bit compound")
+  }
+
+  let array_type = file.read_dataset_metadata("/padded_array").datatype
+  let array_patch = file.patch_dataset_values(
+    "/padded_array",
+    StructuredValues(array_type, [
+      Elements([
+        SignedInteger(0L),
+        SignedInteger(1L),
+        SignedInteger(-1L),
+        SignedInteger(2L),
+        SignedInteger(-2L),
+        SignedInteger(3L),
+      ]),
+      Elements([
+        SignedInteger(-3L),
+        SignedInteger(4L),
+        SignedInteger(-4L),
+        SignedInteger(5L),
+        SignedInteger(-5L),
+        SignedInteger(6L),
+      ]),
+      Elements([
+        SignedInteger(-6L),
+        SignedInteger(7L),
+        SignedInteger(-7L),
+        SignedInteger(8L),
+        SignedInteger(-8L),
+        SignedInteger(9L),
+      ]),
+      Elements([
+        SignedInteger(-9L),
+        SignedInteger(10L),
+        SignedInteger(-10L),
+        SignedInteger(11L),
+        SignedInteger(-11L),
+        SignedInteger(12L),
+      ]),
+    ]),
+  ) catch {
+    error => fail("array N-bit patch: " + error.message())
+  }
+  match Hdf5File::parse(array_patch).read_dataset("/padded_array").values {
+    Structured(values) =>
+      assert_eq(
+        values[1],
+        Elements([
+          SignedInteger(-3L),
+          SignedInteger(4L),
+          SignedInteger(-4L),
+          SignedInteger(5L),
+          SignedInteger(-5L),
+          SignedInteger(6L),
+        ]),
+      )
+    _ => fail("expected patched N-bit array")
+  }
+
+  let enum_type = file.read_dataset_metadata("/enum_noop").datatype
+  let enum_patch = file.patch_dataset_values(
+    "/enum_noop",
+    StructuredValues(enum_type, [
+      Enumeration("HIGH"),
+      Enumeration("LOW"),
+      Enumeration("HIGH"),
+      Enumeration("LOW"),
+      Enumeration("HIGH"),
+      Enumeration("LOW"),
+    ]),
+  ) catch {
+    error => fail("no-op N-bit patch: " + error.message())
+  }
+  match Hdf5File::parse(enum_patch).read_dataset("/enum_noop").values {
+    Enums(values) =>
+      assert_eq(values, ["HIGH", "LOW", "HIGH", "LOW", "HIGH", "LOW"])
+    _ => fail("expected patched N-bit enum")
+  }
+}

@@ -625,6 +625,65 @@ def verify_file(path: Path) -> None:
             (1, 0, b"deflate"),
         ]
         assert records[0][2][:8] == (0, 2, 3, 1, 4, 0, 0, 1)
+        nbit_padded = handle["types/nbit_padded"]
+        np.testing.assert_array_equal(
+            nbit_padded[:], [-2048, -7, 0, 7, 2047, 300, -300]
+        )
+        assert nbit_padded.dtype == np.dtype("<i4")
+        assert nbit_padded.fillvalue == -7
+        (filter_id, flags, parameters, name), = filter_records(nbit_padded)
+        assert (filter_id, flags, name) == (5, 0, b"nbit")
+        assert parameters == (8, 0, 3, 1, 4, 0, 12, 4)
+        for index in range(nbit_padded.id.get_num_chunks()):
+            info = nbit_padded.id.get_chunk_info(index)
+            raw_size = len(nbit_padded.id.read_direct_chunk(info.chunk_offset)[1])
+            assert raw_size < int(np.prod(nbit_padded.chunks)) * nbit_padded.dtype.itemsize
+        nbit_pipeline = handle["types/nbit_pipeline"]
+        np.testing.assert_array_equal(nbit_pipeline[:], [-256, -1, 0, 1, 255])
+        assert nbit_pipeline.dtype == np.dtype(">i2")
+        records = filter_records(nbit_pipeline)
+        assert [(record[0], record[1], record[3]) for record in records] == [
+            (5, 0, b"nbit"),
+            (1, 0, b"deflate"),
+        ]
+        assert records[0][2] == (8, 0, 4, 1, 2, 1, 9, 3)
+        nbit_compound = handle["types/nbit_compound"]
+        assert nbit_compound.dtype.itemsize == 6
+        assert nbit_compound[0]["left"] == -8
+        assert nbit_compound[0]["right"] == -256
+        assert nbit_compound[1]["left"] == 2047
+        assert nbit_compound[1]["right"] == 255
+        (filter_id, flags, parameters, name), = filter_records(nbit_compound)
+        assert (filter_id, flags, name) == (5, 0, b"nbit")
+        assert parameters[:16] == (
+            18, 0, 2, 3, 6, 2, 0, 1, 4, 0, 12, 4, 4, 1, 2, 1
+        )
+        right = nbit_compound.id.get_type().get_member_type(1)
+        assert (right.get_precision(), right.get_offset()) == (9, 3)
+        nbit_array = handle["types/nbit_array"]
+        np.testing.assert_array_equal(
+            nbit_array[:], [[-2048, 7], [300, -300]]
+        )
+        assert nbit_array.dtype == np.dtype(("<i4", (2,)))
+        (filter_id, flags, parameters, name), = filter_records(nbit_array)
+        assert (filter_id, flags, name) == (5, 0, b"nbit")
+        assert parameters == (10, 0, 2, 2, 8, 1, 4, 0, 12, 4)
+        nbit_complex = handle["types/nbit_complex"]
+        np.testing.assert_array_equal(
+            nbit_complex[:], [1.5 - 2.25j, -3.0 + 4.5j]
+        )
+        assert nbit_complex.dtype == np.dtype("<c8")
+        (filter_id, flags, parameters, name), = filter_records(nbit_complex)
+        assert (filter_id, flags, name) == (5, 0, b"nbit")
+        assert parameters[:9] == (18, 1, 2, 3, 8, 2, 0, 1, 4)
+        nbit_noop = handle["types/nbit_noop"]
+        assert nbit_noop.asstr()[:].tolist() == ["alpha", "beta", "gamma"]
+        records = filter_records(nbit_noop)
+        assert [(record[0], record[1], record[3]) for record in records] == [
+            (5, 0, b"nbit"),
+            (1, 0, b"deflate"),
+        ]
+        assert records[0][2] == (3, 1, 2)
         growing_f32 = handle["types/growing_f32"]
         np.testing.assert_array_equal(growing_f32[:], [1.25, 2.5, 3.75, -1.0])
         assert growing_f32.dtype == np.dtype("<f4")

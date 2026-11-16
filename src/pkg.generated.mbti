@@ -223,8 +223,8 @@ pub fn Datatype::write_enum(Self, Array[EnumMember]) -> Self raise Hdf5Error
 pub fn Datatype::write_fixed_string(Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_float(Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_float_with_order(Int32, Bool) -> Self raise Hdf5Error
-pub fn Datatype::write_integer(Bool, Int32) -> Self raise Hdf5Error
-pub fn Datatype::write_integer_with_order(Bool, Int32, Bool) -> Self raise Hdf5Error
+pub fn Datatype::write_integer(Bool, Int32, precision? : Int32, offset? : Int32) -> Self raise Hdf5Error
+pub fn Datatype::write_integer_with_order(Bool, Int32, Bool, precision? : Int32, offset? : Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_object_reference() -> Self
 pub fn Datatype::write_object_reference_with_address_size(Int32) -> Self raise Hdf5Error
 pub fn Datatype::write_opaque(Int32, String) -> Self raise Hdf5Error
@@ -446,6 +446,7 @@ pub(all) enum Hdf5WriteFilter {
   Shuffle
   Deflate(Int32)
   Fletcher32
+  Nbit
   ScaleOffset(Int32)
   Custom(Int32, Array[UInt32])
 }

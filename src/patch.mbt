@@ -1098,6 +1098,26 @@ fn patch_write_filters(
         }
         result.push(Fletcher32)
       }
+      5 => {
+        let parameters = filter.parameters
+        guard parameters.length() >= 3 &&
+          parameters[0] == parameters.length().reinterpret_as_uint() &&
+          parameters[1] <= 1U &&
+          parameters[2] > 0U &&
+          parameters[2] <= 0x7FFFFFFFU else {
+          raise InvalidField("invalid N-bit filter parameters")
+        }
+        let expected = nbit_client_data(
+          datatype,
+          parameters[2].reinterpret_as_int(),
+        )
+        guard parameters == expected else {
+          raise InvalidField(
+            "N-bit filter parameters do not match the dataset datatype",
+          )
+        }
+        result.push(Nbit)
+      }
       6 => {
         let parameters = filter.parameters
         guard parameters.length() == 20 &&
@@ -1574,6 +1594,7 @@ fn encode_missing_chunk_from_payload(
     write_filters,
     0U,
     element_size,
+    datatype,
     values,
     filter_fill,
     custom_filters,
@@ -2735,6 +2756,7 @@ fn Hdf5File::patch_chunked_dataset_data(
                 write_filters,
                 0U,
                 metadata.datatype.size,
+                metadata.datatype,
                 values,
                 filter_fill,
                 self.custom_filters,
@@ -2902,6 +2924,7 @@ fn Hdf5File::patch_chunked_dataset_data(
               write_filters,
               record.mask,
               metadata.datatype.size,
+              metadata.datatype,
               values,
               filter_fill,
               self.custom_filters,

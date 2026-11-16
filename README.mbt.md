@@ -161,7 +161,9 @@ Dataset creation options:
   fixed-string-to-vlen-string source values are converted to the virtual
   datatype.
 
-Fixed-size values support Shuffle, deflate, Fletcher32 and scale-offset.
+Fixed-size values support Shuffle, N-bit, deflate, Fletcher32 and scale-offset.
+N-bit must precede lossless filters, with Shuffle only before it; combining
+Shuffle with N-bit requires full-precision fields.
 Variable-length values support Shuffle/deflate and must use fixed-size sequence
 bases. Nested variable-length and reference members are encoded recursively.
 Register custom encoders with `Hdf5Writer::add_custom_filter` before adding a

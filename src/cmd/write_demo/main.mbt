@@ -699,6 +699,88 @@ fn run(args : Array[String]) -> Int32 {
       fill_value=Float32Values([Float(-9.5)]),
       filters=[ScaleOffset(2), Deflate(6)],
     )
+    let nbit_i32 = @lib.Datatype::write_integer(true, 4, precision=12, offset=4)
+    writer.add_chunked_dataset(
+      "/types/nbit_padded",
+      [7UL],
+      [3U],
+      StructuredValues(nbit_i32, [
+        @lib.SignedInteger(-2048L),
+        @lib.SignedInteger(-7L),
+        @lib.SignedInteger(0L),
+        @lib.SignedInteger(7L),
+        @lib.SignedInteger(2047L),
+        @lib.SignedInteger(300L),
+        @lib.SignedInteger(-300L),
+      ]),
+      fill_value=StructuredValues(nbit_i32, [@lib.SignedInteger(-7L)]),
+      filters=[Nbit],
+    )
+    let nbit_i16_be = @lib.Datatype::write_integer_with_order(
+      true,
+      2,
+      false,
+      precision=9,
+      offset=3,
+    )
+    writer.add_chunked_dataset(
+      "/types/nbit_pipeline",
+      [5UL],
+      [4U],
+      StructuredValues(nbit_i16_be, [
+        @lib.SignedInteger(-256L),
+        @lib.SignedInteger(-1L),
+        @lib.SignedInteger(0L),
+        @lib.SignedInteger(1L),
+        @lib.SignedInteger(255L),
+      ]),
+      filters=[Nbit, Deflate(6)],
+    )
+    let nbit_compound = @lib.Datatype::write_compound([
+      ("left", nbit_i32),
+      ("right", nbit_i16_be),
+    ])
+    writer.add_chunked_dataset(
+      "/types/nbit_compound",
+      [2UL],
+      [2U],
+      StructuredValues(nbit_compound, [
+        @lib.Compound([
+          { name: "left", value: @lib.SignedInteger(-8L), },
+          { name: "right", value: @lib.SignedInteger(-256L), },
+        ]),
+        @lib.Compound([
+          { name: "left", value: @lib.SignedInteger(2047L), },
+          { name: "right", value: @lib.SignedInteger(255L), },
+        ]),
+      ]),
+      filters=[Nbit],
+    )
+    let nbit_array = @lib.Datatype::write_array(nbit_i32, [2UL])
+    writer.add_chunked_dataset(
+      "/types/nbit_array",
+      [2UL],
+      [2U],
+      StructuredValues(nbit_array, [
+        @lib.Elements([@lib.SignedInteger(-2048L), @lib.SignedInteger(7L)]),
+        @lib.Elements([@lib.SignedInteger(300L), @lib.SignedInteger(-300L)]),
+      ]),
+      filters=[Nbit],
+    )
+    writer.add_chunked_dataset(
+      "/types/nbit_complex",
+      [2UL],
+      [2U],
+      Complex64Values([(1.5, -2.25), (-3.0, 4.5)]),
+      filters=[Nbit],
+    )
+    writer.add_chunked_dataset(
+      "/types/nbit_noop",
+      [3UL],
+      [2U],
+      FixedStringValues(["alpha", "beta", "gamma"], 8),
+      filters=[Nbit, Deflate(6)],
+    )
     writer.add_extensible_dataset(
       "/types/growing_f32",
       [0UL],

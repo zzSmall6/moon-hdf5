@@ -3179,6 +3179,216 @@ test "writer emits floating-point scale-offset chunks" {
 }
 
 ///|
+test "writer emits N-bit chunks for padded arrays compounds and no-op types" {
+  let writer = Hdf5Writer::new()
+  let padded = Datatype::write_integer(true, 4, precision=12, offset=4)
+  let padded_be = Datatype::write_integer_with_order(
+    true,
+    2,
+    false,
+    precision=9,
+    offset=3,
+  )
+  let unsigned = Datatype::write_integer(false, 1, precision=4, offset=2)
+  writer.add_chunked_dataset(
+    "/padded",
+    [7UL],
+    [3U],
+    StructuredValues(padded, [
+      SignedInteger(-2048L),
+      SignedInteger(-7L),
+      SignedInteger(0L),
+      SignedInteger(7L),
+      SignedInteger(2047L),
+      SignedInteger(300L),
+      SignedInteger(-300L),
+    ]),
+    fill_value=StructuredValues(padded, [SignedInteger(-7L)]),
+    filters=[Nbit],
+  )
+  writer.add_chunked_dataset(
+    "/padded_be",
+    [5UL],
+    [4U],
+    StructuredValues(padded_be, [
+      SignedInteger(-256L),
+      SignedInteger(-1L),
+      SignedInteger(0L),
+      SignedInteger(1L),
+      SignedInteger(255L),
+    ]),
+    filters=[Nbit, Deflate(6)],
+  )
+  writer.add_chunked_dataset(
+    "/unsigned",
+    [3UL],
+    [3U],
+    StructuredValues(unsigned, [
+      UnsignedInteger(0UL),
+      UnsignedInteger(1UL),
+      UnsignedInteger(15UL),
+    ]),
+    filters=[Nbit],
+  )
+  let compound = Datatype::write_compound([
+    ("left", padded),
+    ("right", padded_be),
+  ])
+  writer.add_chunked_dataset(
+    "/compound",
+    [2UL],
+    [2U],
+    StructuredValues(compound, [
+      Compound([
+        { name: "left", value: SignedInteger(-8L), },
+        { name: "right", value: SignedInteger(-256L), },
+      ]),
+      Compound([
+        { name: "left", value: SignedInteger(2047L), },
+        { name: "right", value: SignedInteger(255L), },
+      ]),
+    ]),
+    filters=[Nbit],
+  )
+  let array = Datatype::write_array(padded, [2UL])
+  writer.add_chunked_dataset(
+    "/array",
+    [2UL],
+    [2U],
+    StructuredValues(array, [
+      Elements([SignedInteger(-2048L), SignedInteger(7L)]),
+      Elements([SignedInteger(300L), SignedInteger(-300L)]),
+    ]),
+    filters=[Nbit],
+  )
+  writer.add_chunked_dataset(
+    "/noop",
+    [3UL],
+    [2U],
+    FixedStringValues(["alpha", "beta", "gamma"], 8),
+    filters=[Nbit, Deflate(6)],
+  )
+  writer.add_dataset("/target", [1UL], Int64Values([9L]))
+  writer.add_chunked_dataset(
+    "/reference",
+    [2UL],
+    [2U],
+    ObjectReferenceValues([Some("/target"), None]),
+    filters=[Nbit],
+  )
+
+  let file = Hdf5File::parse(writer.encode())
+  let chunked_header = file.object_header_at(file.resolve("/compound").address)
+  let chunked_filters = parse_filters(
+    chunked_header.first(msg_filter_pipeline).unwrap(),
+  )
+  assert_eq(chunked_filters[0].parameters, [
+    18U, 0U, 2U, 3U, 6U, 2U, 0U, 1U, 4U, 0U, 12U, 4U, 4U, 1U, 2U, 1U, 9U, 3U,
+  ])
+  assert_eq(integer_values(file.read_dataset("/padded")), [
+    -2048L, -7L, 0L, 7L, 2047L, 300L, -300L,
+  ])
+  assert_eq(integer_values(file.read_dataset("/padded_be")), [
+    -256L, -1L, 0L, 1L, 255L,
+  ])
+  assert_eq(unsigned_values(file.read_dataset("/unsigned")), [0UL, 1UL, 15UL])
+  match file.read_dataset("/compound").values {
+    Structured(values) =>
+      assert_eq(values, [
+        Compound([
+          { name: "left", value: SignedInteger(-8L), },
+          { name: "right", value: SignedInteger(-256L), },
+        ]),
+        Compound([
+          { name: "left", value: SignedInteger(2047L), },
+          { name: "right", value: SignedInteger(255L), },
+        ]),
+      ])
+    _ => abort("expected N-bit compound")
+  }
+  match file.read_dataset("/array").values {
+    Structured(values) =>
+      assert_eq(values, [
+        Elements([SignedInteger(-2048L), SignedInteger(7L)]),
+        Elements([SignedInteger(300L), SignedInteger(-300L)]),
+      ])
+    _ => abort("expected N-bit array")
+  }
+  assert_eq(string_values(file.read_dataset("/noop")), [
+    "alpha", "beta", "gamma",
+  ])
+  match file.read_dataset("/reference").values {
+    Structured(values) => {
+      assert_eq(values.length(), 2)
+      assert_true(values[0] is Reference(_))
+      assert_true(values[1] is Reference(_))
+    }
+    _ => abort("expected N-bit references")
+  }
+}
+
+///|
+test "writer validates N-bit filter ordering and layout" {
+  let writer = Hdf5Writer::new()
+  let padded = Datatype::write_integer(true, 4, precision=12, offset=4)
+  let cases : Array[Hdf5Error?] = [
+    try {
+      writer.add_chunked_dataset(
+        "/after_deflate",
+        [1UL],
+        [1U],
+        Int32Values([1]),
+        filters=[Deflate(6), Nbit],
+      )
+      None
+    } catch {
+      error => Some(error)
+    },
+    try {
+      writer.add_chunked_dataset("/duplicate", [1UL], [1U], Int32Values([1]), filters=[
+        Nbit,
+        Nbit,
+      ])
+      None
+    } catch {
+      error => Some(error)
+    },
+    try {
+      writer.add_chunked_dataset(
+        "/shuffle_padded",
+        [1UL],
+        [1U],
+        StructuredValues(padded, [SignedInteger(1L)]),
+        filters=[Shuffle, Nbit],
+      )
+      None
+    } catch {
+      error => Some(error)
+    },
+    try {
+      Datatype::write_integer(true, 4, precision=12, offset=25) |> ignore
+      None
+    } catch {
+      error => Some(error)
+    },
+  ]
+  assert_eq(cases, [
+    Some(
+      InvalidArgument(
+        "N-bit must precede lossless filters and follow only shuffle",
+      ),
+    ),
+    Some(
+      InvalidArgument(
+        "N-bit must precede lossless filters and follow only shuffle",
+      ),
+    ),
+    Some(InvalidArgument("shuffle with N-bit requires full-precision fields")),
+    Some(InvalidArgument("writer integer datatype layout is invalid")),
+  ])
+}
+
+///|
 test "writer validates scale-offset filters" {
   let writer = Hdf5Writer::new()
   let cases : Array[Hdf5Error?] = [
@@ -4723,5 +4933,25 @@ test "writer round-trips custom variable-length fills" {
     Sequence([SignedInteger(1L)]),
     Sequence([SignedInteger(1L)]),
     Sequence([SignedInteger(1L)]),
+  ])
+}
+
+///|
+test "N-bit compound client data preserves padded member layouts" {
+  let left = Datatype::write_integer(true, 4, precision=12, offset=4)
+  let right = Datatype::write_integer_with_order(
+    true,
+    2,
+    false,
+    precision=9,
+    offset=3,
+  )
+  assert_eq(right.bit_precision, 9)
+  assert_eq(right.bit_offset, 3)
+  let compound = Datatype::write_compound([("left", left), ("right", right)])
+  assert_eq(compound.compound_members[1].datatype.bit_precision, 9)
+  assert_eq(compound.compound_members[1].datatype.bit_offset, 3)
+  assert_eq(nbit_client_data(compound, 2), [
+    18U, 0U, 2U, 3U, 6U, 2U, 0U, 1U, 4U, 0U, 12U, 4U, 4U, 1U, 2U, 1U, 9U, 3U,
   ])
 }

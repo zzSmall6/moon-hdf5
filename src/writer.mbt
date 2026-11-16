@@ -85,12 +85,48 @@ fn writer_datatype(
 }
 
 ///|
+fn writer_integer_datatype(
+  signed : Bool,
+  size : Int32,
+  little_endian : Bool,
+  precision : Int32,
+  offset : Int32,
+) -> Datatype raise Hdf5Error {
+  guard size >= 1 &&
+    size <= 8191 &&
+    precision > 0 &&
+    precision.to_int64() <= size.to_int64() * 8L &&
+    offset >= 0 &&
+    offset.to_int64() + precision.to_int64() <= size.to_int64() * 8L else {
+    raise InvalidArgument("writer integer datatype layout is invalid")
+  }
+  writer_datatype(
+    0,
+    size,
+    signed~,
+    little_endian~,
+    bit_offset=offset,
+    bit_precision=precision,
+  )
+}
+
+///|
 /// Creates a standard little-endian integer datatype for structured writes.
 pub fn Datatype::write_integer(
   signed : Bool,
   size : Int32,
+  precision? : Int32,
+  offset? : Int32,
 ) -> Datatype raise Hdf5Error {
-  Datatype::write_integer_with_order(signed, size, true)
+  let precision = match precision {
+    Some(value) => value
+    None => size * 8
+  }
+  let offset = match offset {
+    Some(value) => value
+    None => 0
+  }
+  writer_integer_datatype(signed, size, true, precision, offset)
 }
 
 ///|
@@ -99,11 +135,18 @@ pub fn Datatype::write_integer_with_order(
   signed : Bool,
   size : Int32,
   little_endian : Bool,
+  precision? : Int32,
+  offset? : Int32,
 ) -> Datatype raise Hdf5Error {
-  guard size >= 1 && size <= 8191 else {
-    raise InvalidArgument("writer integer datatype width is invalid")
+  let precision = match precision {
+    Some(value) => value
+    None => size * 8
   }
-  writer_datatype(0, size, signed~, little_endian~)
+  let offset = match offset {
+    Some(value) => value
+    None => 0
+  }
+  writer_integer_datatype(signed, size, little_endian, precision, offset)
 }
 
 ///|
@@ -445,6 +488,8 @@ pub(all) enum Hdf5WriteFilter {
   Shuffle
   Deflate(Int32)
   Fletcher32
+  /// Removes insignificant datatype bits before later filters are applied.
+  Nbit
   /// Integer bits or decimal digits for floats; zero selects automatic bits for integers.
   ScaleOffset(Int32)
   /// Registered caller-defined filter ID and its little-endian client data.
@@ -1117,7 +1162,12 @@ fn validate_writer_datatype(
   }
   match datatype.class {
     0 => {
-      guard datatype.size >= 1 && datatype.size <= 8191 else {
+      guard datatype.size >= 1 &&
+        datatype.size <= 8191 &&
+        datatype.bit_precision > 0 &&
+        datatype.bit_offset >= 0 &&
+        datatype.bit_offset.to_int64() + datatype.bit_precision.to_int64() <=
+        datatype.size.to_int64() * 8L else {
         raise InvalidArgument("writer integer datatype is unsupported")
       }
     }
@@ -1335,19 +1385,32 @@ fn validate_writer_integer(
   value : DatasetValue,
   datatype : Datatype,
 ) -> Unit raise Hdf5Error {
+  let precision = datatype.bit_precision
   if datatype.size > 8 {
     guard value is BigInteger(number) else {
       raise InvalidArgument("wide structured integer has the wrong kind")
     }
     validate_big_integer(number, datatype.size, datatype.signed)
+    let one = @bigint.BigInt::from_int(1)
+    if datatype.signed {
+      let half = one.shl(precision - 1)
+      guard number.compare(half.neg()) >= 0 && number.compare(half) < 0 else {
+        raise InvalidArgument("structured signed integer is out of range")
+      }
+    } else {
+      let limit = one.shl(precision)
+      guard number.compare(@bigint.BigInt::from_int(0)) >= 0 &&
+        number.compare(limit) < 0 else {
+        raise InvalidArgument("structured unsigned integer is out of range")
+      }
+    }
   } else if datatype.signed {
     guard value is SignedInteger(number) else {
       raise InvalidArgument("structured integer value has the wrong kind")
     }
-    if datatype.size < 8 {
-      let bits = datatype.size * 8
-      let minimum = -(1L << (bits - 1))
-      let maximum = (1L << (bits - 1)) - 1L
+    if precision < 64 {
+      let minimum = -(1L << (precision - 1))
+      let maximum = (1L << (precision - 1)) - 1L
       guard number >= minimum && number <= maximum else {
         raise InvalidArgument("structured signed integer is out of range")
       }
@@ -1356,8 +1419,8 @@ fn validate_writer_integer(
     guard value is UnsignedInteger(number) else {
       raise InvalidArgument("structured integer value has the wrong kind")
     }
-    if datatype.size < 8 {
-      guard number < 1UL << (datatype.size * 8) else {
+    if precision < 64 {
+      guard number < 1UL << precision else {
         raise InvalidArgument("structured unsigned integer is out of range")
       }
     }
@@ -2175,7 +2238,9 @@ fn validate_write_filters(
   let mut saw_deflate = false
   let mut saw_fletcher = false
   let mut saw_scaleoffset = false
+  let mut saw_nbit = false
   let mut saw_any = false
+  let mut saw_non_shuffle = false
   for filter in filters {
     match filter {
       Shuffle => {
@@ -2191,6 +2256,7 @@ fn validate_write_filters(
         }
         saw_deflate = true
         saw_any = true
+        saw_non_shuffle = true
       }
       Fletcher32 => {
         guard !saw_fletcher else {
@@ -2198,6 +2264,17 @@ fn validate_write_filters(
         }
         saw_fletcher = true
         saw_any = true
+        saw_non_shuffle = true
+      }
+      Nbit => {
+        guard !saw_nbit && !saw_non_shuffle else {
+          raise InvalidArgument(
+            "N-bit must precede lossless filters and follow only shuffle",
+          )
+        }
+        saw_nbit = true
+        saw_any = true
+        saw_non_shuffle = true
       }
       ScaleOffset(minbits) => {
         guard !saw_scaleoffset && !saw_any else {
@@ -2208,6 +2285,7 @@ fn validate_write_filters(
         }
         saw_scaleoffset = true
         saw_any = true
+        saw_non_shuffle = true
       }
       Custom(id, parameters) => {
         validate_custom_filter_id(id)
@@ -2221,6 +2299,7 @@ fn validate_write_filters(
           }
         }
         saw_any = true
+        saw_non_shuffle = true
       }
     }
   }
@@ -2236,11 +2315,190 @@ fn writer_values_contain_vlen(values : Hdf5WriteValues) -> Bool {
 }
 
 ///|
+fn writer_values_nbit_datatype(
+  values : Hdf5WriteValues,
+) -> Datatype raise Hdf5Error {
+  match values {
+    Int8Values(_) => Datatype::write_integer(true, 1)
+    Int16Values(_) => Datatype::write_integer(true, 2)
+    Int32Values(_) => Datatype::write_integer(true, 4)
+    Int64Values(_) => Datatype::write_integer(true, 8)
+    UInt8Values(_) => Datatype::write_integer(false, 1)
+    UInt16Values(_) => Datatype::write_integer(false, 2)
+    UInt32Values(_) => Datatype::write_integer(false, 4)
+    UInt64Values(_) => Datatype::write_integer(false, 8)
+    BigIntegerValues(_, size, signed) => Datatype::write_integer(signed, size)
+    Float16Values(_) => Datatype::write_float(2)
+    Float32Values(_) => Datatype::write_float(4)
+    Float64Values(_) => Datatype::write_float(8)
+    FixedStringValues(_, width) => Datatype::write_fixed_string(width)
+    VariableStringValues(_) => Datatype::write_vlen_string()
+    ObjectReferenceValues(_) => Datatype::write_object_reference()
+    Complex64Values(_) =>
+      Datatype::write_compound([
+        ("r", Datatype::write_float(4)),
+        ("i", Datatype::write_float(4)),
+      ])
+    Complex128Values(_) =>
+      Datatype::write_compound([
+        ("r", Datatype::write_float(8)),
+        ("i", Datatype::write_float(8)),
+      ])
+    StructuredValues(datatype, _) => datatype
+  }
+}
+
+///|
+fn nbit_datatype_supported(datatype : Datatype, depth : Int32) -> Bool {
+  if depth >= 16 || datatype.size <= 0 {
+    return false
+  }
+  match datatype.class {
+    0 | 1 | 2 | 3 | 4 | 5 | 7 | 8 | 9 => true
+    6 =>
+      datatype.compound_members.length() > 0 &&
+      datatype.compound_members.all(field => {
+        nbit_datatype_supported(field.datatype, depth + 1)
+      })
+    10 =>
+      datatype.base_types.length() == 1 &&
+      nbit_datatype_supported(datatype.base_types[0], depth + 1)
+    _ => false
+  }
+}
+
+///|
+fn nbit_datatype_needs_compression(
+  datatype : Datatype,
+  depth~ : Int32 = 0,
+) -> Bool raise Hdf5Error {
+  guard depth < 16 else {
+    raise InvalidArgument("N-bit datatype is too deeply nested")
+  }
+  match datatype.class {
+    0 | 1 =>
+      datatype.bit_offset != 0 || datatype.bit_precision != datatype.size * 8
+    6 =>
+      datatype.compound_members.any(field => {
+        nbit_datatype_needs_compression(field.datatype, depth=depth + 1)
+      })
+    10 =>
+      nbit_datatype_needs_compression(datatype.base_types[0], depth=depth + 1)
+    _ => false
+  }
+}
+
+///|
+fn nbit_append_client_node(
+  datatype : Datatype,
+  parameters : Array[UInt32],
+  depth : Int32,
+) -> Bool raise Hdf5Error {
+  guard depth < 16 else {
+    raise InvalidArgument("N-bit datatype is too deeply nested")
+  }
+  match datatype.class {
+    0 | 1 => {
+      guard datatype.size > 0 &&
+        datatype.bit_precision > 0 &&
+        datatype.bit_offset >= 0 &&
+        datatype.bit_offset.to_int64() + datatype.bit_precision.to_int64() <=
+        datatype.size.to_int64() * 8L else {
+        raise InvalidArgument("invalid N-bit atomic datatype")
+      }
+      parameters.push(1U)
+      parameters.push(datatype.size.reinterpret_as_uint())
+      parameters.push(if datatype.little_endian { 0U } else { 1U })
+      parameters.push(datatype.bit_precision.reinterpret_as_uint())
+      parameters.push(datatype.bit_offset.reinterpret_as_uint())
+      datatype.bit_offset != 0 || datatype.bit_precision != datatype.size * 8
+    }
+    2 | 3 | 4 | 5 | 7 | 8 | 9 => {
+      parameters.push(4U)
+      parameters.push(datatype.size.reinterpret_as_uint())
+      false
+    }
+    6 => {
+      guard datatype.compound_members.length() > 0 &&
+        datatype.compound_members.length() <= 0xFFF else {
+        raise InvalidArgument("invalid N-bit compound datatype")
+      }
+      parameters.push(3U)
+      parameters.push(datatype.size.reinterpret_as_uint())
+      parameters.push(datatype.compound_members.length().reinterpret_as_uint())
+      let mut needs_compression = false
+      for field in datatype.compound_members {
+        guard field.offset >= 0 &&
+          field.offset <= datatype.size - field.datatype.size else {
+          raise InvalidArgument("invalid N-bit compound member")
+        }
+        parameters.push(field.offset.reinterpret_as_uint())
+        if nbit_append_client_node(field.datatype, parameters, depth + 1) {
+          needs_compression = true
+        }
+      }
+      needs_compression
+    }
+    10 => {
+      guard datatype.base_types.length() == 1 &&
+        datatype.array_dimensions.length() > 0 else {
+        raise InvalidArgument("invalid N-bit array datatype")
+      }
+      parameters.push(2U)
+      parameters.push(datatype.size.reinterpret_as_uint())
+      nbit_append_client_node(datatype.base_types[0], parameters, depth + 1)
+    }
+    _ => raise UnsupportedFeature("N-bit does not support this datatype")
+  }
+}
+
+///|
+fn nbit_client_data(
+  datatype : Datatype,
+  chunk_elements : Int32,
+) -> Array[UInt32] raise Hdf5Error {
+  guard chunk_elements > 0 && nbit_datatype_supported(datatype, 0) else {
+    raise UnsupportedFeature("N-bit does not support this datatype")
+  }
+  let parameters : Array[UInt32] = []
+  if datatype.class == 0 ||
+    datatype.class == 1 ||
+    datatype.class == 6 ||
+    datatype.class == 10 {
+    parameters.push(0U)
+    parameters.push(0U)
+    parameters.push(chunk_elements.reinterpret_as_uint())
+    let needs_compression = nbit_append_client_node(datatype, parameters, 0)
+    parameters[0] = parameters.length().reinterpret_as_uint()
+    parameters[1] = if needs_compression { 0U } else { 1U }
+  } else {
+    parameters.push(3U)
+    parameters.push(1U)
+    parameters.push(chunk_elements.reinterpret_as_uint())
+  }
+  guard parameters.length() <= 4096 else {
+    raise UnsupportedFeature("N-bit datatype needs too many parameters")
+  }
+  parameters
+}
+
+///|
 fn validate_writer_filters_for_values(
   values : Hdf5WriteValues,
   filters : Array[Hdf5WriteFilter],
 ) -> Unit raise Hdf5Error {
   let contains_vlen = writer_values_contain_vlen(values)
+  let has_nbit = filters.any(filter => filter is Nbit)
+  let has_shuffle = filters.any(filter => filter is Shuffle)
+  if has_nbit {
+    let datatype = writer_values_nbit_datatype(values)
+    guard nbit_datatype_supported(datatype, 0) else {
+      raise UnsupportedFeature("N-bit does not support this datatype")
+    }
+    if has_shuffle && nbit_datatype_needs_compression(datatype) {
+      raise InvalidArgument("shuffle with N-bit requires full-precision fields")
+    }
+  }
   for filter in filters {
     match filter {
       Fletcher32 => {
@@ -3249,16 +3507,19 @@ fn encode_integer_datatype(
   signed : Bool,
   size : Int32,
   little_endian~ : Bool = true,
+  bit_offset~ : Int32 = 0,
+  bit_precision~ : Int32 = 0,
 ) -> Bytes {
   let buffer = @buffer.Buffer::Buffer(size_hint=12)
   let flags = (if signed { 8 } else { 0 }) | (if little_endian { 0 } else { 1 })
+  let precision = if bit_precision > 0 { bit_precision } else { size * 8 }
   buffer.write_byte(b'\x10')
   buffer.write_byte(flags.to_byte())
   buffer.write_byte(b'\x00')
   buffer.write_byte(b'\x00')
   buffer.write_uint_le(size.reinterpret_as_uint())
-  buffer.write_uint16_le(0)
-  buffer.write_uint16_le((size * 8).to_uint16())
+  buffer.write_uint16_le(bit_offset.to_uint16())
+  buffer.write_uint16_le(precision.to_uint16())
   buffer.to_bytes()
 }
 
@@ -3427,6 +3688,8 @@ fn encode_writer_datatype(
         datatype.signed,
         datatype.size,
         little_endian=datatype.little_endian,
+        bit_offset=datatype.bit_offset,
+        bit_precision=datatype.bit_precision,
       )
     1 =>
       if datatype.size == 10 || datatype.size == 16 {
@@ -3628,14 +3891,24 @@ fn encode_structured_value(
     0 =>
       if datatype.size > 8 {
         match value {
-          BigInteger(number) =>
+          BigInteger(number) => {
+            let one = @bigint.BigInt::from_int(1)
+            let modulus = one.shl(datatype.size * 8)
+            let raw = if number.compare(@bigint.BigInt::from_int(0)) < 0 {
+              modulus.add(number)
+            } else {
+              number
+            }
+            let mask = one.shl(datatype.bit_precision).sub(one)
+            let stored = raw.land(mask).shl(datatype.bit_offset)
             write_big_integer_width(
               buffer,
-              number,
+              stored,
               datatype.size,
-              datatype.signed,
+              false,
               little_endian=datatype.little_endian,
             )
+          }
           _ => writer_write_zeros(buffer, datatype.size)
         }
       } else {
@@ -3644,9 +3917,14 @@ fn encode_structured_value(
           UnsignedInteger(number) => number
           _ => 0UL
         }
+        let masked = if datatype.bit_precision == 64 {
+          raw
+        } else {
+          raw & ((1UL << datatype.bit_precision) - 1UL)
+        }
         write_uint_width(
           buffer,
-          raw,
+          masked << datatype.bit_offset,
           datatype.size,
           little_endian=datatype.little_endian,
         )
@@ -5115,6 +5393,19 @@ fn encode_filter_pipeline(
         buffer.write_uint16_le(0)
         buffer.write_uint16_le(0)
       }
+      Nbit => {
+        let datatype = writer_values_nbit_datatype(values)
+        guard datatype.size == element_size else {
+          raise InvalidField("N-bit datatype size mismatch")
+        }
+        let parameters = nbit_client_data(datatype, chunk_elements)
+        buffer.write_uint16_le(5)
+        buffer.write_uint16_le(0)
+        buffer.write_uint16_le(parameters.length().to_uint16())
+        for parameter in parameters {
+          buffer.write_uint_le(parameter)
+        }
+      }
       ScaleOffset(minbits) => {
         let (size, signed, datatype_class) = writer_scaleoffset_layout(values)
         guard size == element_size else {
@@ -5204,6 +5495,7 @@ fn encode_chunk_filters(
   filters : Array[Hdf5WriteFilter],
   filter_mask : UInt32,
   element_size : Int32,
+  datatype : Datatype,
   values : Hdf5WriteValues,
   fill : Bytes,
   custom_filters : Array[&Hdf5CustomFilter],
@@ -5218,6 +5510,17 @@ fn encode_chunk_filters(
       Shuffle => shuffle_chunk(output, element_size)
       Deflate(level) => @zlib.zlib(output[:], level~)
       Fletcher32 => add_fletcher32(output)
+      Nbit => {
+        guard datatype.size == element_size &&
+          output.length() % element_size == 0 else {
+          raise InvalidField("N-bit datatype size mismatch")
+        }
+        let parameters = nbit_client_data(
+          datatype,
+          output.length() / element_size,
+        )
+        encode_nbit(output, parameters, output.length())
+      }
       ScaleOffset(minbits) => {
         let (size, signed, datatype_class) = writer_scaleoffset_layout(values)
         guard size == element_size else {
@@ -5400,6 +5703,7 @@ fn encode_dataset_chunks(
         filters,
         filter_mask,
         encoded.element_size,
+        writer_values_nbit_datatype(dataset.values),
         dataset.values,
         fill,
         custom_filters,
