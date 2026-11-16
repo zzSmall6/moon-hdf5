@@ -352,6 +352,17 @@ are append-only and leave old chunk bytes unreferenced.
 `patch_dataset_values` accepts all three layouts, while
 `patch_contiguous_dataset` is the contiguous-only compatibility entry point.
 
+`resize_dataset` rewrites only the simple-dataspace message and keeps the
+existing chunk index and allocated chunks. Shrinking changes the visible extent
+without deleting hidden chunks; regrowing restores them. `append_dataset`
+resizes to the new trailing-corner shape, reads the visible payload, overlays
+the appended block and patches every affected chunk. The patch path can create
+missing fixed-array data blocks, extensible-array metadata or v1/v2 B-tree
+records. A variable-length or reference heap prefix is placed verbatim from the
+original EOF because it already contains alignment padding; metadata images and
+chunk payloads are then placed at their recorded absolute offsets. This avoids
+double-aligning the heap prefix.
+
 `patch_attribute_values` locates attributes through the object header's attribute
 info message and its name or creation-order B-tree. Inline values are rewritten
 inside the containing object-header chunk, after which the OHDR or continuation

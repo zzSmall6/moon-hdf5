@@ -1052,6 +1052,86 @@ fn Hdf5File::finish_appended_image(
 }
 
 ///|
+fn append_tail_payload_at(
+  tail : @buffer.Buffer,
+  file_length : Int32,
+  offset : Int32,
+  payload : Bytes,
+  purpose : String,
+) -> Unit raise Hdf5Error {
+  guard offset >= file_length && payload.length() >= 0 else {
+    raise InvalidField("invalid appended " + purpose + " placement")
+  }
+  let current = file_length.to_int64() + tail.length().to_int64()
+  guard offset.to_int64() >= current &&
+    current <= 0x7FFFFFFFL &&
+    payload.length().to_int64() <= 0x7FFFFFFFL - offset.to_int64() else {
+    raise UnsupportedFeature(
+      "file is too large to append " +
+      purpose +
+      " at " +
+      offset.to_string() +
+      " after " +
+      current.to_string() +
+      " bytes",
+    )
+  }
+  for _ in 0..<(offset - current.to_int()) {
+    tail.write_byte(b'\x00')
+  }
+  writer_write_bytes(tail, payload)
+}
+
+///|
+fn Hdf5File::finish_appended_layout(
+  self : Hdf5File,
+  output : FixedArray[Byte],
+  prefix : Bytes,
+  metadata_images : Array[FixedArray[Byte]],
+  metadata_starts : Array[Int32],
+  tail_start : Int32,
+  chunks : @buffer.Buffer,
+) -> Bytes raise Hdf5Error {
+  guard metadata_images.length() == metadata_starts.length() else {
+    raise InvalidField(
+      "appended metadata image count does not match its starts",
+    )
+  }
+  let file_length = self.bytes.length()
+  let tail = @buffer.Buffer::Buffer()
+  if prefix.length() > 0 {
+    // Prefix buffers already include padding from the original EOF to their
+    // aligned heap address, so write them verbatim instead of aligning again.
+    append_tail_payload_at(
+      tail, file_length, file_length, prefix, "dataset heap",
+    )
+  }
+  for index in 0..<metadata_images.length() {
+    append_tail_payload_at(
+      tail,
+      file_length,
+      metadata_starts[index],
+      metadata_images[index].unsafe_reinterpret_as_bytes(),
+      "metadata",
+    )
+  }
+  if chunks.length() > 0 {
+    append_tail_payload_at(
+      tail,
+      file_length,
+      tail_start,
+      chunks.to_bytes(),
+      "chunk data",
+    )
+  }
+  if tail.length() == 0 {
+    Bytes::from_array(output)
+  } else {
+    self.finish_appended_image(output, tail)
+  }
+}
+
+///|
 fn file_offset_to_stored_address(
   offset : UInt64,
   base_address : UInt64,
@@ -1913,6 +1993,63 @@ fn Hdf5File::patch_chunked_dataset_data(
       )
     None => None
   }
+  let payload_fill = effective_fill_element(header, metadata.datatype)
+  let strides : Array[Int64] = Array::make(rank, 1L)
+  let mut stride = 1L
+  let mut dimension = rank
+  while dimension > 0 {
+    dimension = dimension - 1
+    strides[dimension] = stride
+    stride = stride *
+      metadata.dataspace.dimensions[dimension].reinterpret_as_int64()
+  }
+  let mut analysis_bytes = self.bytes
+  let mut extended_extensible_maximum_set : UInt64? = None
+  match (extensible_config, extensible_header_info) {
+    (Some(config), Some(info)) => {
+      let (slot_order, slot_grid, existing_limit) = extensible_array_geometry(
+        layout,
+        metadata.dataspace,
+        self.superblock.length_size,
+        info.maximum_set,
+      )
+      let required = highest_non_fill_extensible_slot(
+        slot_order,
+        slot_grid,
+        layout,
+        metadata.dataspace,
+        chunk_widths,
+        grid,
+        strides,
+        chunk_elements,
+        metadata.datatype.size,
+        payload,
+        payload_fill,
+      )
+      if required > existing_limit {
+        let effective = required.reinterpret_as_uint64()
+        guard config.max_bits == 64 || effective <= 1UL << config.max_bits else {
+          raise InvalidField("extensible array index exceeds capacity")
+        }
+        let image = self.bytes.to_fixedarray()
+        patch_little_endian_uint(
+          image,
+          info.maximum_set_offset,
+          self.superblock.length_size,
+          effective,
+          "extensible array maximum set",
+        )
+        patch_metadata_checksum_in_place(
+          image,
+          address_to_offset(layout.data_address, self.superblock.base_address),
+          info.header_checksum_offset,
+        )
+        analysis_bytes = Bytes::from_array(image)
+        extended_extensible_maximum_set = Some(effective)
+      }
+    }
+    _ => ()
+  }
   let records = match layout.chunk_index {
     Single(_, _) =>
       [
@@ -1935,12 +2072,14 @@ fn Hdf5File::patch_chunked_dataset_data(
         self.superblock.base_address,
       )
       if records.length() == 0 && layout.data_address != undefined {
-        guard tail_prefix.length() == 0 else {
-          raise UnsupportedFeature(
-            "variable-length dataset patching cannot create a fixed-array data block",
-          )
+        let block_start = next_aligned_tail_start(
+          self.bytes.length(),
+          tail_prefix.length(),
+          "create a fixed-array data block",
+        )
+        guard block_start <= 0x7FFFFFFFUL else {
+          raise UnsupportedFeature("file is too large to append chunk metadata")
         }
-        let block_start = (self.bytes.length() + 7) / 8 * 8
         let storage = prepare_missing_fixed_array_storage(
           self.bytes,
           layout,
@@ -1952,7 +2091,7 @@ fn Hdf5File::patch_chunked_dataset_data(
           filters,
           undefined,
           page_bits,
-          block_start,
+          block_start.to_int(),
         )
         missing_fixed_array = Some(storage)
         storage.records
@@ -1962,7 +2101,7 @@ fn Hdf5File::patch_chunked_dataset_data(
     }
     ExtensibleArray(_) =>
       collect_raw_chunk_records(
-        self.bytes,
+        analysis_bytes,
         layout,
         metadata.dataspace,
         metadata.datatype,
@@ -2002,15 +2141,6 @@ fn Hdf5File::patch_chunked_dataset_data(
     fill,
     self.custom_filters,
   )
-  let strides : Array[Int64] = Array::make(rank, 1L)
-  let mut stride = 1L
-  let mut dimension = rank
-  while dimension > 0 {
-    dimension = dimension - 1
-    strides[dimension] = stride
-    stride = stride *
-      metadata.dataspace.dimensions[dimension].reinterpret_as_int64()
-  }
   let output = self.bytes.to_fixedarray()
   let mut index_output = match missing_fixed_array {
     Some(storage) => storage.image
@@ -2020,15 +2150,23 @@ fn Hdf5File::patch_chunked_dataset_data(
     Some(storage) => storage.block_start
     None => 0
   }
-  let mut chunk_tail_base = match missing_fixed_array {
+  let after_prefix = next_aligned_tail_start(
+    self.bytes.length(),
+    tail_prefix.length(),
+    "append dataset storage",
+  )
+  guard after_prefix <= 0x7FFFFFFFUL else {
+    raise UnsupportedFeature("file is too large to append dataset storage")
+  }
+  let mut tail_base = match missing_fixed_array {
     Some(storage) => storage.block_start + storage.image.length()
-    None => self.bytes.length()
+    None => after_prefix.to_int()
   }
   let missing_extensible_storage : Array[MissingExtensibleBlockStorage] = []
   let extensible_index_records : Array[RawChunkRecord] = []
   let appended_metadata_images : Array[FixedArray[Byte]] = []
   let appended_metadata_starts : Array[Int32] = []
-  let mut next_extensible_start = (self.bytes.length() + 7) / 8 * 8
+  let mut next_extensible_start = after_prefix.to_int()
   let mut created_index = false
   let mut new_secondary_block_count = 0L
   let mut new_secondary_block_size = 0L
@@ -2048,30 +2186,9 @@ fn Hdf5File::patch_chunked_dataset_data(
         ) else {
         raise InvalidField("extensible array header does not match layout")
       }
-      let (slot_order, slot_grid, existing_limit) = extensible_array_geometry(
-        layout,
-        metadata.dataspace,
-        self.superblock.length_size,
-        info.maximum_set,
-      )
-      let mut effective_maximum_set = info.maximum_set
-      if info.index_address == undefined {
-        let required = highest_non_fill_extensible_slot(
-          slot_order,
-          slot_grid,
-          layout,
-          metadata.dataspace,
-          chunk_widths,
-          grid,
-          strides,
-          chunk_elements,
-          metadata.datatype.size,
-          payload,
-          fill,
-        )
-        if required > existing_limit {
-          effective_maximum_set = required.reinterpret_as_uint64()
-        }
+      let effective_maximum_set = match extended_extensible_maximum_set {
+        Some(maximum_set) => maximum_set
+        None => info.maximum_set
       }
       let (slot_order, slot_grid, limit) = extensible_array_geometry(
         layout,
@@ -2079,6 +2196,15 @@ fn Hdf5File::patch_chunked_dataset_data(
         self.superblock.length_size,
         effective_maximum_set,
       )
+      if effective_maximum_set > info.maximum_set {
+        patch_little_endian_uint(
+          output,
+          info.maximum_set_offset,
+          self.superblock.length_size,
+          effective_maximum_set,
+          "extensible array maximum set",
+        )
+      }
       if info.index_address == undefined &&
         limit > 0L &&
         missing_extensible_range_used(
@@ -2131,15 +2257,6 @@ fn Hdf5File::patch_chunked_dataset_data(
           ),
           "extensible array index address",
         )
-        if effective_maximum_set > info.maximum_set {
-          patch_little_endian_uint(
-            output,
-            info.maximum_set_offset,
-            self.superblock.length_size,
-            effective_maximum_set,
-            "extensible array maximum set",
-          )
-        }
         new_realized_elements = config.index_elements.to_int64()
         next_extensible_start = (
             storage.block_start + storage.image.length() + 7
@@ -2556,11 +2673,18 @@ fn Hdf5File::patch_chunked_dataset_data(
           info.header_checksum_offset,
         )
       }
+      if extended_extensible_maximum_set is Some(_) {
+        patch_metadata_checksum_in_place(
+          output,
+          address_to_offset(layout.data_address, self.superblock.base_address),
+          info.header_checksum_offset,
+        )
+      }
     }
     None => ()
   }
   if appended_metadata_images.length() > 0 {
-    chunk_tail_base = next_extensible_start
+    tail_base = next_extensible_start
   }
   let all_records : Array[RawChunkRecord] = []
   for record in records {
@@ -2621,7 +2745,6 @@ fn Hdf5File::patch_chunked_dataset_data(
     }
   }
   let tail = @buffer.Buffer::Buffer()
-  writer_write_bytes(tail, tail_prefix)
   let mut relocated = false
   let mut rebuild_v1_tree = false
   let mut rebuild_v2_tree = false
@@ -2764,7 +2887,7 @@ fn Hdf5File::patch_chunked_dataset_data(
               raise InvalidField("allocated chunk encoded to an empty payload")
             }
             let new_offset = append_aligned_chunk_to_tail(
-              tail, chunk_tail_base, encoded,
+              tail, tail_base, encoded,
             )
             let new_address = file_offset_to_stored_address(
               new_offset,
@@ -2935,7 +3058,7 @@ fn Hdf5File::patch_chunked_dataset_data(
               record.address
             } else {
               let new_offset = append_aligned_chunk_to_tail(
-                tail, chunk_tail_base, encoded,
+                tail, tail_base, encoded,
               )
               let new_address = file_offset_to_stored_address(
                 new_offset,
@@ -3015,7 +3138,7 @@ fn Hdf5File::patch_chunked_dataset_data(
           )
           if has_non_fill {
             let new_offset = append_aligned_chunk_to_tail(
-              tail, chunk_tail_base, encoded,
+              tail, tail_base, encoded,
             )
             let new_address = file_offset_to_stored_address(
               new_offset,
@@ -3090,7 +3213,7 @@ fn Hdf5File::patch_chunked_dataset_data(
       }
     }
     let tree_start_offset = next_aligned_tail_start(
-      self.bytes.length(),
+      tail_base,
       tail.length(),
       "rebuild the v1 B-tree chunk index",
     )
@@ -3107,10 +3230,7 @@ fn Hdf5File::patch_chunked_dataset_data(
       capacity,
     )
     let appended_start = append_aligned_bytes_to_tail(
-      tail,
-      self.bytes.length(),
-      tree,
-      "rebuild the v1 B-tree chunk index",
+      tail, tail_base, tree, "rebuild the v1 B-tree chunk index",
     )
     guard appended_start == tree_start_offset else {
       raise InvalidField("v1 B-tree placement changed during encoding")
@@ -3181,7 +3301,7 @@ fn Hdf5File::patch_chunked_dataset_data(
       }
     }
     let tree_start_offset = next_aligned_tail_start(
-      self.bytes.length(),
+      tail_base,
       tail.length(),
       "rebuild the v2 B-tree chunk index",
     )
@@ -3203,10 +3323,7 @@ fn Hdf5File::patch_chunked_dataset_data(
       },
     )
     let appended_start = append_aligned_bytes_to_tail(
-      tail,
-      self.bytes.length(),
-      tree,
-      "rebuild the v2 B-tree chunk index",
+      tail, tail_base, tree, "rebuild the v2 B-tree chunk index",
     )
     guard appended_start == tree_start_offset else {
       raise InvalidField("v2 B-tree placement changed during encoding")
@@ -3239,11 +3356,6 @@ fn Hdf5File::patch_chunked_dataset_data(
     }
     relocated = true
   }
-  guard tail_prefix.length() == 0 || appended_metadata_images.length() == 0 else {
-    raise UnsupportedFeature(
-      "variable-length dataset patching cannot create extensible-array metadata",
-    )
-  }
   if relocated {
     match missing_fixed_array {
       Some(storage) => {
@@ -3263,51 +3375,238 @@ fn Hdf5File::patch_chunked_dataset_data(
           address_to_offset(layout.data_address, self.superblock.base_address),
           storage.header_checksum_offset,
         )
-        let combined = @buffer.Buffer::Buffer()
-        for _ in 0..<(storage.block_start - self.bytes.length()) {
-          combined.write_byte(b'\x00')
-        }
-        combined.write_bytes(
-          storage.image.unsafe_reinterpret_as_bytes().get_view().unwrap(),
+        return self.finish_appended_layout(
+          output,
+          tail_prefix,
+          [storage.image],
+          [storage.block_start],
+          tail_base,
+          tail,
         )
-        let chunk_bytes = tail.to_bytes()
-        combined.write_bytes(chunk_bytes.get_view().unwrap())
-        return self.finish_appended_image(output, combined)
       }
       None =>
         if appended_metadata_images.length() > 0 {
-          let combined = @buffer.Buffer::Buffer()
-          for index in 0..<appended_metadata_images.length() {
-            let start = append_aligned_bytes_to_tail(
-              combined,
-              self.bytes.length(),
-              appended_metadata_images[index].unsafe_reinterpret_as_bytes(),
-              "create missing extensible array metadata",
-            )
-            guard start.to_int() == appended_metadata_starts[index] else {
-              raise InvalidField("extensible array metadata placement mismatch")
-            }
-          }
-          let tail_start = chunk_tail_base - self.bytes.length()
-          for _ in combined.length()..<tail_start {
-            combined.write_byte(b'\x00')
-          }
-          guard combined.length() == tail_start else {
-            raise InvalidField("extensible array chunk tail placement mismatch")
-          }
-          let chunk_bytes = tail.to_bytes()
-          combined.write_bytes(chunk_bytes.get_view().unwrap())
-          return self.finish_appended_image(output, combined)
+          return self.finish_appended_layout(
+            output, tail_prefix, appended_metadata_images, appended_metadata_starts,
+            tail_base, tail,
+          )
         } else {
-          return self.finish_appended_image(output, tail)
+          return self.finish_appended_layout(
+            output,
+            tail_prefix,
+            [],
+            [],
+            tail_base,
+            tail,
+          )
         }
     }
   }
-  if tail.length() > 0 {
-    self.finish_appended_image(output, tail)
+  if tail.length() > 0 || tail_prefix.length() > 0 {
+    self.finish_appended_layout(output, tail_prefix, [], [], tail_base, tail)
   } else {
     Bytes::from_array(output)
   }
+}
+
+///|
+fn Hdf5File::encode_dataset_patch_payload(
+  self : Hdf5File,
+  values : Hdf5WriteValues,
+  datatype : Datatype,
+  header : ObjectHeader,
+  chunked : Bool,
+  prefix_tail : @buffer.Buffer,
+) -> Bytes raise Hdf5Error {
+  let variable_length = datatype.class == 9
+  let legacy_object_reference = patch_legacy_object_reference(
+    values,
+    datatype,
+    self.superblock.offset_size,
+  )
+  let legacy_region_reference = patch_legacy_region_reference(
+    values,
+    datatype,
+    self.superblock.offset_size,
+  )
+  let version4_object_reference = patch_version4_object_reference(
+    values,
+    datatype,
+    self.superblock.offset_size,
+  )
+  let version4_region_reference = patch_version4_region_reference(
+    values,
+    datatype,
+    self.superblock.offset_size,
+  )
+  let version4_attribute_reference = patch_version4_attribute_reference(
+    values,
+    datatype,
+    self.superblock.offset_size,
+  )
+  let nested_reference = patch_nested_reference_datatype(datatype)
+  let vlen_reference = patch_vlen_reference_datatype(datatype)
+  let nested_vlen = !variable_length && datatype_contains_vlen(datatype)
+  let external_reference = patch_values_contain_external_reference(values)
+  guard !datatype_contains_reference(datatype) ||
+    legacy_object_reference ||
+    legacy_region_reference ||
+    version4_object_reference ||
+    version4_region_reference ||
+    version4_attribute_reference ||
+    nested_reference ||
+    vlen_reference else {
+    raise UnsupportedFeature("reference datatypes cannot be patched")
+  }
+  if datatype_contains_vlen(datatype) && chunked {
+    let filters = match header.first(msg_filter_pipeline) {
+      Some(message) =>
+        parse_filters(message, custom_filters=self.custom_filters)
+      None => []
+    }
+    guard !filters.any(filter => filter.id != 1 && filter.id != 2) else {
+      raise UnsupportedFeature(
+        "variable-length datasets support only shuffle and deflate filters",
+      )
+    }
+  }
+  if external_reference {
+    self.encode_patch_nested_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append an external-reference dataset heap",
+    )
+  } else if variable_length {
+    self.encode_patch_vlen_values(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append a variable-length dataset heap",
+    )
+  } else if legacy_object_reference {
+    self.encode_patch_object_references(values, datatype)
+  } else if legacy_region_reference {
+    self.encode_patch_region_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append a region-reference dataset heap",
+    )
+  } else if version4_object_reference {
+    self.encode_patch_version4_object_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+    )
+  } else if version4_region_reference {
+    self.encode_patch_version4_region_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append a version-4 region-reference dataset heap",
+    )
+  } else if version4_attribute_reference {
+    self.encode_patch_version4_attribute_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append a version-4 attribute-reference dataset heap",
+    )
+  } else if nested_reference {
+    self.encode_patch_nested_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append a nested-reference dataset heap",
+    )
+  } else if nested_vlen {
+    self.encode_patch_nested_references(
+      values,
+      datatype,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+      self.superblock.base_address,
+      self.bytes.length(),
+      prefix_tail,
+      "append a nested variable-length dataset heap",
+    )
+  } else {
+    let encoded = encode_write_values(values)
+    match values {
+      StructuredValues(_) => encoded.payload
+      _ =>
+        if !datatype.little_endian &&
+          (datatype.class == 0 || datatype.class == 1) {
+          patch_byteswap_elements(encoded.payload, datatype.size)
+        } else {
+          encoded.payload
+        }
+    }
+  }
+}
+
+///|
+fn Hdf5File::patch_chunked_dataset_payload(
+  self : Hdf5File,
+  path : String,
+  payload : Bytes,
+  values : Hdf5WriteValues,
+  tail_prefix : Bytes,
+) -> Bytes raise Hdf5Error {
+  guard self.source is None else {
+    raise InvalidArgument("in-place patching requires a bytes-backed Hdf5File")
+  }
+  let node = self.resolve(path)
+  guard node.kind == Dataset else {
+    raise InvalidField("object is not a dataset: " + path)
+  }
+  let header = self.object_header_at(node.address)
+  let metadata = read_dataset_metadata(
+    header,
+    self.superblock.offset_size,
+    self.superblock.length_size,
+  )
+  guard metadata.layout.layout_class == 2 else {
+    raise UnsupportedFeature("only chunked storage can be patched")
+  }
+  guard patch_values_match_datatype(values, metadata.datatype) else {
+    raise InvalidArgument("patched values must match the dataset datatype")
+  }
+  let count = metadata.dataspace.element_count()
+  guard count >= 0 && count <= 0x7FFFFFFFL / metadata.datatype.size.to_int64() else {
+    raise InvalidField("dataset byte size is too large")
+  }
+  guard payload.length() == count.to_int() * metadata.datatype.size else {
+    raise InvalidArgument("patched payload does not match the dataset shape")
+  }
+  self.patch_chunked_dataset_data(
+    header, metadata, payload, values, tail_prefix,
+  )
 }
 
 ///|
@@ -3347,59 +3646,6 @@ fn Hdf5File::patch_dataset_values_impl(
     }
     raise UnsupportedFeature("only contiguous storage can be patched")
   }
-  let variable_length = metadata.datatype.class == 9
-  let legacy_object_reference = patch_legacy_object_reference(
-    values,
-    metadata.datatype,
-    self.superblock.offset_size,
-  )
-  let legacy_region_reference = patch_legacy_region_reference(
-    values,
-    metadata.datatype,
-    self.superblock.offset_size,
-  )
-  let version4_object_reference = patch_version4_object_reference(
-    values,
-    metadata.datatype,
-    self.superblock.offset_size,
-  )
-  let version4_region_reference = patch_version4_region_reference(
-    values,
-    metadata.datatype,
-    self.superblock.offset_size,
-  )
-  let version4_attribute_reference = patch_version4_attribute_reference(
-    values,
-    metadata.datatype,
-    self.superblock.offset_size,
-  )
-  let nested_reference = patch_nested_reference_datatype(metadata.datatype)
-  let vlen_reference = patch_vlen_reference_datatype(metadata.datatype)
-  let nested_vlen = !variable_length &&
-    datatype_contains_vlen(metadata.datatype)
-  let external_reference = patch_values_contain_external_reference(values)
-  guard !datatype_contains_reference(metadata.datatype) ||
-    legacy_object_reference ||
-    legacy_region_reference ||
-    version4_object_reference ||
-    version4_region_reference ||
-    version4_attribute_reference ||
-    nested_reference ||
-    vlen_reference else {
-    raise UnsupportedFeature("reference datatypes cannot be patched")
-  }
-  if datatype_contains_vlen(metadata.datatype) && chunked {
-    let filters = match header.first(msg_filter_pipeline) {
-      Some(message) =>
-        parse_filters(message, custom_filters=self.custom_filters)
-      None => []
-    }
-    guard !filters.any(filter => filter.id != 1 && filter.id != 2) else {
-      raise UnsupportedFeature(
-        "variable-length datasets support only shuffle and deflate filters",
-      )
-    }
-  }
   guard patch_values_match_datatype(values, metadata.datatype) else {
     raise InvalidArgument("patched values must match the dataset datatype")
   }
@@ -3410,104 +3656,13 @@ fn Hdf5File::patch_dataset_values_impl(
   }
   let full_size = count.to_int() * metadata.datatype.size
   let prefix_tail = @buffer.Buffer::Buffer()
-  let payload = if external_reference {
-    self.encode_patch_nested_references(
-      values,
-      metadata.datatype,
-      self.superblock.offset_size,
-      self.superblock.length_size,
-      self.superblock.base_address,
-      self.bytes.length(),
-      prefix_tail,
-      "append an external-reference dataset heap",
-    )
-  } else if variable_length {
-    self.encode_patch_vlen_values(
-      values,
-      metadata.datatype,
-      self.superblock.offset_size,
-      self.superblock.length_size,
-      self.superblock.base_address,
-      self.bytes.length(),
-      prefix_tail,
-      "append a variable-length dataset heap",
-    )
-  } else if legacy_object_reference {
-    self.encode_patch_object_references(values, metadata.datatype)
-  } else if legacy_region_reference {
-    self.encode_patch_region_references(
-      values,
-      metadata.datatype,
-      self.superblock.offset_size,
-      self.superblock.length_size,
-      self.superblock.base_address,
-      self.bytes.length(),
-      prefix_tail,
-      "append a region-reference dataset heap",
-    )
-  } else if version4_object_reference {
-    self.encode_patch_version4_object_references(
-      values,
-      metadata.datatype,
-      self.superblock.offset_size,
-    )
-  } else if version4_region_reference {
-    self.encode_patch_version4_region_references(
-      values,
-      metadata.datatype,
-      self.superblock.offset_size,
-      self.superblock.length_size,
-      self.superblock.base_address,
-      self.bytes.length(),
-      prefix_tail,
-      "append a version-4 region-reference dataset heap",
-    )
-  } else if version4_attribute_reference {
-    self.encode_patch_version4_attribute_references(
-      values,
-      metadata.datatype,
-      self.superblock.offset_size,
-      self.superblock.length_size,
-      self.superblock.base_address,
-      self.bytes.length(),
-      prefix_tail,
-      "append a version-4 attribute-reference dataset heap",
-    )
-  } else if nested_reference {
-    self.encode_patch_nested_references(
-      values,
-      metadata.datatype,
-      self.superblock.offset_size,
-      self.superblock.length_size,
-      self.superblock.base_address,
-      self.bytes.length(),
-      prefix_tail,
-      "append a nested-reference dataset heap",
-    )
-  } else if nested_vlen {
-    self.encode_patch_nested_references(
-      values,
-      metadata.datatype,
-      self.superblock.offset_size,
-      self.superblock.length_size,
-      self.superblock.base_address,
-      self.bytes.length(),
-      prefix_tail,
-      "append a nested variable-length dataset heap",
-    )
-  } else {
-    let encoded = encode_write_values(values)
-    match values {
-      StructuredValues(_) => encoded.payload
-      _ =>
-        if !metadata.datatype.little_endian &&
-          (metadata.datatype.class == 0 || metadata.datatype.class == 1) {
-          patch_byteswap_elements(encoded.payload, metadata.datatype.size)
-        } else {
-          encoded.payload
-        }
-    }
-  }
+  let payload = self.encode_dataset_patch_payload(
+    values,
+    metadata.datatype,
+    header,
+    chunked,
+    prefix_tail,
+  )
   guard payload.length() == full_size else {
     raise InvalidArgument("patched values do not match the dataset shape")
   }
@@ -3566,26 +3721,23 @@ pub fn Hdf5File::patch_contiguous_dataset(
 /// affected checksums.
 ///
 /// Missing chunks stay unallocated for fill values. A non-fill chunk can be
-/// allocated into writable storage already present in the chunk index, and a
-/// missing v1 or v2 B-tree chunk record is created by rebuilding the complete
-/// chunk tree from final addresses, stored sizes, masks and coordinates. V1
-/// rebuilds use the superblock's indexed-storage K, sibling links and
-/// datatype-sized termination keys; v2 rebuilds preserve the node size and
-/// split/merge thresholds. Missing fixed- or extensible-array pages inside an
-/// existing data block are initialized and marked allocated; other data blocks,
-/// super blocks and index blocks are not created. Fixed-size values,
-/// variable-length UTF-8 strings, fixed-base sequences and legacy same-file
-/// object or region references are supported, as are same-file 18-byte
-/// version-4 object, region and attribute references. Variable-length values use
-/// one appended global heap; legacy region references append deduplicated
-/// target-address plus selection payloads to a global heap. Version-4 object
-/// references write direct address tokens, while version-4 region and attribute
-/// references append indirect heap payloads. Variable-length strings and
-/// sequences nested in compound, array and sequence members are encoded
-/// recursively. Chunked values accept unfiltered storage, Shuffle or deflate,
-/// and cannot create a missing fixed-array data block or extensible-array
-/// metadata. External storage is read-only; external version-4 references
-/// resolve through sources registered with `Hdf5File::with_external_source`.
+/// allocated into writable storage, and missing fixed-array data blocks,
+/// extensible-array index/data/secondary blocks or v1/v2 B-tree records are
+/// created as needed. B-tree rebuilds use final addresses, stored sizes, masks
+/// and coordinates; v1 rebuilds use the superblock's indexed-storage K, sibling
+/// links and datatype-sized termination keys, while v2 rebuilds preserve the
+/// node size and split/merge thresholds. Fixed-size values, variable-length
+/// UTF-8 strings, fixed-base sequences and legacy same-file object or region
+/// references are supported, as are same-file 18-byte version-4 object, region
+/// and attribute references. Variable-length values use one appended global
+/// heap; legacy region references append deduplicated target-address plus
+/// selection payloads to a global heap. Version-4 object references write direct
+/// address tokens, while version-4 region and attribute references append
+/// indirect heap payloads. Variable-length strings and sequences nested in
+/// compound, array and sequence members are encoded recursively. Chunked values
+/// accept unfiltered storage, Shuffle or deflate. External storage is read-only;
+/// external version-4 references resolve through sources registered with
+/// `Hdf5File::with_external_source`.
 /// Legacy object references
 /// require a slot width equal to the file address size; legacy region
 /// references require four additional bytes and existing dataset targets with

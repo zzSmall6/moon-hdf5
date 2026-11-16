@@ -22,10 +22,10 @@ This project implements a documented subset of HDF5. The
   filters, fills, dense/SOHM metadata, nested variable-length and reference
   values, compact/contiguous/chunked/virtual/external storage, optional user
   blocks, and resizable datasets.
-- Existing-file editing covers value and attribute patching, attribute and link
-  add/rename/delete, object creation/deletion, and append-only metadata rebuilds.
-  Virtual datasets can be added to new or existing files.
-  Every editing API returns a new byte image.
+- Existing-file editing covers value and attribute patching, dataset resize and
+  trailing-corner append, attribute and link add/rename/delete, object
+  creation/deletion, and append-only metadata rebuilds. Virtual datasets can be
+  added to new or existing files. Every editing API returns a new byte image.
 
 See [Compatibility](docs/compatibility.md) for the exact supported and rejected
 cases.
@@ -213,6 +213,11 @@ let edited = @lib.Hdf5File::parse(with_attribute).add_soft_link(
   including variable-length values, same-file references and external
   version-4 references registered through `Hdf5File::with_external_source`.
   The replacement must keep the dataset's shape and a compatible datatype.
+- `resize_dataset` changes simple chunked datasets with extensible-array, v1
+  B-tree or v2 B-tree indexes. Existing chunk coordinates and filter masks are
+  retained; shrinking hides chunks and regrowing restores them.
+- `append_dataset` writes a block at the trailing corner, grows unlimited axes,
+  and updates filtered, variable-length and newly created chunk metadata.
 - `patch_contiguous_dataset` is the strict allocated-contiguous-only form.
 - `patch_attribute_values` replaces existing attribute values without changing
   names, creation order or storage form when the record can be updated in place.

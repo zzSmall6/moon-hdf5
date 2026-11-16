@@ -777,3 +777,16 @@ message types emitted by this writer.
   layouts differ. MoonBit tests cover top-level and nested references, null
   slots, fills and writer parity; h5py 3.13.0/HDF5 1.14.6 independently checks
   the external slots, raw addresses and fill in both release demos.
+- 2026-11-16: bytes-backed `Hdf5File::resize_dataset` and `append_dataset`
+  now resize and extend existing chunked datasets while preserving existing
+  chunk coordinates and filter masks. Covered indexes include extensible
+  arrays, v1 B-trees and v2 B-trees, including missing EAIB/EADB/EASB,
+  fixed-array data-block and v1/v2 tree metadata creation. Appends handle
+  unfiltered and Shuffle/deflate data, variable-length strings across multiple
+  extensible-array blocks, and multiple unlimited axes. Shrinking hides chunks
+  without deleting them, so regrowing restores the previous values. A
+  double-alignment bug that shifted appended variable-length global heaps was
+  fixed by writing the already-padded heap prefix verbatim from the original
+  EOF. MoonBit wasm/native tests cover resize, numeric append, filtered append,
+  vlen append, v1/v2 B-tree fixtures and shrink/regrow; the release resize/append
+  demo is independently read by h5py 3.13.0/HDF5 1.14.6.
