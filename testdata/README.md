@@ -20,6 +20,7 @@ python3 -m venv /tmp/moon-hdf5-h5py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_nested_reference_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_v4_reference_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_scaleoffset_fixture.py
+/tmp/moon-hdf5-h5py/bin/python scripts/generate_nbit_fixtures.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_vlen_fill_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_nested_vlen_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_filtered_attribute_fixture.py
@@ -67,6 +68,7 @@ Independent verifiers run with the HDF5 1.14.6 environment:
 ```sh
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_numeric_layouts_fixture.py testdata/numeric_layouts.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_scaleoffset_fixture.py testdata/scaleoffset.h5
+/tmp/moon-hdf5-h5py/bin/python scripts/verify_nbit_fixture.py testdata/nbit_filters.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_vlen_fill_fixture.py testdata/vlen_fills.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_external_storage_fixture.py testdata/external_storage.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_external_reference_fixture.py testdata/external_references.h5
@@ -96,6 +98,7 @@ verifies the committed files.
 | `wide_numeric.h5` | 16-byte signed/unsigned integers, bit-offset integers, x87 80-bit and wide implied/explicit-MSB floats, and big-endian variants |
 | `nested_vlen.h5` | Vlen strings used as the base of vlen sequences in contiguous and chunked datasets and a root attribute |
 | `scaleoffset.h5` | Integer and f32/f64 decimal scale-offset, big-endian values, fill markers, pipeline and full-precision cases |
+| `nbit_filters.h5` | N-bit integer/float fields, big-endian and padded layouts, arrays, nested compounds, no-op members and shuffle/deflate combinations |
 | `layout_v4.h5` | Compact/contiguous/chunked layouts, filter masks and all common chunk indexes |
 | `fixed_array*.h5`, `extensible_array*.h5`, `btree_v2*.h5` | Paged/super-block fixed and extensible arrays; v2 B-tree chunk indexes |
 | `fractal_heap_advanced.h5` | Filtered/raw huge objects, indirect blocks and v2 B-tree heap records |

@@ -123,6 +123,163 @@ test "shuffle can derive its element size from the filter pipeline" {
 }
 
 ///|
+test "N-bit chunks decode padded, array and compound datatypes" {
+  let bytes = @fs.read_file_to_bytes("testdata/nbit_filters.h5")
+  let file = Hdf5File::parse(bytes)
+  assert_eq(integer_values(file.read_dataset("/padded_int32")), [
+    0L, 1L, -1L, 2047L, -2048L, 300L, -300L,
+  ])
+  assert_eq(integer_values(file.read_dataset("/padded_int16_be")), [
+    0L, 1L, -1L, 127L, -128L, 255L, -256L,
+  ])
+  let selected = file.read_dataset_selection(
+    "/padded_int32",
+    Hyperslab([2UL], [3UL], [2UL]),
+  )
+  match selected.values {
+    Integers(values) => assert_eq(values, [-1L, -2048L, -300L])
+    _ => abort("expected N-bit selection values")
+  }
+  let sources : Array[&Hdf5Source] = [bytes]
+  let random = Hdf5File::parse_source(sources[0])
+  assert_eq(integer_values(random.read_dataset("/padded_int32")), [
+    0L, 1L, -1L, 2047L, -2048L, 300L, -300L,
+  ])
+
+  match file.read_dataset("/padded_compound").values {
+    Structured(values) =>
+      assert_eq(values, [
+        Compound([
+          { name: "left", value: SignedInteger(0L), },
+          { name: "right", value: SignedInteger(7L), },
+        ]),
+        Compound([
+          { name: "left", value: SignedInteger(1L), },
+          { name: "right", value: SignedInteger(-8L), },
+        ]),
+        Compound([
+          { name: "left", value: SignedInteger(-1L), },
+          { name: "right", value: SignedInteger(9L), },
+        ]),
+        Compound([
+          { name: "left", value: SignedInteger(2047L), },
+          { name: "right", value: SignedInteger(-10L), },
+        ]),
+        Compound([
+          { name: "left", value: SignedInteger(-2048L), },
+          { name: "right", value: SignedInteger(11L), },
+        ]),
+      ])
+    _ => abort("expected N-bit compound values")
+  }
+  match file.read_dataset("/padded_array").values {
+    Structured(values) => {
+      assert_eq(values.length(), 4)
+      for element in 0..<4 {
+        match values[element] {
+          Elements(items) => {
+            assert_eq(items.length(), 6)
+            for item in 0..<6 {
+              assert_eq(
+                items[item],
+                SignedInteger((element * 6 + item - 5).to_int64()),
+              )
+            }
+          }
+          _ => abort("expected N-bit array elements")
+        }
+      }
+    }
+    _ => abort("expected N-bit array dataset")
+  }
+}
+
+///|
+test "N-bit decodes non-byte-aligned bit fields across widths" {
+  let file = Hdf5File::parse(@fs.read_file_to_bytes("testdata/nbit_filters.h5"))
+  let expected = [
+    [0L, -512L, -65536L, -4611686018427387903L],
+    [-1L, -511L, -65535L, -123456789L],
+    [0L, -256L, -32768L, -1L],
+    [-1L, -1L, -1L, 0L],
+    [0L, 0L, 0L, 1L],
+    [-1L, 1L, 1L, 123456789L],
+    [0L, 255L, 32767L, 4611686018427387903L],
+    [-1L, 511L, 65535L, -7L],
+    [0L, -300L, -12345L, 7L],
+    [-1L, 300L, 12345L, -100L],
+    [0L, -2L, -2L, 100L],
+    [-1L, 2L, 2L, -9L],
+  ]
+  match file.read_dataset("/padded_bits").values {
+    Structured(values) => {
+      assert_eq(values.length(), 12)
+      for row in 0..<12 {
+        match values[row] {
+          Compound(fields) => {
+            assert_eq(fields.length(), 4)
+            for column in 0..<4 {
+              match fields[column].value {
+                SignedInteger(value) => assert_eq(value, expected[row][column])
+                _ => abort("expected signed N-bit field")
+              }
+            }
+          }
+          _ => abort("expected N-bit compound")
+        }
+      }
+    }
+    _ => abort("expected N-bit structured values")
+  }
+}
+
+///|
+test "N-bit pipelines preserve standard types and fill chunks" {
+  let file = Hdf5File::parse(@fs.read_file_to_bytes("testdata/nbit_filters.h5"))
+  let int16_expected = Array::make(64, 0L)
+  for index in 0..<64 {
+    int16_expected[index] = (-42 + index).to_int64()
+  }
+  assert_eq(integer_values(file.read_dataset("/int16")), int16_expected)
+  let int64_expected = Array::make(35, 0L)
+  for index in 0..<35 {
+    int64_expected[index] = (index - 17).to_int64() * 1000000007L
+  }
+  assert_eq(integer_values(file.read_dataset("/int64_deflate")), int64_expected)
+  let float32_expected = [
+    1.5, -2.25, 0.0, -9.5, 123.25, -0.125, 7.0, -8.5, 4.75,
+  ]
+  assert_eq(
+    float_values(file.read_dataset("/float32_shuffle")),
+    float32_expected,
+  )
+  assert_eq(float_values(file.read_dataset("/float64_be")), float32_expected)
+  let uint8_expected = Array::make(80, 0UL)
+  for index in 0..<80 {
+    uint8_expected[index] = index.to_uint64()
+  }
+  assert_eq(
+    unsigned_values(file.read_dataset("/uint8_combined")),
+    uint8_expected,
+  )
+  assert_eq(string_values(file.read_dataset("/string_noop")), [
+    "alpha", "", "omega",
+  ])
+  let enum_values = match file.read_dataset("/enum_noop").values {
+    Enums(values) => values
+    _ => abort("expected N-bit enum values")
+  }
+  assert_eq(enum_values, ["LOW", "HIGH", "LOW", "HIGH", "LOW", "HIGH"])
+  let partial_expected = Array::make(20, -7L)
+  partial_expected[0] = 42L
+  partial_expected[10] = 99L
+  assert_eq(
+    integer_values(file.read_dataset("/partial_fill")),
+    partial_expected,
+  )
+}
+
+///|
 test "integer scale-offset chunks decode widths signs and byte orders" {
   let file = Hdf5File::parse(@fs.read_file_to_bytes("testdata/scaleoffset.h5"))
   let int32_auto = Array::make(20, -7L)

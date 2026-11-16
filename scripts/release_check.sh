@@ -155,6 +155,14 @@ else
 fi
 
 if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> N-bit fixture verification skipped (SKIP_H5PY=1)"
+elif [ ! -f testdata/nbit_filters.h5 ]; then
+  echo "==> N-bit fixture verification skipped (fixture unavailable)"
+else
+  "$python" scripts/verify_nbit_fixture.py testdata/nbit_filters.h5
+fi
+
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
   echo "==> Variable-length fill verification skipped (SKIP_H5PY=1)"
 elif [ ! -f testdata/vlen_fills.h5 ]; then
   echo "==> Variable-length fill verification skipped (fixture unavailable)"

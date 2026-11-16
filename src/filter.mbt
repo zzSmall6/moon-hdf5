@@ -83,6 +83,365 @@ fn strip_fletcher32(data : Bytes) -> Bytes raise Hdf5Error {
 }
 
 ///|
+priv struct NbitField {
+  size : Int32
+  order : Int32
+  precision : Int32
+  offset : Int32
+}
+
+///|
+priv enum NbitNode {
+  NbitAtomic(NbitField)
+  NbitArray(Int32, Int32)
+  NbitCompound(Int32, Array[(Int32, Int32)])
+  NbitNoop(Int32)
+}
+
+///|
+priv struct NbitCursor {
+  input : Bytes
+  mut bit : Int64
+}
+
+///|
+fn nbit_read_parameter(
+  parameters : Array[UInt32],
+  cursor : FixedArray[Int32],
+) -> Int32 raise Hdf5Error {
+  guard cursor[0] >= 0 && cursor[0] < parameters.length() else {
+    raise InvalidField("truncated N-bit filter parameters")
+  }
+  let value = parameters[cursor[0]]
+  cursor[0] = cursor[0] + 1
+  guard value <= 0x7FFFFFFFU else {
+    raise UnsupportedFeature("N-bit filter parameter is too large")
+  }
+  value.reinterpret_as_int()
+}
+
+///|
+fn nbit_node_size(
+  nodes : Array[NbitNode],
+  index : Int32,
+) -> Int32 raise Hdf5Error {
+  guard index >= 0 && index < nodes.length() else {
+    raise InvalidField("invalid N-bit datatype node")
+  }
+  match nodes[index] {
+    NbitAtomic(field) => field.size
+    NbitArray(size, _) => size
+    NbitCompound(size, _) => size
+    NbitNoop(size) => size
+  }
+}
+
+///|
+fn nbit_parse_node(
+  parameters : Array[UInt32],
+  cursor : FixedArray[Int32],
+  nodes : Array[NbitNode],
+  datatype_class : Int32,
+  depth : Int32,
+) -> Int32 raise Hdf5Error {
+  guard depth <= 16 else {
+    raise UnsupportedFeature("N-bit datatype nesting is too deep")
+  }
+  match datatype_class {
+    1 => {
+      let size = nbit_read_parameter(parameters, cursor)
+      let order = nbit_read_parameter(parameters, cursor)
+      let encoded_precision = nbit_read_parameter(parameters, cursor)
+      let offset = nbit_read_parameter(parameters, cursor)
+      let precision = if encoded_precision == 0 {
+        size * 8
+      } else {
+        encoded_precision
+      }
+      guard size > 0 &&
+        size <= 0x0FFFFFFF &&
+        (order == 0 || order == 1) &&
+        precision > 0 &&
+        precision.to_int64() <= size.to_int64() * 8L &&
+        offset >= 0 &&
+        offset.to_int64() + precision.to_int64() <= size.to_int64() * 8L else {
+        raise InvalidField("invalid N-bit atomic datatype")
+      }
+      nodes.push(NbitAtomic({ size, order, precision, offset, }))
+    }
+    2 => {
+      let size = nbit_read_parameter(parameters, cursor)
+      let base_class = nbit_read_parameter(parameters, cursor)
+      let base = nbit_parse_node(
+        parameters,
+        cursor,
+        nodes,
+        base_class,
+        depth + 1,
+      )
+      let base_size = nbit_node_size(nodes, base)
+      guard size > 0 && base_size > 0 && size % base_size == 0 else {
+        raise InvalidField("invalid N-bit array datatype")
+      }
+      nodes.push(NbitArray(size, base))
+    }
+    3 => {
+      let size = nbit_read_parameter(parameters, cursor)
+      let member_count = nbit_read_parameter(parameters, cursor)
+      guard size > 0 && member_count >= 0 && member_count <= 0xFFF else {
+        raise InvalidField("invalid N-bit compound datatype")
+      }
+      let members : Array[(Int32, Int32)] = []
+      let mut used_size = 0
+      for _ in 0..<member_count {
+        let member_offset = nbit_read_parameter(parameters, cursor)
+        let member_class = nbit_read_parameter(parameters, cursor)
+        let child = nbit_parse_node(
+          parameters,
+          cursor,
+          nodes,
+          member_class,
+          depth + 1,
+        )
+        let member_size = nbit_node_size(nodes, child)
+        guard member_offset >= 0 &&
+          member_size > 0 &&
+          used_size <= size - member_size &&
+          member_offset <= size - member_size else {
+          raise InvalidField("invalid N-bit compound member")
+        }
+        used_size = used_size + member_size
+        members.push((member_offset, child))
+      }
+      nodes.push(NbitCompound(size, members))
+    }
+    4 => {
+      let size = nbit_read_parameter(parameters, cursor)
+      guard size > 0 else { raise InvalidField("invalid N-bit no-op datatype") }
+      nodes.push(NbitNoop(size))
+    }
+    _ => raise InvalidField("invalid N-bit datatype class")
+  }
+  nodes.length() - 1
+}
+
+///|
+fn nbit_bit_mask(count : Int32) -> Int32 {
+  if count == 0 {
+    0
+  } else {
+    (1 << count) - 1
+  }
+}
+
+///|
+fn NbitCursor::read_bits(
+  self : NbitCursor,
+  count : Int32,
+) -> Int32 raise Hdf5Error {
+  guard count >= 0 &&
+    count <= 8 &&
+    self.bit >= 0L &&
+    self.bit + count.to_int64() <= self.input.length().to_int64() * 8L else {
+    raise InvalidField("truncated N-bit chunk")
+  }
+  let byte_index = (self.bit / 8L).to_int()
+  let bit_offset = (self.bit % 8L).to_int()
+  let available = 8 - bit_offset
+  let value = if count <= available {
+    (self.input[byte_index].to_int() >> (available - count)) &
+    nbit_bit_mask(count)
+  } else {
+    let first = available
+    let second = count - first
+    ((self.input[byte_index].to_int() & nbit_bit_mask(first)) << second) |
+    (
+      (self.input[byte_index + 1].to_int() >> (8 - second)) &
+      nbit_bit_mask(second)
+    )
+  }
+  self.bit = self.bit + count.to_int64()
+  value
+}
+
+///|
+fn nbit_decompress_atomic(
+  output : FixedArray[Byte],
+  data_offset : Int32,
+  cursor : NbitCursor,
+  field : NbitField,
+) -> Unit raise Hdf5Error {
+  guard data_offset >= 0 &&
+    data_offset <= output.length() - field.size &&
+    field.size > 0 else {
+    raise InvalidField("N-bit atomic value exceeds its chunk")
+  }
+  let datatype_len = field.size.to_int64() * 8L
+  let begin_i : Int32 = if field.order == 0 {
+    let sum = field.precision.to_int64() + field.offset.to_int64()
+    if sum % 8L != 0L {
+      (sum / 8L).to_int()
+    } else {
+      (sum / 8L - 1L).to_int()
+    }
+  } else {
+    ((datatype_len - field.precision.to_int64() - field.offset.to_int64()) / 8L).to_int()
+  }
+  let end_i : Int32 = if field.order == 0 {
+    field.offset / 8
+  } else if field.offset % 8 != 0 {
+    ((datatype_len - field.offset.to_int64()) / 8L).to_int()
+  } else {
+    ((datatype_len - field.offset.to_int64()) / 8L - 1L).to_int()
+  }
+  guard begin_i >= 0 && end_i >= 0 && begin_i < field.size && end_i < field.size else {
+    raise InvalidField("invalid N-bit atomic bit range")
+  }
+  let mut k = begin_i
+  let mut finished = false
+  while !finished {
+    let (dat_len, dat_offset) = if begin_i != end_i {
+      if k == begin_i {
+        let tail = (
+            datatype_len - field.precision.to_int64() - field.offset.to_int64()
+          ) %
+          8L
+        (8 - tail.to_int(), 0)
+      } else if k == end_i {
+        let length = 8 - field.offset % 8
+        (length, 8 - length)
+      } else {
+        (8, 0)
+      }
+    } else {
+      (field.precision, field.offset % 8)
+    }
+    guard dat_len >= 0 &&
+      dat_len <= 8 &&
+      dat_offset >= 0 &&
+      dat_offset + dat_len <= 8 else {
+      raise InvalidField("invalid N-bit atomic byte width")
+    }
+    let value = cursor.read_bits(dat_len)
+    output[data_offset + k] = (value << dat_offset).to_byte()
+    if field.order == 0 {
+      if k == end_i {
+        finished = true
+      } else {
+        k = k - 1
+      }
+    } else if k == end_i {
+      finished = true
+    } else {
+      k = k + 1
+    }
+  }
+}
+
+///|
+fn nbit_decompress_node(
+  nodes : Array[NbitNode],
+  index : Int32,
+  output : FixedArray[Byte],
+  data_offset : Int32,
+  cursor : NbitCursor,
+) -> Unit raise Hdf5Error {
+  guard index >= 0 && index < nodes.length() else {
+    raise InvalidField("invalid N-bit datatype node")
+  }
+  match nodes[index] {
+    NbitAtomic(field) =>
+      nbit_decompress_atomic(output, data_offset, cursor, field)
+    NbitArray(size, base) => {
+      let base_size = nbit_node_size(nodes, base)
+      guard base_size > 0 && size > 0 && size % base_size == 0 else {
+        raise InvalidField("invalid N-bit array datatype")
+      }
+      for element in 0..<(size / base_size) {
+        nbit_decompress_node(
+          nodes,
+          base,
+          output,
+          data_offset + element * base_size,
+          cursor,
+        )
+      }
+    }
+    NbitCompound(_, members) =>
+      for (member_offset, child) in members {
+        nbit_decompress_node(
+          nodes,
+          child,
+          output,
+          data_offset + member_offset,
+          cursor,
+        )
+      }
+    NbitNoop(size) => {
+      guard data_offset >= 0 && data_offset <= output.length() - size else {
+        raise InvalidField("N-bit no-op value exceeds its chunk")
+      }
+      for byte_index in 0..<size {
+        output[data_offset + byte_index] = cursor.read_bits(8).to_byte()
+      }
+    }
+  }
+}
+
+///|
+fn decode_nbit(
+  data : Bytes,
+  parameters : Array[UInt32],
+  expected_size : Int32,
+) -> Bytes raise Hdf5Error {
+  guard parameters.length() >= 3 &&
+    parameters[0].reinterpret_as_int() == parameters.length() else {
+    raise InvalidField("invalid N-bit filter parameter count")
+  }
+  guard parameters[1] <= 1U else {
+    raise InvalidField("invalid N-bit compression flag")
+  }
+  if parameters[1] == 1U {
+    guard data.length() == expected_size else {
+      raise InvalidField("uncompressed N-bit chunk size mismatch")
+    }
+    return data
+  }
+  let cursor = FixedArray::make(1, 0)
+  cursor[0] = 2
+  let element_count = nbit_read_parameter(parameters, cursor)
+  let datatype_class = nbit_read_parameter(parameters, cursor)
+  let nodes : Array[NbitNode] = []
+  let root = nbit_parse_node(parameters, cursor, nodes, datatype_class, 0)
+  guard cursor[0] == parameters.length() else {
+    raise InvalidField("N-bit filter parameter has trailing values")
+  }
+  let element_size = nbit_node_size(nodes, root)
+  guard element_count > 0 &&
+    element_size > 0 &&
+    element_count <= 0x7FFFFFFF / element_size &&
+    element_count * element_size == expected_size else {
+    raise InvalidField("N-bit output size does not match declared shape")
+  }
+  let output = FixedArray::make(expected_size, b'\x00')
+  let bit_cursor : NbitCursor = { input: data, bit: 0L, }
+  for element in 0..<element_count {
+    nbit_decompress_node(
+      nodes,
+      root,
+      output,
+      element * element_size,
+      bit_cursor,
+    )
+  }
+  guard bit_cursor.bit <= data.length().to_int64() * 8L &&
+    data.length().to_int64() * 8L - bit_cursor.bit <= 8L else {
+    raise InvalidField("N-bit chunk has an invalid payload length")
+  }
+  output.unsafe_reinterpret_as_bytes()
+}
+
+///|
 fn scaleoffset_parameter_value(
   parameters : Array[UInt32],
   size : Int32,
@@ -356,6 +715,7 @@ fn decode_filters(
         }
         strip_fletcher32(output)
       }
+      5 => decode_nbit(output, filter.parameters, expected_size)
       6 => decode_scaleoffset(output, filter, element_size, expected_size)
       _ =>
         match filter.decoder {

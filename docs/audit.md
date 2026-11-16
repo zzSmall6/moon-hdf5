@@ -1,4 +1,4 @@
-# Code audit — 2026-11-15
+# Code audit — 2026-11-16
 
 Scope: current worktree, reader and writer, with emphasis on the HDF5 1.14.6
 v1.0 delivery profile and post-v1.0 extensions.
@@ -9,8 +9,8 @@ The MoonBit release checks pass on the current worktree with the stable
 MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
 `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 414 tests passed;
-- native: 414 tests passed;
+- wasm: 422 tests passed;
+- native: 422 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output remain
   covered by prior h5py 3.13.0/HDF5 1.14.6 verification, and the new v1 B-tree
@@ -111,6 +111,9 @@ MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
 - the version-4 reference fixture and writer output are exercised by MoonBit
   round-trip tests; external-reference output is independently read through the
   HDF5 1.14.6 C API.
+- N-bit filter reading is exercised by MoonBit tests and an HDF5 1.14.6 fixture
+  verifier covering padded integer fields, arrays, nested compounds, no-op
+  members, byte orders and shuffle/deflate pipeline combinations.
 
 The implementation remains a documented HDF5 subset. Known unsupported
 structures raise errors; detection is not exhaustive.
@@ -124,7 +127,7 @@ structures raise errors; detection is not exhaustive.
 | Datasets | Compact, contiguous, virtual storage, external raw data and every supported chunk index |
 | Virtual datasets | Same-file and registered external mappings, multiple/strided selections, fill gaps, nested virtual datasets, one unlimited axis with `%b`/`%%`, numeric/enum/complex/array/compound/fixed-string and fixed-to-vlen-string conversion, and 4-/8-byte fixtures; new-file and existing-file writer output is independently read by h5py 3.13.0/HDF5 1.14.6 |
 | Fill policies | Default, custom, undefined and `FILL_TIME_NEVER`; malformed messages and external-storage boundaries remain rejected |
-| Filters | Shuffle, deflate, Fletcher32, integer/f32/f64 scale-offset, masks and fill markers; registered caller-defined encoders/decoders with named v2 pipeline entries and per-chunk mask skips |
+| Filters | Shuffle, deflate, Fletcher32, N-bit atomic/array/compound/no-op decoding, integer/f32/f64 scale-offset, masks and fill markers; registered caller-defined encoders/decoders with named v2 pipeline entries and per-chunk mask skips |
 | Datatypes | Fixed-point, IEEE/normalized floats, strings, compound, enum, array, time, bitfield, opaque, sequence, references, complex |
 | References | 4-/8-byte object references, legacy region references and version-4 object/region/attribute references against compact, contiguous and filtered targets; legacy, same-file and registered-external version-4 object-, region- and attribute-reference datasets and attributes, including references nested in compound, fixed-array and fixed-base sequence values, can be written and patched in place |
 | Shared messages | Table/indexes/heaps, wrappers v1–v3, field sharing, fills, filter pipelines, whole attributes and committed targets |
@@ -199,6 +202,13 @@ zero, infinities and NaNs in either byte order. Extended values retain `Double`
 precision. Attribute value decoding propagates unsupported datatype errors
 instead of reporting an empty value. HDF5 2.0 datatype-message v5 is accepted as
 forward-compatibility evidence and is outside the 1.14.6 baseline.
+
+N-bit chunks reconstruct significant bits for little- and big-endian atomic
+fields, arrays, nested compounds and no-op members. Filter parameters are
+recursively validated against the expected element count and decoded size, and
+only trailing byte padding is accepted. The fixture covers compressed and
+identity/full-precision chunks, shuffle/deflate combinations, custom fill
+values and non-byte-aligned 1-, 9-, 10-, 12-, 17- and 63-bit fields.
 
 ## Writer findings
 
@@ -312,6 +322,8 @@ message types emitted by this writer.
 - Custom filter callbacks cover dataset chunk and fractal-heap metadata decoder
   pipelines. Writing and patching require a registered encoder; overrides of
   built-in filter IDs are not accepted.
+- N-bit decoding is read-only. Writer and patch pipelines still expose Shuffle,
+  deflate, Fletcher32, scale-offset and registered custom encoders.
 - External raw data requires caller registration and caller-managed files.
 - SOHM output uses one master table with typed indexes and multi-block heaps.
   Dense metadata output supports multiple direct blocks and huge objects but does
@@ -689,3 +701,8 @@ message types emitted by this writer.
   1.14.6 fixtures verify direct and strided conversion; variable-length source
   and reference conversions remain rejected because HDF5 1.14.6 has no safe VDS
   conversion path for them.
+- 2026-11-16: built-in HDF5 N-bit filter decoding covers little- and big-endian
+  atomic fields, arrays, nested compounds and no-op members, including
+  non-byte-aligned precision/offset layouts and shuffle/deflate combinations.
+  HDF5 1.14.6 fixtures and an independent verifier cover compressed and
+  full-precision identity chunks; N-bit output remains unsupported.
