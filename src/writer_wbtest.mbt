@@ -47,6 +47,84 @@ test "writer round-trips groups datasets and attributes" {
 }
 
 ///|
+test "writer emits a user block with relative addresses" {
+  let writer = Hdf5Writer::new()
+  writer.set_user_block(512)
+  writer.add_group("/group")
+  writer.add_dataset("/group/values", [4UL], Int64Values([1L, 2L, 3L, 4L]))
+  writer.add_attribute(
+    "/group/values",
+    "unit",
+    [],
+    FixedStringValues(["count"], 8),
+  )
+
+  let bytes = writer.encode()
+  for index in 0..<512 {
+    assert_eq(bytes[index], b'\x00')
+  }
+  assert_true(signature_at(bytes, 512))
+  let file = Hdf5File::parse(bytes)
+  assert_eq(file.superblock.version, 3)
+  assert_eq(file.superblock._superblock_offset, 512)
+  assert_eq(file.superblock.base_address, 512UL)
+  assert_eq(file.superblock.end_of_file_address, bytes.length().to_uint64())
+  assert_eq(integer_values(file.read_dataset("/group/values")), [1L, 2L, 3L, 4L])
+  match find_attribute(file.attributes("/group/values"), "unit").values {
+    Some(Strings(values)) => assert_eq(values, ["count"])
+    _ => abort("expected a user-block attribute")
+  }
+}
+
+///|
+test "user-block patches keep an absolute end-of-file address" {
+  let writer = Hdf5Writer::new()
+  writer.set_user_block(1024)
+  writer.add_compact_dataset(
+    "/labels",
+    [2UL],
+    VariableStringValues(["one", "two"]),
+  )
+  let original = writer.encode()
+  let file = Hdf5File::parse(original)
+  let patched = file.patch_dataset_values(
+    "/labels",
+    VariableStringValues(["a longer value", "second"]),
+  )
+  assert_true(patched.length() > original.length())
+  let patched_file = Hdf5File::parse(patched)
+  assert_eq(patched_file.superblock.base_address, 1024UL)
+  assert_eq(
+    patched_file.superblock.end_of_file_address,
+    patched.length().to_uint64(),
+  )
+  assert_eq(string_values(patched_file.read_dataset("/labels")), [
+    "a longer value", "second",
+  ])
+}
+
+///|
+test "writer rejects invalid user block sizes" {
+  for size in [-1, 1, 511, 513, 1048577] {
+    let writer = Hdf5Writer::new()
+    let error = try {
+      writer.set_user_block(size)
+      None
+    } catch {
+      error => Some(error)
+    }
+    assert_eq(
+      error,
+      Some(
+        InvalidArgument(
+          "user block size must be zero or a power of two from 512 to 1048576 bytes",
+        ),
+      ),
+    )
+  }
+}
+
+///|
 test "writer emits compact datasets and patches them in place" {
   let writer = Hdf5Writer::new()
   writer.add_compact_dataset("/scalar", [], Int64Values([42L]))

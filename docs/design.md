@@ -164,6 +164,13 @@ a 16-bit size; additional messages continue through checksummed OCHK chunks.
 Object, continuation, dense-metadata, global-heap, external-slot and raw-data
 addresses are assigned before final encoding.
 
+`Hdf5Writer::set_user_block` reserves a zero-filled prefix from 512 B through
+1 MiB. Layout addresses stay relative to the user-block base, while the v3
+superblock records that base and an absolute end-of-file address. Output is
+shifted as a whole, so all embedded addresses remain relative. Existing-file
+editing uses the same convention and preserves the original user block; the EOF
+repair path writes the absolute byte length rather than subtracting the base.
+
 Numeric encoding covers signed and unsigned 1–8-byte integers and IEEE
 float16/32/64 in either byte order. Half-precision values are rounded to
 nearest-even from their f32 representation, including subnormals, infinities and

@@ -25,6 +25,33 @@ test "groups can be created below existing groups" {
 }
 
 ///|
+test "object creation preserves an existing user block" {
+  let original = @fs.read_file_to_bytes("testdata/userblock.h5")
+  let file = Hdf5File::parse(original)
+  let created = file.add_group("/", "created") catch {
+    error => fail("create group behind user block: " + error.message())
+  }
+  assert_true(created.length() > original.length())
+  let edited = Hdf5File::parse(created)
+  assert_eq(edited.superblock._superblock_offset, 512)
+  assert_eq(edited.superblock.base_address, 512UL)
+  assert_eq(edited.superblock.end_of_file_address, created.length().to_uint64())
+  assert_eq(edited.resolve("/created").kind, Group)
+  assert_eq(integer_values(edited.read_dataset("/x")), [0L, 1L, 2L, 3L])
+  let patched = edited.patch_dataset_values("/x", Int32Values([10, 20, 30, 40])) catch {
+    error => fail("patch dataset behind user block: " + error.message())
+  }
+  let patched_file = Hdf5File::parse(patched)
+  assert_eq(
+    patched_file.superblock.end_of_file_address,
+    patched.length().to_uint64(),
+  )
+  assert_eq(integer_values(patched_file.read_dataset("/x")), [
+    10L, 20L, 30L, 40L,
+  ])
+}
+
+///|
 test "group creation converts symbol-table parents and honors four-byte addresses" {
   let file = Hdf5File::parse(
     @fs.read_file_to_bytes("testdata/symbol_table_32.h5"),

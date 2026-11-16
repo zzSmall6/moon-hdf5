@@ -64,10 +64,13 @@ virtual-dataset output. Version-4 reference output is checked by MoonBit
 round-trip tests; `scripts/verify_external_reference_output.py` additionally
 reads external version-4 object, region and attribute references through the
 HDF5 1.14.6 C API because h5py's NumPy dtype bridge does not expose them.
+`src/cmd/user_block_demo` and `scripts/verify_user_block_output.py` cover new
+v3 user-block output plus object creation and patching in the v0 fixture.
 
 | Area | Verified | Boundary |
 | --- | --- | --- |
-| Framing | Superblock v3 and v2 object headers with OCHK continuations | Older output formats are not selected |
+| Framing | Superblock v3, optional zero-filled 512 B–1 MiB user block, and v2 object headers with OCHK continuations | Older output formats are not selected; user-block content is zero-filled |
+| User blocks | New v3 files place relative addresses behind the declared base and store an absolute EOF; existing v0/v3 user-block files support object creation, value patching and append-only metadata updates | Sizes are 0 or powers of two from 512 B through 1 MiB; arbitrary prefix bytes are not writable through the API |
 | Groups and attributes | Compact/dense collections, creation order, continued headers, inline/dense attributes, compact/dense link editing and symbol-table conversion | Dense limits below |
 | Object creation | `add_group`, contiguous `add_dataset`, finite fixed-array or resizable `add_chunked_dataset` with built-in or caller-registered filters, `add_virtual_dataset` with optional `maximum_dimensions`, and unfiltered `add_external_dataset` in bytes-backed files, including numeric, fixed-string, complex, fixed-size structured, variable-length UTF-8 string, variable-length sequence and legacy object/region-reference values; these values may be nested in compound, fixed-array and fixed-base sequence members; fill values; 4-/8-byte descriptors, reference slots, heap addresses, chunk-index fields, external-data heap fields and virtual-mapping heap fields; extensible-array indexes for one unlimited axis and v2 B-tree indexes for multiple unlimited axes; appended global heaps; v1/v2 parent headers and symbol-table parents | Filtered external storage is unsupported; virtual sources are not opened or validated during creation; no free-space reclamation; structured variable-length custom fills require 8-byte file addresses because HDF5 1.14.6 cannot represent them safely in 4-byte files |
 | Dense metadata | 9–65,535 records; FRHP/FHDB direct blocks, FHIB indirect roots, managed and huge heap objects with type-1 or filtered type-2 huge-object v2 B-trees, inline metadata filter pipelines, multi-level BTHD/BTIN/BTLF type 6/9 indexes; optional SOHM table with per-message-type indexes/heaps | No free-space manager or tiny heap output; larger compact sets use OCHK; filtered rebuilds require an encoder for every pipeline entry |
@@ -91,6 +94,8 @@ moon test --target wasm
 moon test --target native
 moon run src/cmd/write_demo --target native -- output.h5
 python scripts/verify_writer_output.py output.h5
+moon run src/cmd/user_block_demo --target native -- testdata/userblock.h5 new.h5 edited.h5 existing.h5
+python scripts/verify_user_block_output.py new.h5 edited.h5 existing.h5
 moon run src/cmd/virtual_dataset_demo --target native -- new.h5 edited.h5
 python scripts/verify_virtual_dataset_write.py new.h5 edited.h5
 ```

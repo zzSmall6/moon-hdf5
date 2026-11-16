@@ -123,7 +123,7 @@ structures raise errors; detection is not exhaustive.
 
 | Area | Evidence |
 | --- | --- |
-| Framing and navigation | Superblock v0–v3, user blocks, all 2/4/8-byte address/length combinations, compact/dense groups, hard/soft links, `.`/`..` path normalization, source-backed reads |
+| Framing and navigation | Superblock v0–v3, user blocks, all 2/4/8-byte address/length combinations, compact/dense groups, hard/soft links, `.`/`..` path normalization, source-backed reads; writer-created v3 user blocks and edited v0 user-block fixtures are independently read by h5py 3.13.0/HDF5 1.14.6 with absolute EOF checks |
 | Dense metadata | FRHP direct/indirect blocks, huge objects, v2 B-tree leaf/internal nodes and SOHM heap IDs |
 | Datasets | Compact, contiguous, virtual storage, external raw data and every supported chunk index |
 | Virtual datasets | Same-file and registered external mappings, multiple/strided selections, fill gaps, nested virtual datasets, one unlimited axis with `%b`/`%%`, numeric/enum/complex/array/compound/fixed-string and fixed-to-vlen-string conversion, and 4-/8-byte fixtures; new-file and existing-file writer output is independently read by h5py 3.13.0/HDF5 1.14.6 |
@@ -224,6 +224,13 @@ checksummed OCHK continuations. Dense collections use FHDB direct blocks, an
 FHIB indirect root when multiple blocks are needed, and a type-1 v2 B-tree for
 huge objects. Multi-level BTHD/BTIN/BTLF name and type 6/9 creation-order
 indexes are limited to 9–65,535 records. A free-space manager is not emitted.
+
+An optional user block reserves a zero-filled power-of-two prefix from 512 B
+through 1 MiB. Internal object and metadata addresses remain base-relative, the
+superblock records the user-block base, and the end-of-file field is absolute.
+The same rule applies when appending objects or patched storage to an existing
+v0 or v3 user-block file, so the base is never subtracted from the final byte
+length.
 
 Compact datasets embed their payload in the data-layout message and enforce the
 65,535-byte limit before encoding. In-place patching locates compact payloads
@@ -710,3 +717,10 @@ message types emitted by this writer.
   full-precision identity chunks. Writer and patch output use the same layout;
   h5py 3.13.0/HDF5 1.14.6 reads padded, compound, array and no-op output, and a
   fixture-backed patch test rewrites N-bit chunks.
+- 2026-11-16: `Hdf5Writer::set_user_block` emits zero-filled 512 B–1 MiB user
+  blocks with base-relative addresses and an absolute v3 EOF. Existing v0 and
+  v3 user-block files support object creation, value patching and append-only
+  metadata updates. The previous EOF repair path subtracted the base from the
+  final length and could truncate the declared file size; regression tests now
+  cover writer-created v3 files and the v0 fixture. H5py 3.13.0/HDF5 1.14.6
+  independently reads the new, patched and existing-edited outputs.

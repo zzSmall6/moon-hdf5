@@ -20,8 +20,8 @@ This project implements a documented subset of HDF5. The
   chunk/selection iterators for directly addressable mappings.
 - Writing covers groups, datasets, attributes, links, committed datatypes,
   filters, fills, dense/SOHM metadata, nested variable-length and reference
-  values, compact/contiguous/chunked/virtual/external storage, and resizable
-  datasets.
+  values, compact/contiguous/chunked/virtual/external storage, optional
+  zero-filled user blocks, and resizable datasets.
 - Existing-file editing covers value and attribute patching, attribute and link
   add/rename/delete, object creation/deletion, and append-only metadata rebuilds.
   Virtual datasets can be added to new or existing files.
@@ -103,6 +103,7 @@ return exactly the expected byte count.
 ```moonbit nocheck
 ///|
 let writer = @lib.Hdf5Writer::new()
+writer.set_user_block(512)
 
 let record = @lib.Datatype::write_compound([
   ("id", @lib.Datatype::write_integer(true, 4)),
@@ -152,6 +153,8 @@ Dataset creation options:
   `write_dataset_slab`: in-memory resizing, append and rectangular writes.
 - `add_external_dataset`: unfiltered external raw-data slots; the caller creates
   the external files.
+- `set_user_block`: reserve a zero-filled 512 B, 1 KiB, ... or 1 MiB prefix and
+  place the superblock after it. Existing user-block files remain editable.
 - `add_virtual_dataset`: virtual storage from one or more source mappings. Use
   `.` for a same-file source; external source names are stored without opening
   the file. `maximum_dimensions` with a `None` entry declares one unlimited
@@ -253,6 +256,8 @@ moon-hdf5 is not a drop-in replacement for libhdf5.
   unfiltered. Dense collections hold 9–65,535 records. Four-byte structured
   values with variable-length custom fills are rejected for HDF5 1.14.6
   interoperability.
+- User blocks are zero-filled and limited to powers of two from 512 B through
+  1 MiB; arbitrary prefix bytes are not exposed by the writer API.
 - Detection of unsupported input is not exhaustive. Unsupported structures
   raise `UnsupportedFeature`; malformed input raises `InvalidField` or
   `UnexpectedEof`.

@@ -1026,11 +1026,7 @@ fn Hdf5File::finish_appended_image(
     raise UnsupportedFeature("file is too large to append dataset storage")
   }
   let final_length = self.bytes.length() + tail.length()
-  let eof_address = file_offset_to_stored_address(
-    final_length.to_uint64(),
-    self.superblock.base_address,
-  )
-  patch_end_of_file_address(output, self.superblock, eof_address)
+  patch_end_of_file_address(output, self.superblock, final_length.to_uint64())
   if self.superblock.superblock_checksum_offset >= 0 {
     patch_metadata_checksum_in_place(
       output,

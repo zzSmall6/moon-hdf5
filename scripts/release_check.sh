@@ -31,6 +31,9 @@ moon package --list >/dev/null 2>&1 || {
 
 echo "==> Writer compatibility"
 output=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-release.XXXXXX")
+user_block_new=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-user-block-new.XXXXXX")
+user_block_edited=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-user-block-edited.XXXXXX")
+user_block_existing=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-user-block-existing.XXXXXX")
 symbol_compact=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-compact.XXXXXX")
 symbol_dense=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-dense.XXXXXX")
 filtered_links=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-filtered-links.XXXXXX")
@@ -41,7 +44,7 @@ virtual_edited=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-virtual-edited.XXXXXX")
 created=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created.XXXXXX")
 created8=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created8.XXXXXX")
 deleted=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-deleted.XXXXXX")
-trap 'rm -f "$output" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$virtual_new" "$virtual_edited" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"; rm -rf "$external_references"' EXIT HUP INT TERM
+trap 'rm -f "$output" "$user_block_new" "$user_block_edited" "$user_block_existing" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$virtual_new" "$virtual_edited" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"; rm -rf "$external_references"' EXIT HUP INT TERM
 moon run src/cmd/write_demo --target native -- "$output"
 
 python=${H5PY_PYTHON:-}
@@ -62,6 +65,17 @@ else
     exit 1
   fi
   "$python" scripts/verify_writer_output.py "$output"
+fi
+
+echo "==> User-block output"
+moon run src/cmd/user_block_demo --target native -- \
+  testdata/userblock.h5 "$user_block_new" "$user_block_edited" \
+  "$user_block_existing"
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> User-block verification skipped (SKIP_H5PY=1)"
+else
+  "$python" scripts/verify_user_block_output.py \
+    "$user_block_new" "$user_block_edited" "$user_block_existing"
 fi
 
 echo "==> Virtual dataset output"

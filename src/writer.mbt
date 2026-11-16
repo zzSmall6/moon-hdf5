@@ -594,6 +594,7 @@ pub struct Hdf5Writer {
   priv mut share_attributes : Bool
   priv mut share_fills : Bool
   priv mut share_filters : Bool
+  priv mut user_block_size : Int32
   priv custom_filters : Array[&Hdf5CustomFilter]
   priv external_sources : Array[Hdf5ExternalSource]
 }
@@ -749,9 +750,30 @@ pub fn Hdf5Writer::new() -> Hdf5Writer {
     share_attributes: false,
     share_fills: false,
     share_filters: false,
+    user_block_size: 0,
     custom_filters: [],
     external_sources: [],
   }
+}
+
+///|
+/// Reserves a zero-filled user block before the HDF5 superblock.
+///
+/// HDF5 requires a user block to be either absent or a power-of-two size from
+/// 512 bytes through 1 MiB. The writer always emits a version-3 superblock, so
+/// the declared base address is the user-block size and all stored addresses
+/// remain relative to that base.
+pub fn Hdf5Writer::set_user_block(
+  self : Hdf5Writer,
+  size : Int32,
+) -> Unit raise Hdf5Error {
+  guard size == 0 ||
+    (size >= 512 && size <= 1048576 && (size & (size - 1)) == 0) else {
+    raise InvalidArgument(
+      "user block size must be zero or a power of two from 512 to 1048576 bytes",
+    )
+  }
+  self.user_block_size = size
 }
 
 ///|
@@ -826,6 +848,25 @@ fn writer_write_zeros(buffer : @buffer.Buffer, count : Int32) -> Unit {
   for _ in 0..<count {
     buffer.write_byte(b'\x00')
   }
+}
+
+///|
+fn writer_write_at(
+  buffer : @buffer.Buffer,
+  base_address : Int32,
+  address : UInt64,
+  payload : Bytes,
+) -> Unit raise Hdf5Error {
+  guard address <= 0x7FFFFFFFUL &&
+    base_address.to_int64() + address.reinterpret_as_int64() <= 0x7FFFFFFFL else {
+    raise UnsupportedFeature("file offset is too large")
+  }
+  let target = base_address + address.to_int()
+  guard target >= buffer.length() else {
+    raise InvalidField("HDF5 write offsets are out of order")
+  }
+  writer_write_zeros(buffer, target - buffer.length())
+  writer_write_bytes(buffer, payload)
 }
 
 ///|
@@ -10661,6 +10702,7 @@ fn encode_superblock(
   root_address : UInt64,
   extension_address : UInt64,
   eof : UInt64,
+  base_address~ : UInt64,
 ) -> Bytes {
   let buffer = @buffer.Buffer::Buffer(size_hint=48)
   writer_write_bytes(buffer, b"\x89HDF\r\n\x1a\n")
@@ -10668,7 +10710,7 @@ fn encode_superblock(
   buffer.write_byte(b'\x08')
   buffer.write_byte(b'\x08')
   buffer.write_byte(b'\x00')
-  buffer.write_uint64_le(0UL)
+  buffer.write_uint64_le(base_address)
   buffer.write_uint64_le(extension_address)
   buffer.write_uint64_le(eof)
   buffer.write_uint64_le(root_address)
@@ -10893,7 +10935,12 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
       }
     }
   }
-  let output = @buffer.Buffer::Buffer(size_hint=eof)
+  guard eof.to_int64() <= 0x7FFFFFFFL - self.user_block_size.to_int64() else {
+    raise UnsupportedFeature("file is too large to include a user block")
+  }
+  let file_length = self.user_block_size + eof
+  let output = @buffer.Buffer::Buffer(size_hint=file_length)
+  writer_write_zeros(output, self.user_block_size)
   writer_write_bytes(
     output,
     encode_superblock(
@@ -10902,16 +10949,15 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
         Some(shared) => shared.extension_address
         None => 0xFFFFFFFFFFFFFFFFUL
       },
-      eof.to_uint64(),
+      file_length.to_uint64(),
+      base_address=self.user_block_size.to_uint64(),
     ),
   )
   if layout.shared is Some(shared) {
-    writer_write_zeros(
+    writer_write_at(
       output,
-      shared.extension_address.to_int() - output.length(),
-    )
-    writer_write_bytes(
-      output,
+      self.user_block_size,
+      shared.extension_address,
       encode_writer_superblock_extension(
         shared.table_address,
         shared.heaps.length(),
@@ -10919,43 +10965,47 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
     )
   }
   for index in 0..<objects.length() {
-    writer_write_zeros(
+    writer_write_at(
       output,
-      objects[index].address.to_int() - output.length(),
+      self.user_block_size,
+      objects[index].address,
+      encoded_headers[index],
     )
-    writer_write_bytes(output, encoded_headers[index])
   }
   if region_heap_payload.length() > 0 {
-    writer_write_zeros(
+    writer_write_at(
       output,
-      layout.heap.region_address.to_int() - output.length(),
+      self.user_block_size,
+      layout.heap.region_address,
+      region_heap_payload,
     )
-    writer_write_bytes(output, region_heap_payload)
   }
   if heap_payload.length() > 0 {
-    writer_write_zeros(output, layout.heap.address.to_int() - output.length())
-    writer_write_bytes(output, heap_payload)
+    writer_write_at(
+      output,
+      self.user_block_size,
+      layout.heap.address,
+      heap_payload,
+    )
   }
   for (address, payload) in dense_payloads {
-    writer_write_zeros(output, address.to_int() - output.length())
-    writer_write_bytes(output, payload)
+    writer_write_at(output, self.user_block_size, address, payload)
   }
   for (address, payload) in external_payloads {
-    writer_write_zeros(output, address.to_int() - output.length())
-    writer_write_bytes(output, payload)
+    writer_write_at(output, self.user_block_size, address, payload)
   }
   for (address, payload) in virtual_payloads {
-    writer_write_zeros(output, address.to_int() - output.length())
-    writer_write_bytes(output, payload)
+    writer_write_at(output, self.user_block_size, address, payload)
   }
   for (address, payload) in raw_payloads {
-    writer_write_zeros(output, address.to_int() - output.length())
-    writer_write_bytes(output, payload)
+    writer_write_at(output, self.user_block_size, address, payload)
   }
   for (address, payload) in shared_payloads {
-    writer_write_zeros(output, address.to_int() - output.length())
-    writer_write_bytes(output, payload)
+    writer_write_at(output, self.user_block_size, address, payload)
   }
-  writer_write_zeros(output, eof - output.length())
+  guard file_length >= output.length() else {
+    raise InvalidField("HDF5 output exceeds its declared end-of-file address")
+  }
+  writer_write_zeros(output, file_length - output.length())
   output.to_bytes()
 }
