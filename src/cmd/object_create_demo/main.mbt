@@ -54,6 +54,11 @@ fn created_record(
 }
 
 ///|
+fn external_reference_slot(address : UInt64, width : Int32) -> Array[Byte] {
+  Array::makei(width, index => ((address >> (index * 8)) & 0xFFUL).to_byte())
+}
+
+///|
 fn run(args : Array[String]) -> Int32 {
   if args.length() != 3 {
     eprintln(
@@ -281,6 +286,37 @@ fn run(args : Array[String]) -> Int32 {
       @lib.Int32Values([10, 20, 30, 40, 50, 60]),
       [{ file_name: external_path, file_offset: 4UL, data_size: 24UL, }],
       fill_value=@lib.Int32Values([-1]),
+    )
+    let external_references_path = args[2] + ".external-refs.bin"
+    let reference_width = file.address_size()
+    let reference_source = @buffer.Buffer::Buffer()
+    for
+      byte in external_reference_slot(
+        file.resolve("/matrix").address,
+        reference_width,
+      ) {
+      reference_source.write_byte(byte)
+    }
+    for _ in 0..<reference_width {
+      reference_source.write_byte(b'\x00')
+    }
+    @fs.write_bytes_to_file(
+      external_references_path,
+      reference_source.to_bytes(),
+    )
+    edited = @lib.Hdf5File::parse(edited).add_external_dataset(
+      "/created_root",
+      "external_references",
+      [2UL],
+      @lib.ObjectReferenceValues([Some("/matrix"), None]),
+      [
+        {
+          file_name: external_references_path,
+          file_offset: 0UL,
+          data_size: (2 * reference_width).to_uint64(),
+        },
+      ],
+      fill_value=@lib.ObjectReferenceValues([Some("/matrix")]),
     )
     @fs.write_bytes_to_file(args[2], edited)
     println("wrote " + args[2])

@@ -2537,6 +2537,123 @@ test "writer emits external raw-data slots" {
 }
 
 ///|
+test "writer emits external raw-data object references" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/matrix", [2UL], Int64Values([1L, 2L]))
+  writer.add_group("/group")
+  writer.add_dataset("/group/child", [1UL], Int64Values([9L]))
+  let references = ObjectReferenceValues([
+    Some("/matrix"),
+    None,
+    Some("/group/child"),
+  ])
+  writer.add_external_dataset(
+    "/external_references",
+    [3UL],
+    references,
+    [
+      {
+        file_name: "writer_external_references.bin",
+        file_offset: 4UL,
+        data_size: 24UL,
+      },
+    ],
+    fill_value=ObjectReferenceValues([Some("/matrix")]),
+  )
+  let object_type = Datatype::write_object_reference()
+  let record_type = Datatype::write_compound([
+    ("id", Datatype::write_integer(false, 4)),
+    ("target", object_type),
+    ("pair", Datatype::write_array(object_type, [2UL])),
+  ])
+  let records = StructuredValues(record_type, [
+    Compound([
+      { name: "id", value: UnsignedInteger(1UL), },
+      { name: "target", value: ObjectReference(Some("/matrix")), },
+      {
+        name: "pair",
+        value: Elements([
+          ObjectReference(Some("/group/child")),
+          ObjectReference(None),
+        ]),
+      },
+    ]),
+  ])
+  writer.add_external_dataset("/external_records", [1UL], records, [
+    {
+      file_name: "writer_external_records.bin",
+      file_offset: 0UL,
+      data_size: record_type.size.to_uint64(),
+    },
+  ])
+  let bytes = writer.encode()
+  let file = Hdf5File::parse(bytes)
+  let objects = file.created_reference_objects()
+  let resolver = Hdf5Resolver::new(bytes)
+  resolver.add_source(
+    "writer_external_references.bin",
+    external_source_with_prefix(
+      encode_write_values(references, objects~).payload,
+      4,
+    ),
+  )
+  resolver.add_source(
+    "writer_external_records.bin",
+    encode_write_values(records, objects~).payload,
+  )
+
+  let references = match resolver.read_dataset("/external_references").values {
+    Structured(items) => items
+    _ => fail("expected external object references")
+  }
+  let matrix = match references[0] {
+    Reference(bytes) => bytes
+    _ => fail("expected a matrix reference")
+  }
+  assert_eq(
+    resolver.resolve_object_reference(matrix).unwrap().target.path,
+    Some("/matrix"),
+  )
+  let child = match references[2] {
+    Reference(bytes) => bytes
+    _ => fail("expected a child reference")
+  }
+  assert_eq(
+    resolver.resolve_object_reference(child).unwrap().target.path,
+    Some("/group/child"),
+  )
+
+  let records = match resolver.read_dataset("/external_records").values {
+    Structured(items) => items
+    _ => fail("expected external compound records")
+  }
+  let fields = match records[0] {
+    Compound(fields) => fields
+    _ => fail("expected a compound record")
+  }
+  let target = match fields[1].value {
+    Reference(bytes) => bytes
+    _ => fail("expected a nested target reference")
+  }
+  assert_eq(
+    resolver.resolve_object_reference(target).unwrap().target.path,
+    Some("/matrix"),
+  )
+  let pair = match fields[2].value {
+    Elements(items) => items
+    _ => fail("expected a nested reference pair")
+  }
+  let child = match pair[0] {
+    Reference(bytes) => bytes
+    _ => fail("expected a nested child reference")
+  }
+  assert_eq(
+    resolver.resolve_object_reference(child).unwrap().target.path,
+    Some("/group/child"),
+  )
+}
+
+///|
 test "writer validates external raw-data slots" {
   let mismatch = try {
     Hdf5Writer::new().add_external_dataset(

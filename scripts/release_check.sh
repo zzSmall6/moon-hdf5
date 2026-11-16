@@ -46,7 +46,7 @@ virtual_edited=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-virtual-edited.XXXXXX")
 created=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created.XXXXXX")
 created8=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created8.XXXXXX")
 deleted=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-deleted.XXXXXX")
-trap 'rm -f "$output" "$user_block_new" "$user_block_edited" "$user_block_existing" "$dense_links" "$dense_links_edited" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$virtual_new" "$virtual_edited" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"; rm -rf "$external_references"' EXIT HUP INT TERM
+trap 'rm -f "$output" "$user_block_new" "$user_block_edited" "$user_block_existing" "$dense_links" "$dense_links_edited" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$virtual_new" "$virtual_edited" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$created.external-refs.bin" "$created8.external-refs.bin" "$deleted"; rm -rf "$external_references"' EXIT HUP INT TERM
 moon run src/cmd/write_demo --target native -- "$output"
 
 python=${H5PY_PYTHON:-}

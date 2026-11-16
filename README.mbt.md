@@ -152,8 +152,9 @@ Dataset creation options:
   `maximum_dimensions`.
 - `add_extensible_dataset`, `resize_dataset`, `append_dataset` and
   `write_dataset_slab`: in-memory resizing, append and rectangular writes.
-- `add_external_dataset`: unfiltered external raw-data slots; the caller creates
-  the external files.
+- `add_external_dataset`: unfiltered external raw-data slots for fixed-width
+  values, including legacy object references nested in compounds and
+  fixed-arrays; the caller creates the external files.
 - `set_user_block`: reserve a zero-filled 512 B, 1 KiB, ... or 1 GiB prefix and
   place the superblock after it. Existing user-block files remain editable.
 - `set_user_block_content`: store caller-provided prefix bytes, rounded up to
@@ -257,11 +258,12 @@ moon-hdf5 is not a drop-in replacement for libhdf5.
   Float conversion is limited to 64-bit integer magnitudes and standard binary
   floats. Writers do not open sources; readers require source registration.
 - The API is memory-resident, editing is append-only, and references or patches
-  target existing objects. External raw data is resolver-only, contiguous and
-  unfiltered. Dense attributes hold 9–65,535 records; dense links use the
-  format's 64-bit creation-order field and are not capped at 65,535.
-  Four-byte structured values with variable-length custom fills are rejected
-  for HDF5 1.14.6 interoperability.
+  target existing objects. External raw data is contiguous and unfiltered;
+  reading requires the resolver, and creation is limited to fixed-width values
+  and legacy object references. Dense attributes hold 9–65,535 records; dense
+  links use the format's 64-bit creation-order field and are not capped at
+  65,535. Four-byte structured values with variable-length or reference custom
+  fills are rejected for HDF5 1.14.6 interoperability.
 - The in-memory writer caps user blocks at 1 GiB; HDF5 permits larger
   power-of-two blocks.
 - Detection of unsupported input is not exhaustive. Unsupported structures

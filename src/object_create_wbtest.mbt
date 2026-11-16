@@ -771,6 +771,263 @@ test "external raw-data datasets can be created with file-width metadata" {
 }
 
 ///|
+fn external_source_with_prefix(payload : Bytes, offset : Int32) -> Bytes {
+  let source = @buffer.Buffer::Buffer()
+  writer_write_zeros(source, offset)
+  writer_write_bytes(source, payload)
+  source.to_bytes()
+}
+
+///|
+test "external raw-data datasets store fixed-width object references" {
+  let cases : Array[(String, Int32, String)] = [
+    ("testdata/symbol_table_32.h5", 4, "/group/values"),
+    ("testdata/references.h5", 8, "/group/child"),
+  ]
+  for (fixture, reference_size, second_target) in cases {
+    let file = Hdf5File::parse(@fs.read_file_to_bytes(fixture))
+    let values = ObjectReferenceValues([
+      Some("/matrix"),
+      None,
+      Some(second_target),
+    ])
+    let created = file.add_external_dataset(
+      "/group",
+      "external_references",
+      [3UL],
+      values,
+      [
+        {
+          file_name: "created_external_references.bin",
+          file_offset: 4UL,
+          data_size: (3 * reference_size).to_uint64(),
+        },
+      ],
+      fill_value=ObjectReferenceValues([Some("/matrix")]),
+    ) catch {
+      error =>
+        fail(fixture + ": create external references: " + error.message())
+    }
+    let edited = Hdf5File::parse(created)
+    let metadata = edited.read_dataset_metadata("/group/external_references")
+    assert_eq(metadata.datatype.class, 7)
+    assert_eq(metadata.datatype.size, reference_size)
+    let fill = dataset_fill_value(
+      edited.object_header_at(
+        edited.resolve("/group/external_references").address,
+      ),
+      metadata.datatype,
+    )
+    assert_eq(
+      edited.resolve_object_reference(fill).map(target => target.path),
+      Some(Some("/matrix")),
+    )
+
+    let objects = edited.created_reference_objects()
+    let payload = encode_write_values(
+        values,
+        objects~,
+        reference_address_size=reference_size,
+      ).payload
+    let resolver = Hdf5Resolver::new(created)
+    resolver.add_source(
+      "created_external_references.bin",
+      external_source_with_prefix(payload, 4),
+    )
+    let references = match
+      resolver.read_dataset("/group/external_references").values {
+      Structured(items) => items
+      _ => fail(fixture + ": expected external object references")
+    }
+    let matrix = match references[0] {
+      Reference(bytes) => bytes
+      _ => fail(fixture + ": expected a matrix reference")
+    }
+    assert_eq(matrix.length(), reference_size)
+    assert_eq(
+      resolver.resolve_object_reference(matrix).unwrap().target.path,
+      Some("/matrix"),
+    )
+    assert_eq(references[1], Reference(Bytes::make(reference_size, b'\x00')))
+    let second = match references[2] {
+      Reference(bytes) => bytes
+      _ => fail(fixture + ": expected a second-target reference")
+    }
+    assert_eq(
+      resolver.resolve_object_reference(second).unwrap().target.address,
+      edited.resolve(second_target).address,
+    )
+  }
+}
+
+///|
+test "external raw-data datasets store nested fixed-width object references" {
+  let cases : Array[(String, Int32, String)] = [
+    ("testdata/symbol_table_32.h5", 4, "/group/values"),
+    ("testdata/references.h5", 8, "/group/child"),
+  ]
+  for (fixture, reference_size, second_target) in cases {
+    let object_type = Datatype::write_object_reference_with_address_size(
+      reference_size,
+    )
+    let record_type = Datatype::write_compound([
+      ("id", Datatype::write_integer(false, 4)),
+      ("target", object_type),
+      ("pair", Datatype::write_array(object_type, [2UL])),
+    ])
+    let first = Compound([
+      { name: "id", value: UnsignedInteger(1UL), },
+      { name: "target", value: ObjectReference(Some("/matrix")), },
+      {
+        name: "pair",
+        value: Elements([
+          ObjectReference(Some("/matrix")),
+          ObjectReference(Some(second_target)),
+        ]),
+      },
+    ])
+    let second = Compound([
+      { name: "id", value: UnsignedInteger(2UL), },
+      { name: "target", value: ObjectReference(None), },
+      {
+        name: "pair",
+        value: Elements([ObjectReference(None), ObjectReference(None)]),
+      },
+    ])
+    let values = StructuredValues(record_type, [first, second])
+    let file = Hdf5File::parse(@fs.read_file_to_bytes(fixture))
+    let fill = if reference_size == 8 {
+      Some(StructuredValues(record_type, [first]))
+    } else {
+      let rejected = try {
+        ignore(
+          file.add_external_dataset(
+            "/group",
+            "external_record",
+            [2UL],
+            values,
+            [{ file_name: "records.bin", file_offset: 0UL, data_size: 32UL, }],
+            fill_value=StructuredValues(record_type, [first]),
+          ),
+        )
+        None
+      } catch {
+        error => Some(error)
+      }
+      assert_eq(
+        rejected,
+        Some(
+          UnsupportedFeature(
+            "custom fills for structured reference values require eight-byte file addresses",
+          ),
+        ),
+      )
+      None
+    }
+    let created = file.add_external_dataset(
+      "/group",
+      "external_records",
+      [2UL],
+      values,
+      [
+        {
+          file_name: "created_external_records.bin",
+          file_offset: 4UL,
+          data_size: (2 * record_type.size).to_uint64(),
+        },
+      ],
+      fill_value?=fill,
+    ) catch {
+      error => fail(fixture + ": create external records: " + error.message())
+    }
+    let edited = Hdf5File::parse(created)
+    let objects = edited.created_reference_objects()
+    let payload = encode_write_values(
+        values,
+        objects~,
+        reference_address_size=reference_size,
+      ).payload
+    let resolver = Hdf5Resolver::new(created)
+    resolver.add_source(
+      "created_external_records.bin",
+      external_source_with_prefix(payload, 4),
+    )
+    let records = match
+      resolver.read_dataset("/group/external_records").values {
+      Structured(items) => items
+      _ => fail(fixture + ": expected external compound records")
+    }
+    let first_fields = match records[0] {
+      Compound(fields) => fields
+      _ => fail(fixture + ": expected a compound record")
+    }
+    let target = match first_fields[1].value {
+      Reference(bytes) => bytes
+      _ => fail(fixture + ": expected a nested target reference")
+    }
+    assert_eq(
+      resolver.resolve_object_reference(target).unwrap().target.path,
+      Some("/matrix"),
+    )
+    let pair = match first_fields[2].value {
+      Elements(items) => items
+      _ => fail(fixture + ": expected a nested reference pair")
+    }
+    let second_pair = match pair[1] {
+      Reference(bytes) => bytes
+      _ => fail(fixture + ": expected a nested second-target reference")
+    }
+    assert_eq(
+      resolver.resolve_object_reference(second_pair).unwrap().target.address,
+      edited.resolve(second_target).address,
+    )
+    if reference_size == 8 {
+      let metadata = edited.read_dataset_metadata("/group/external_records")
+      let fill_bytes = dataset_fill_value(
+        edited.object_header_at(
+          edited.resolve("/group/external_records").address,
+        ),
+        metadata.datatype,
+      )
+      let target_member = record_type.compound_members[1]
+      let fill_target = Bytes::makei(reference_size, index => {
+        fill_bytes[target_member.offset + index]
+      })
+      assert_eq(
+        edited.resolve_object_reference(fill_target).map(target => target.path),
+        Some(Some("/matrix")),
+      )
+    }
+  }
+}
+
+///|
+test "external raw-data datasets reject indirect references" {
+  let file = Hdf5File::parse(Hdf5Writer::new().encode())
+  let values = StructuredValues(Datatype::write_region_reference(), [
+    RegionReference(None, RegionEmpty),
+  ])
+  let rejected = try {
+    ignore(
+      file.add_external_dataset("/", "external_regions", [1UL], values, [
+        { file_name: "regions.bin", file_offset: 0UL, data_size: 12UL, },
+      ]),
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    rejected,
+    Some(
+      UnsupportedFeature(
+        "external storage supports only fixed-width legacy object references",
+      ),
+    ),
+  )
+}
+
+///|
 test "chunked and external creation validate filters and slots" {
   let file = Hdf5File::parse(Hdf5Writer::new().encode())
   let bad_chunk = try {

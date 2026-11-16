@@ -478,11 +478,15 @@ dataspace advertises those maxima so HDF5 can resize the dataset later. External
 datasets append a width-aware local heap for slot names and write the
 external-data message plus an undefined contiguous layout. Fill values use the
 shared fill message encoder for contiguous, chunked and external storage.
-Custom fills for structured values containing variable-length members are
-accepted only with eight-byte file addresses; HDF5 1.14.6 requires a fill size
-that matches the file datatype while its fill initializer also uses the native
-datatype size, so a four-byte structured layout cannot satisfy both and is
-rejected instead of producing a file HDF5 may corrupt on resize. Custom filters
+External values may contain legacy object references at the file address width,
+including references nested in compound and fixed-array members. Variable-length
+storage and references that need a writer-managed region or version-4 heap are
+rejected. Custom fills for structured values containing variable-length members
+or references are accepted only with eight-byte file addresses; HDF5 1.14.6
+requires a fill size that matches the file datatype while its fill initializer
+also uses the native datatype size, so a four-byte structured layout cannot
+satisfy both and is rejected instead of producing a file HDF5 may corrupt on
+resize. Custom filters
 for appended chunked datasets are supplied through the `custom_filters`
 argument, registered with the same ID/name validation as `Hdf5Writer`, and used
 by the fixed-array, extensible-array and v2 B-tree storage encoders. Virtual

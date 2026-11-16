@@ -100,6 +100,7 @@ def verify(path: Path) -> None:
             "compact_references",
             "compact_values",
             "external",
+            "external_references",
             "growable",
             "labels",
             "measurement_type",
@@ -208,6 +209,16 @@ def verify(path: Path) -> None:
         np.testing.assert_array_equal(
             external[:], [10, 20, 30, 40, 50, 60]
         )
+        external_references = handle["created_root/external_references"]
+        external_references_path = str(path) + ".external-refs.bin"
+        assert external_references.external == [
+            (external_references_path, 0, 2 * offset_size)
+        ]
+        assert reference_addresses(handle, external_references) == [
+            h5py.h5o.get_info(handle["matrix"].id).addr,
+            0,
+        ]
+        assert reference_name(handle, external_references.fillvalue) == "/matrix"
         second_target = (
             "group/values" if "group/values" in handle else "group/child"
         )
@@ -311,6 +322,7 @@ def verify(path: Path) -> None:
             if offset_size == 8:
                 assert_second_nested_record(nested_resizable[2], handle, offset_size)
     Path(str(path) + ".external.bin").unlink(missing_ok=True)
+    Path(str(path) + ".external-refs.bin").unlink(missing_ok=True)
     print(
         f"Verified {path} with h5py {h5py.__version__} "
         f"and HDF5 {h5py.version.hdf5_version}"

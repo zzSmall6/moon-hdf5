@@ -1,5 +1,6 @@
 import {
   "Zz04321/moon-hdf5" @lib,
+  "moonbitlang/core/buffer",
   "moonbitlang/core/env",
   "moonbitlang/x/fs",
   "moonbitlang/x/sys",

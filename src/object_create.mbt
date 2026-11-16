@@ -100,13 +100,37 @@ fn encode_created_contiguous_layout(
 }
 
 ///|
-fn created_dataset_values_supported(values : Hdf5WriteValues) -> Bool {
-  match values {
-    VariableStringValues(_) | ObjectReferenceValues(_) => true
-    StructuredValues(datatype, _) =>
-      !datatype_contains_vlen(datatype) &&
-      !datatype_contains_reference(datatype)
-    _ => true
+fn created_external_reference_supported(datatype : Datatype) -> Bool {
+  if datatype.class == 7 {
+    return datatype.version <= 3 && datatype.reference_kind == 0
+  }
+  for field in datatype.compound_members {
+    if !created_external_reference_supported(field.datatype) {
+      return false
+    }
+  }
+  for base in datatype.base_types {
+    if !created_external_reference_supported(base) {
+      return false
+    }
+  }
+  true
+}
+
+///|
+fn validate_created_external_values(
+  values : Hdf5WriteValues,
+) -> Unit raise Hdf5Error {
+  guard !writer_values_contain_vlen(values) else {
+    raise UnsupportedFeature(
+      "external storage cannot hold variable-length values",
+    )
+  }
+  if values is StructuredValues(datatype, _) &&
+    !created_external_reference_supported(datatype) {
+    raise UnsupportedFeature(
+      "external storage supports only fixed-width legacy object references",
+    )
   }
 }
 
@@ -120,6 +144,10 @@ fn validate_created_fill_layout(
       if address_size == 4 && datatype_contains_vlen(datatype) {
         raise UnsupportedFeature(
           "custom fills for structured variable-length values require eight-byte file addresses",
+        )
+      } else if address_size == 4 && datatype_contains_reference(datatype) {
+        raise UnsupportedFeature(
+          "custom fills for structured reference values require eight-byte file addresses",
         )
       }
     _ => ()
@@ -959,16 +987,7 @@ pub fn Hdf5File::add_external_dataset(
   guard editable_link_index(links, name) is None else {
     raise InvalidArgument("link name already exists: " + name)
   }
-  guard created_dataset_values_supported(values) else {
-    raise UnsupportedFeature(
-      "dataset creation does not support nested variable-length or reference values",
-    )
-  }
-  guard !writer_values_contain_vlen(values) else {
-    raise UnsupportedFeature(
-      "external storage cannot hold variable-length values",
-    )
-  }
+  validate_created_external_values(values)
   let offset_size = self.superblock.offset_size
   let length_size = self.superblock.length_size
   validate_write_values(
@@ -982,14 +1001,8 @@ pub fn Hdf5File::add_external_dataset(
     reference_address_size=Some(offset_size),
   )
   validate_created_fill_layout(copied_fill, offset_size)
-  if copied_fill is Some(fill) &&
-    (
-      !created_dataset_values_supported(fill) ||
-      writer_values_contain_vlen(fill)
-    ) {
-    raise UnsupportedFeature(
-      "external storage cannot hold variable-length fills",
-    )
+  if copied_fill is Some(fill) {
+    validate_created_external_values(fill)
   }
   let objects = if created_values_need_objects(values) ||
     (copied_fill is Some(fill) && created_values_need_objects(fill)) {
