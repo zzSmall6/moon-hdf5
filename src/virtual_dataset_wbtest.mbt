@@ -7,6 +7,22 @@ fn virtual_dataset_integers(dataset : Dataset) -> Array[Int64] raise Hdf5Error {
 }
 
 ///|
+fn virtual_dataset_floats(dataset : Dataset) -> Array[Double] raise Hdf5Error {
+  match dataset.values {
+    Floats(values) => values
+    _ => raise InvalidField("expected virtual dataset floating values")
+  }
+}
+
+///|
+fn virtual_dataset_strings(dataset : Dataset) -> Array[String] raise Hdf5Error {
+  match dataset.values {
+    Strings(values) => values
+    _ => raise InvalidField("expected virtual dataset string values")
+  }
+}
+
+///|
 fn virtual_selection_integers(
   result : DatasetSelectionResult,
 ) -> Array[Int64] raise Hdf5Error {
@@ -217,6 +233,55 @@ test "virtual datasets address large direct mappings without expansion" {
 }
 
 ///|
+test "virtual datasets expand printf names and convert datatypes" {
+  let printf_file = Hdf5File::parse(
+      @fs.read_file_to_bytes("testdata/virtual_dataset_printf.h5"),
+    )
+    .with_external_source(
+      "virtual_printf_source_0.h5",
+      @fs.read_file_to_bytes("testdata/virtual_printf_source_0.h5"),
+    )
+    .with_external_source(
+      "virtual_printf_source_1.h5",
+      @fs.read_file_to_bytes("testdata/virtual_printf_source_1.h5"),
+    )
+  let grid = printf_file.read_dataset("/printf_grid")
+  assert_eq(grid.dataspace.dimensions, [4UL, 4UL])
+  assert_eq(grid.dataspace.maximum_dimensions, [virtual_unlimited, 4UL])
+  assert_eq(virtual_dataset_integers(grid), [
+    0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 100L, 101L, 102L, 103L, 104L, 105L, 106L, 107L,
+  ])
+  assert_eq(
+    virtual_dataset_integers(printf_file.read_dataset("/literal_percent")),
+    [0L, 1L, 2L, 3L],
+  )
+  let dataset_printf = printf_file.read_dataset("/printf_dataset")
+  assert_eq(dataset_printf.dataspace.maximum_dimensions, [virtual_unlimited])
+  assert_eq(virtual_dataset_integers(dataset_printf), [10L, 11L, 20L, 21L])
+  let selected = printf_file.read_dataset_selection(
+    "/printf_grid",
+    Hyperslab([3UL, 1UL], [1UL, 2UL], [1UL, 1UL]),
+  )
+  assert_eq(virtual_selection_integers(selected), [105L, 106L])
+
+  let conversion = Hdf5File::parse(
+    @fs.read_file_to_bytes("testdata/virtual_dataset_conversion.h5"),
+  )
+  assert_eq(virtual_dataset_integers(conversion.read_dataset("/i16_i64")), [
+    1L, -2L, 3L, 4L, 5L, -6L,
+  ])
+  assert_eq(virtual_dataset_floats(conversion.read_dataset("/i16_f64")), [
+    1.0, -2.0, 3.0, 4.0, 5.0, -6.0,
+  ])
+  assert_eq(virtual_dataset_integers(conversion.read_dataset("/f32_i32")), [
+    1L, -2L, 3L, -4L, 5L, -6L,
+  ])
+  assert_eq(virtual_dataset_strings(conversion.read_dataset("/s3_s8")), [
+    "ab", "c", "def",
+  ])
+}
+
+///|
 test "virtual datasets can be written to new files" {
   let writer = Hdf5Writer::new()
   writer.add_dataset(
@@ -282,6 +347,75 @@ test "virtual datasets can be written to new files" {
 }
 
 ///|
+test "virtual dataset writer emits unlimited printf mappings" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/block_0", [2UL], Int32Values([10, 11]))
+  writer.add_dataset("/block_1", [2UL], Int32Values([20, 21]))
+  writer.add_dataset("/literal%value", [2UL], Int32Values([7, 8]))
+  writer.add_dataset("/int16_source", [2UL], Int16Values([1, -2]))
+  let datatype = Datatype::write_integer(true, 4)
+  writer.add_virtual_dataset(
+    "/printf",
+    [4UL],
+    datatype,
+    [
+      {
+        source_file: ".",
+        source_dataset: "/block_%b",
+        source_selection: RegionAll,
+        virtual_selection: RegionHyperslab([0UL], [2UL], [virtual_unlimited], [
+          2UL,
+        ]),
+      },
+    ],
+    maximum_dimensions=[None],
+  )
+  writer.add_virtual_dataset(
+    "/printf_file",
+    [2UL],
+    datatype,
+    [
+      {
+        source_file: "source_%b.h5",
+        source_dataset: "/data",
+        source_selection: RegionAll,
+        virtual_selection: RegionHyperslab([0UL], [1UL], [virtual_unlimited], [
+          1UL,
+        ]),
+      },
+    ],
+    maximum_dimensions=[None],
+  )
+  writer.add_virtual_dataset("/literal", [2UL], datatype, [
+    {
+      source_file: ".",
+      source_dataset: "/literal%%value",
+      source_selection: RegionAll,
+      virtual_selection: RegionAll,
+    },
+  ])
+  writer.add_virtual_dataset("/converted", [2UL], datatype, [
+    {
+      source_file: ".",
+      source_dataset: "/int16_source",
+      source_selection: RegionAll,
+      virtual_selection: RegionAll,
+    },
+  ])
+
+  let file = Hdf5File::parse(writer.encode())
+  let dataset = file.read_dataset("/printf")
+  assert_eq(dataset.dataspace.maximum_dimensions, [virtual_unlimited])
+  assert_eq(virtual_dataset_integers(dataset), [10L, 11L, 20L, 21L])
+  assert_eq(
+    file.read_dataset_metadata("/printf_file").dataspace.maximum_dimensions,
+    [virtual_unlimited],
+  )
+  assert_eq(virtual_dataset_integers(file.read_dataset("/literal")), [7L, 8L])
+  assert_eq(virtual_dataset_integers(file.read_dataset("/converted")), [1L, -2L])
+}
+
+///|
 test "virtual dataset writer rejects unsupported mapping selections" {
   let writer = Hdf5Writer::new()
   writer.add_dataset("/source", [2UL, 2UL], Int32Values([1, 2, 3, 4]))
@@ -317,6 +451,111 @@ test "virtual dataset writer rejects unsupported mapping selections" {
     error => Some(error)
   }
   assert_true(blocks_error is Some(UnsupportedFeature(_)))
+}
+
+///|
+test "virtual dataset writer validates printf mappings" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/source", [2UL], Int32Values([1, 2]))
+  let datatype = Datatype::write_integer(true, 4)
+  let invalid_specifier = try {
+    writer.add_virtual_dataset("/invalid_specifier", [2UL], datatype, [
+      {
+        source_file: ".",
+        source_dataset: "/source%q",
+        source_selection: RegionAll,
+        virtual_selection: RegionAll,
+      },
+    ])
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_true(invalid_specifier is Some(InvalidField(_)))
+
+  let printf_without_unlimited = try {
+    writer.add_virtual_dataset("/printf_without_unlimited", [2UL], datatype, [
+      {
+        source_file: ".",
+        source_dataset: "/source_%b",
+        source_selection: RegionAll,
+        virtual_selection: RegionAll,
+      },
+    ])
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_true(printf_without_unlimited is Some(InvalidArgument(_)))
+
+  let unlimited_without_printf = try {
+    writer.add_virtual_dataset(
+      "/unlimited_without_printf",
+      [2UL],
+      datatype,
+      [
+        {
+          source_file: ".",
+          source_dataset: "/source",
+          source_selection: RegionAll,
+          virtual_selection: RegionHyperslab(
+            [0UL],
+            [1UL],
+            [virtual_unlimited],
+            [1UL],
+          ),
+        },
+      ],
+      maximum_dimensions=[None],
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_true(unlimited_without_printf is Some(InvalidArgument(_)))
+
+  let unlimited_source = try {
+    writer.add_virtual_dataset("/unlimited_source", [2UL], datatype, [
+      {
+        source_file: ".",
+        source_dataset: "/source",
+        source_selection: RegionHyperslab([0UL], [1UL], [virtual_unlimited], [
+          1UL,
+        ]),
+        virtual_selection: RegionAll,
+      },
+    ])
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_true(unlimited_source is Some(UnsupportedFeature(_)))
+
+  let limited_maximum = try {
+    writer.add_virtual_dataset(
+      "/limited_maximum",
+      [2UL],
+      datatype,
+      [
+        {
+          source_file: ".",
+          source_dataset: "/source_%b",
+          source_selection: RegionAll,
+          virtual_selection: RegionHyperslab(
+            [0UL],
+            [1UL],
+            [virtual_unlimited],
+            [1UL],
+          ),
+        },
+      ],
+      maximum_dimensions=[Some(2UL)],
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_true(limited_maximum is Some(InvalidArgument(_)))
 }
 
 ///|

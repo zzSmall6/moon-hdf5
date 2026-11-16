@@ -15,6 +15,9 @@ pub extend Hdf5VirtualMapping with Eq::{not_equal, equal}
 pub extend Hdf5VirtualMapping with @debug.Debug::{to_repr}
 
 ///|
+let virtual_unlimited : UInt64 = 0xFFFFFFFFFFFFFFFFUL
+
+///|
 fn copy_virtual_mappings(
   mappings : Array[Hdf5VirtualMapping],
 ) -> Array[Hdf5VirtualMapping] {
@@ -24,6 +27,85 @@ fn copy_virtual_mappings(
     source_selection: copy_region_selection(mapping.source_selection),
     virtual_selection: copy_region_selection(mapping.virtual_selection),
   })
+}
+
+///|
+fn virtual_source_name_substitutions(
+  value : String,
+  description : String,
+) -> Int32 raise Hdf5Error {
+  let encoded = @utf8.encode(value)
+  let mut index = 0
+  let mut substitutions = 0
+  while index < encoded.length() {
+    if encoded[index] == b'%' {
+      guard index + 1 < encoded.length() else {
+        raise InvalidField(description + " ends with an incomplete '%'")
+      }
+      let next = encoded[index + 1]
+      if next == b'b' {
+        substitutions = substitutions + 1
+      } else if next != b'%' {
+        raise InvalidField(
+          description + " contains an unsupported printf specifier",
+        )
+      }
+      index = index + 2
+    } else {
+      index = index + 1
+    }
+  }
+  substitutions
+}
+
+///|
+fn expand_virtual_source_name(
+  value : String,
+  block_number : UInt64,
+  description : String,
+) -> String raise Hdf5Error {
+  let encoded = @utf8.encode(value)
+  let output = @buffer.Buffer::Buffer(size_hint=encoded.length())
+  let mut index = 0
+  while index < encoded.length() {
+    if encoded[index] == b'%' {
+      guard index + 1 < encoded.length() else {
+        raise InvalidField(description + " ends with an incomplete '%'")
+      }
+      let next = encoded[index + 1]
+      if next == b'b' {
+        writer_write_bytes(output, @utf8.encode(block_number.to_string()))
+      } else if next == b'%' {
+        output.write_byte(b'%')
+      } else {
+        raise InvalidField(
+          description + " contains an unsupported printf specifier",
+        )
+      }
+      index = index + 2
+    } else {
+      output.write_byte(encoded[index])
+      index = index + 1
+    }
+  }
+  @utf8.decode(output.to_bytes().get_view().unwrap()) catch {
+    _ => raise InvalidField(description + " is not valid UTF-8")
+  }
+}
+
+///|
+fn virtual_mapping_printf_count(
+  mapping : Hdf5VirtualMapping,
+) -> Int32 raise Hdf5Error {
+  let file_count = virtual_source_name_substitutions(
+    mapping.source_file,
+    "virtual source file name",
+  )
+  let dataset_count = virtual_source_name_substitutions(
+    mapping.source_dataset,
+    "virtual source dataset path",
+  )
+  file_count + dataset_count
 }
 
 ///|
@@ -127,6 +209,11 @@ fn virtual_selection_known_count(
     RegionAll => None
     RegionPoints(points) => Some(points.length().to_uint64())
     RegionHyperslab(_, _, count, block) => {
+      for value in count {
+        if value == virtual_unlimited {
+          return None
+        }
+      }
       let mut total = 1UL
       for axis in 0..<count.length() {
         guard block[axis] == 0UL ||
@@ -167,8 +254,114 @@ fn virtual_selection_known_count(
 }
 
 ///|
+fn virtual_selection_unlimited_axis(
+  selection : Hdf5RegionSelection,
+) -> Int32 raise Hdf5Error {
+  match selection {
+    RegionHyperslab(_, _, count, block) => {
+      let mut unlimited_axis = -1
+      for axis in 0..<count.length() {
+        if count[axis] == virtual_unlimited || block[axis] == virtual_unlimited {
+          guard count[axis] == virtual_unlimited &&
+            block[axis] != virtual_unlimited else {
+            raise UnsupportedFeature(
+              "virtual hyperslabs with an unlimited block size are not supported",
+            )
+          }
+          guard unlimited_axis < 0 else {
+            raise UnsupportedFeature(
+              "virtual hyperslabs with multiple unlimited dimensions are not supported",
+            )
+          }
+          unlimited_axis = axis
+        }
+      }
+      unlimited_axis
+    }
+    _ => -1
+  }
+}
+
+///|
+fn validate_virtual_region_selection(
+  dataspace : Dataspace,
+  selection : Hdf5RegionSelection,
+  allow_partial : Bool,
+) -> Unit raise Hdf5Error {
+  match selection {
+    RegionHyperslab(start, stride, count, block) => {
+      let dimensions = dataspace.dimensions
+      let rank = dimensions.length()
+      guard start.length() == rank &&
+        stride.length() == rank &&
+        count.length() == rank &&
+        block.length() == rank else {
+        raise InvalidField("virtual hyperslab rank does not match the dataset")
+      }
+      let _unlimited_axis = virtual_selection_unlimited_axis(selection)
+      for axis in 0..<rank {
+        if count[axis] == 0UL || block[axis] == 0UL {
+          continue
+        }
+        guard stride[axis] > 0UL else {
+          raise InvalidField("virtual hyperslab stride must be positive")
+        }
+        if start[axis] >= dimensions[axis] {
+          continue
+        }
+        if count[axis] == virtual_unlimited {
+          continue
+        }
+        let steps = count[axis] - 1UL
+        guard steps <= (0xFFFFFFFFFFFFFFFFUL - start[axis]) / stride[axis] else {
+          raise InvalidField("virtual hyperslab coordinate overflow")
+        }
+        let stride_end = start[axis] + steps * stride[axis]
+        guard block[axis] - 1UL <= 0xFFFFFFFFFFFFFFFFUL - stride_end else {
+          raise InvalidField("virtual hyperslab coordinate overflow")
+        }
+        guard allow_partial || stride_end + block[axis] - 1UL < dimensions[axis] else {
+          raise InvalidField("virtual hyperslab extends outside the dataset")
+        }
+      }
+    }
+    _ => validate_region_selection(dataspace, selection)
+  }
+}
+
+///|
+fn virtual_mapping_block_element_count(
+  selection : Hdf5RegionSelection,
+) -> UInt64? raise Hdf5Error {
+  match selection {
+    RegionHyperslab(_, _, count, block) => {
+      let mut total = 1UL
+      for axis in 0..<count.length() {
+        let axis_count = if count[axis] == virtual_unlimited {
+          1UL
+        } else {
+          count[axis]
+        }
+        guard block[axis] == 0UL ||
+          axis_count <= 0xFFFFFFFFFFFFFFFFUL / block[axis] else {
+          raise InvalidArgument("virtual hyperslab element count overflows")
+        }
+        let elements = axis_count * block[axis]
+        guard elements == 0UL || total <= 0xFFFFFFFFFFFFFFFFUL / elements else {
+          raise InvalidArgument("virtual hyperslab element count overflows")
+        }
+        total = total * elements
+      }
+      Some(total)
+    }
+    _ => virtual_selection_known_count(selection)
+  }
+}
+
+///|
 fn validate_virtual_mapping(
   dimensions : Array[UInt64],
+  maximum_dimensions : Array[UInt64],
   mapping : Hdf5VirtualMapping,
 ) -> Unit raise Hdf5Error {
   match mapping.source_selection {
@@ -184,6 +377,14 @@ fn validate_virtual_mapping(
       raise UnsupportedFeature(
         "HDF5 1.14.6 virtual datasets support only all, empty and hyperslab virtual selections",
       )
+  }
+  let source_unlimited_axis = virtual_selection_unlimited_axis(
+    mapping.source_selection,
+  )
+  guard source_unlimited_axis < 0 else {
+    raise UnsupportedFeature(
+      "virtual source selections with unlimited counts are not supported",
+    )
   }
   validate_virtual_mapping_string(
     mapping.source_file,
@@ -201,13 +402,36 @@ fn validate_virtual_mapping(
       Simple
     },
     dimensions,
-    maximum_dimensions: dimensions,
+    maximum_dimensions,
   }
-  validate_region_selection(dataspace, mapping.virtual_selection)
+  validate_virtual_region_selection(dataspace, mapping.virtual_selection, false)
+  let unlimited_axis = virtual_selection_unlimited_axis(
+    mapping.virtual_selection,
+  )
+  let printf_count = virtual_mapping_printf_count(mapping)
+  if unlimited_axis >= 0 {
+    guard unlimited_axis < maximum_dimensions.length() &&
+      maximum_dimensions[unlimited_axis] == virtual_unlimited else {
+      raise InvalidArgument(
+        "printf virtual mappings require an unlimited maximum dimension",
+      )
+    }
+    guard printf_count > 0 else {
+      raise InvalidArgument(
+        "an unlimited virtual selection requires a %b source-name specifier",
+      )
+    }
+  } else {
+    guard printf_count == 0 else {
+      raise InvalidArgument(
+        "printf source-name specifiers require an unlimited virtual selection",
+      )
+    }
+  }
   match
     (
       virtual_selection_known_count(mapping.source_selection),
-      virtual_selection_known_count(mapping.virtual_selection),
+      virtual_mapping_block_element_count(mapping.virtual_selection),
     ) {
     (Some(source_count), Some(virtual_count)) => {
       guard source_count == virtual_count else {
@@ -223,6 +447,7 @@ fn validate_virtual_mapping(
 ///|
 fn encode_virtual_mapping_block(
   dimensions : Array[UInt64],
+  maximum_dimensions : Array[UInt64],
   mappings : Array[Hdf5VirtualMapping],
   length_size : Int32,
 ) -> Bytes raise Hdf5Error {
@@ -237,7 +462,7 @@ fn encode_virtual_mapping_block(
   buffer.write_byte(b'\x00')
   write_uint_width(buffer, mappings.length().to_uint64(), length_size)
   for mapping in mappings {
-    validate_virtual_mapping(dimensions, mapping)
+    validate_virtual_mapping(dimensions, maximum_dimensions, mapping)
     writer_write_bytes(buffer, @utf8.encode(mapping.source_file))
     buffer.write_byte(b'\x00')
     writer_write_bytes(buffer, @utf8.encode(mapping.source_dataset))
@@ -659,6 +884,234 @@ fn virtual_base_types_equal(
 }
 
 ///|
+priv enum VirtualNumericValue {
+  VirtualInteger(@bigint.BigInt)
+  VirtualFloat(Double)
+}
+
+///|
+fn virtual_numeric_value(
+  value : DatasetValue,
+) -> VirtualNumericValue raise Hdf5Error {
+  match value {
+    SignedInteger(number) => VirtualInteger(@bigint.BigInt::from_int64(number))
+    UnsignedInteger(number) =>
+      VirtualInteger(@bigint.BigInt::from_uint64(number))
+    BigInteger(number) => VirtualInteger(number)
+    FloatingPoint(number) => VirtualFloat(number)
+    _ =>
+      raise UnsupportedFeature(
+        "virtual dataset numeric conversion requires a numeric source value",
+      )
+  }
+}
+
+///|
+fn virtual_float_target_is_standard(datatype : Datatype) -> Bool {
+  if datatype.bit_offset != 0 {
+    return false
+  }
+  if datatype.size == 2 {
+    datatype.bit_precision == 16 &&
+    datatype.float_sign_position == 15 &&
+    datatype.float_exponent_position == 10 &&
+    datatype.float_exponent_size == 5 &&
+    datatype.float_mantissa_position == 0 &&
+    datatype.float_mantissa_size == 10 &&
+    datatype.float_exponent_bias == 15 &&
+    datatype.float_normalization == 2
+  } else if datatype.size == 4 {
+    datatype.bit_precision == 32 &&
+    datatype.float_sign_position == 31 &&
+    datatype.float_exponent_position == 23 &&
+    datatype.float_exponent_size == 8 &&
+    datatype.float_mantissa_position == 0 &&
+    datatype.float_mantissa_size == 23 &&
+    datatype.float_exponent_bias == 127 &&
+    datatype.float_normalization == 2
+  } else if datatype.size == 8 {
+    datatype.bit_precision == 64 &&
+    datatype.float_sign_position == 63 &&
+    datatype.float_exponent_position == 52 &&
+    datatype.float_exponent_size == 11 &&
+    datatype.float_mantissa_position == 0 &&
+    datatype.float_mantissa_size == 52 &&
+    datatype.float_exponent_bias == 1023 &&
+    datatype.float_normalization == 2
+  } else if datatype.size == 10 || datatype.size == 16 {
+    datatype.bit_precision == 80 &&
+    datatype.float_sign_position == 79 &&
+    datatype.float_exponent_position == 64 &&
+    datatype.float_exponent_size == 15 &&
+    datatype.float_mantissa_position == 0 &&
+    datatype.float_mantissa_size == 63 &&
+    datatype.float_exponent_bias == 16383 &&
+    datatype.float_normalization == 2
+  } else {
+    false
+  }
+}
+
+///|
+fn virtual_datatype_convertible(source : Datatype, target : Datatype) -> Bool {
+  if virtual_datatype_compatible(source, target) {
+    return true
+  }
+  match (source.class, target.class) {
+    (0, 0) | (0, 1) | (1, 0) | (1, 1) =>
+      if target.class == 1 {
+        virtual_float_target_is_standard(target)
+      } else {
+        target.bit_offset >= 0 && target.bit_precision > 0
+      }
+    (3, 3) => source.string_charset == target.string_charset && target.size > 0
+    _ => false
+  }
+}
+
+///|
+fn virtual_bigint_from_float(number : Double) -> @bigint.BigInt raise Hdf5Error {
+  guard !number.is_nan() && !number.is_inf() else {
+    raise InvalidField("cannot convert a non-finite floating value to integer")
+  }
+  let truncated = number.trunc()
+  if truncated >= 0.0 {
+    guard truncated < 18446744073709551616.0 else {
+      raise UnsupportedFeature(
+        "floating-to-integer virtual conversion exceeds 64-bit magnitude",
+      )
+    }
+    @bigint.BigInt::from_uint64(truncated.to_uint64())
+  } else {
+    guard truncated >= -9223372036854775808.0 else {
+      raise UnsupportedFeature(
+        "floating-to-integer virtual conversion exceeds 64-bit magnitude",
+      )
+    }
+    @bigint.BigInt::from_int64(truncated.to_int64())
+  }
+}
+
+///|
+fn virtual_bigint_to_float(number : @bigint.BigInt) -> Double raise Hdf5Error {
+  guard number.bit_length() <= 64 else {
+    raise UnsupportedFeature(
+      "integer-to-floating virtual conversion exceeds 64 bits",
+    )
+  }
+  if number.compare(@bigint.BigInt::from_int(0)) < 0 {
+    number.to_int64().to_double()
+  } else {
+    number.to_uint64().to_double()
+  }
+}
+
+///|
+fn encode_virtual_integer(
+  buffer : @buffer.Buffer,
+  number : @bigint.BigInt,
+  datatype : Datatype,
+) -> Unit raise Hdf5Error {
+  let bits = datatype.bit_precision
+  guard bits > 0 && datatype.bit_offset + bits <= datatype.size * 8 else {
+    raise InvalidField("virtual target integer layout is invalid")
+  }
+  let zero = @bigint.BigInt::from_int(0)
+  let one = @bigint.BigInt::from_int(1)
+  let raw = if datatype.signed {
+    let magnitude = one.shl(bits - 1)
+    let minimum = magnitude.neg()
+    let maximum = magnitude.sub(one)
+    guard number.compare(minimum) >= 0 && number.compare(maximum) <= 0 else {
+      raise InvalidField(
+        "virtual dataset integer conversion exceeds the target range",
+      )
+    }
+    if number.compare(zero) < 0 {
+      number.add(one.shl(bits))
+    } else {
+      number
+    }
+  } else {
+    let maximum = one.shl(bits).sub(one)
+    guard number.compare(zero) >= 0 && number.compare(maximum) <= 0 else {
+      raise InvalidField(
+        "virtual dataset integer conversion exceeds the target range",
+      )
+    }
+    number
+  }
+  write_big_integer_width(
+    buffer,
+    raw.shl(datatype.bit_offset),
+    datatype.size,
+    false,
+    little_endian=datatype.little_endian,
+  )
+}
+
+///|
+fn convert_virtual_payload(
+  payload : Bytes,
+  count : Int64,
+  source : Datatype,
+  target : Datatype,
+) -> Bytes raise Hdf5Error {
+  guard count >= 0 && count <= 0x7FFFFFFFL else {
+    raise InvalidField("virtual dataset conversion has too many elements")
+  }
+  let output = @buffer.Buffer::Buffer(size_hint=count.to_int() * target.size)
+  for index in 0..<count.to_int() {
+    let value = decode_dataset_value(
+      None,
+      b"",
+      payload,
+      index * source.size,
+      source,
+      8,
+      8,
+      0UL,
+    )
+    match target.class {
+      0 => {
+        let number = match virtual_numeric_value(value) {
+          VirtualInteger(number) => number
+          VirtualFloat(number) => virtual_bigint_from_float(number)
+        }
+        encode_virtual_integer(output, number, target)
+      }
+      1 => {
+        let number = match virtual_numeric_value(value) {
+          VirtualInteger(number) => virtual_bigint_to_float(number)
+          VirtualFloat(number) => number
+        }
+        writer_write_bytes(
+          output,
+          encode_structured_value(target, FloatingPoint(number)),
+        )
+      }
+      3 =>
+        match value {
+          Text(text) =>
+            writer_write_bytes(
+              output,
+              encode_structured_value(target, Text(text)),
+            )
+          _ =>
+            raise UnsupportedFeature(
+              "virtual dataset string conversion requires a string source value",
+            )
+        }
+      _ =>
+        raise UnsupportedFeature(
+          "virtual dataset datatype conversion is not supported for this target class",
+        )
+    }
+  }
+  output.to_bytes()
+}
+
+///|
 fn Hdf5File::read_dataset_indices_payload(
   self : Hdf5File,
   path : String,
@@ -814,6 +1267,303 @@ fn find_virtual_location(
 }
 
 ///|
+fn Hdf5File::apply_virtual_mapping_payload(
+  self : Hdf5File,
+  metadata : DatasetMetadata,
+  indices : Array[UInt64],
+  source_file_name : String,
+  source_dataset_name : String,
+  source_selection : Hdf5RegionSelection,
+  virtual_selection : Hdf5RegionSelection,
+  resolver : Hdf5Resolver?,
+  referring_file : String,
+  depth : Int32,
+  allow_partial : Bool,
+  output : FixedArray[Byte],
+) -> Unit raise Hdf5Error {
+  let datatype = metadata.datatype
+  let (source_name, source_file) = self.virtual_source_file(
+    source_file_name, resolver, referring_file,
+  )
+  let source_path = resolver_canonical_object_path("/", source_dataset_name)
+  let source_node = source_file.resolve(source_path)
+  guard source_node.kind == Dataset else {
+    raise InvalidField(
+      "virtual dataset source is not a dataset: " + source_dataset_name,
+    )
+  }
+  let source_header = source_file.object_header_at(source_node.address)
+  let source_metadata = read_dataset_metadata(
+    source_header,
+    source_file.superblock.offset_size,
+    source_file.superblock.length_size,
+  )
+  guard virtual_datatype_convertible(source_metadata.datatype, datatype) else {
+    raise UnsupportedFeature(
+      "virtual dataset source datatype conversion is not supported",
+    )
+  }
+  validate_region_selection(source_metadata.dataspace, source_selection)
+  validate_virtual_region_selection(
+    metadata.dataspace,
+    virtual_selection,
+    allow_partial,
+  )
+  let source_size = source_metadata.datatype.size
+  let target_size = datatype.size
+  if virtual_selection_is_direct(source_selection) &&
+    virtual_selection_is_direct(virtual_selection) {
+    let source_count = virtual_selection_count(
+      source_metadata.dataspace,
+      source_selection,
+    )
+    let virtual_count = virtual_selection_count(
+      metadata.dataspace,
+      virtual_selection,
+    )
+    guard source_count == virtual_count else {
+      raise InvalidField(
+        "virtual and source selections have different element counts",
+      )
+    }
+    let destinations : Array[Int32] = []
+    let source_indices : Array[UInt64] = []
+    for destination in 0..<indices.length() {
+      match
+        virtual_selection_ordinal_of(
+          metadata.dataspace,
+          virtual_selection,
+          indices[destination],
+        ) {
+        Some(source_ordinal) => {
+          guard source_ordinal >= 0L && source_ordinal < source_count else {
+            raise InvalidField(
+              "virtual mapping ordinal is outside the source selection",
+            )
+          }
+          source_indices.push(
+            virtual_selection_index_at(
+              source_metadata.dataspace,
+              source_selection,
+              source_ordinal,
+            ),
+          )
+          destinations.push(destination)
+        }
+        None => ()
+      }
+    }
+    if destinations.length() == 0 {
+      return
+    }
+    let source_payload = source_file.read_dataset_indices_payload(
+      source_path,
+      source_header,
+      source_metadata,
+      source_indices,
+      resolver,
+      source_name,
+      depth + 1,
+    )
+    let expected = source_indices.length().to_int64() * source_size.to_int64()
+    guard source_payload.length().to_int64() == expected else {
+      raise InvalidField("virtual dataset source payload has an invalid size")
+    }
+    let payload = if virtual_datatype_compatible(
+        source_metadata.datatype,
+        datatype,
+      ) {
+      source_payload
+    } else {
+      convert_virtual_payload(
+        source_payload,
+        source_indices.length().to_int64(),
+        source_metadata.datatype,
+        datatype,
+      )
+    }
+    for match_index in 0..<destinations.length() {
+      output.blit_from_bytes(
+        destinations[match_index] * target_size,
+        payload,
+        match_index * target_size,
+        target_size,
+      )
+    }
+    return
+  }
+  let (_, source_indices) = region_selection_indices(
+    source_metadata.dataspace,
+    source_selection,
+  )
+  let (_, virtual_indices) = region_selection_indices(
+    metadata.dataspace,
+    virtual_selection,
+  )
+  guard source_indices.length() == virtual_indices.length() else {
+    raise InvalidField(
+      "virtual and source selections have different element counts",
+    )
+  }
+  if source_indices.length() == 0 {
+    return
+  }
+  let source_payload = source_file.read_dataset_indices_payload(
+    source_path,
+    source_header,
+    source_metadata,
+    source_indices,
+    resolver,
+    source_name,
+    depth + 1,
+  )
+  let expected = source_indices.length().to_int64() * source_size.to_int64()
+  guard source_payload.length().to_int64() == expected else {
+    raise InvalidField("virtual dataset source payload has an invalid size")
+  }
+  let payload = if virtual_datatype_compatible(
+      source_metadata.datatype,
+      datatype,
+    ) {
+    source_payload
+  } else {
+    convert_virtual_payload(
+      source_payload,
+      source_indices.length().to_int64(),
+      source_metadata.datatype,
+      datatype,
+    )
+  }
+  let locations = virtual_locations(virtual_indices)
+  for destination in 0..<indices.length() {
+    match find_virtual_location(locations, indices[destination]) {
+      Some(source_ordinal) =>
+        output.blit_from_bytes(
+          destination * target_size,
+          payload,
+          source_ordinal * target_size,
+          target_size,
+        )
+      None => ()
+    }
+  }
+}
+
+///|
+fn Hdf5File::apply_virtual_mapping(
+  self : Hdf5File,
+  metadata : DatasetMetadata,
+  indices : Array[UInt64],
+  mapping : Hdf5VirtualMapping,
+  resolver : Hdf5Resolver?,
+  referring_file : String,
+  depth : Int32,
+  output : FixedArray[Byte],
+) -> Unit raise Hdf5Error {
+  let unlimited_axis = virtual_selection_unlimited_axis(
+    mapping.virtual_selection,
+  )
+  let printf_count = virtual_mapping_printf_count(mapping)
+  if unlimited_axis < 0 {
+    guard printf_count == 0 else {
+      raise InvalidField(
+        "printf source-name specifiers require an unlimited virtual selection",
+      )
+    }
+    self.apply_virtual_mapping_payload(
+      metadata,
+      indices,
+      expand_virtual_source_name(
+        mapping.source_file,
+        0UL,
+        "virtual source file name",
+      ),
+      expand_virtual_source_name(
+        mapping.source_dataset,
+        0UL,
+        "virtual source dataset path",
+      ),
+      mapping.source_selection,
+      mapping.virtual_selection,
+      resolver,
+      referring_file,
+      depth,
+      false,
+      output,
+    )
+    return
+  }
+  guard printf_count > 0 else {
+    raise UnsupportedFeature(
+      "unlimited virtual selections without printf source names are not supported",
+    )
+  }
+  guard virtual_selection_unlimited_axis(mapping.source_selection) < 0 else {
+    raise UnsupportedFeature(
+      "virtual source selections with unlimited counts are not supported",
+    )
+  }
+  let (start, stride, count, block) = match mapping.virtual_selection {
+    RegionHyperslab(start, stride, count, block) =>
+      (start, stride, count, block)
+    _ =>
+      raise InvalidField(
+        "printf virtual mappings require a hyperslab virtual selection",
+      )
+  }
+  let limit = metadata.dataspace.dimensions[unlimited_axis]
+  let mut block_number = 0UL
+  while true {
+    guard block_number == 0UL ||
+      stride[unlimited_axis] <= 0xFFFFFFFFFFFFFFFFUL / block_number else {
+      raise InvalidField("printf virtual block coordinate overflow")
+    }
+    let offset = block_number * stride[unlimited_axis]
+    guard start[unlimited_axis] <= 0xFFFFFFFFFFFFFFFFUL - offset else {
+      raise InvalidField("printf virtual block coordinate overflow")
+    }
+    let block_start = start[unlimited_axis] + offset
+    if block_start >= limit {
+      break
+    }
+    let concrete_start = start.copy()
+    concrete_start[unlimited_axis] = block_start
+    let concrete_count = count.copy()
+    concrete_count[unlimited_axis] = 1UL
+    self.apply_virtual_mapping_payload(
+      metadata,
+      indices,
+      expand_virtual_source_name(
+        mapping.source_file,
+        block_number,
+        "virtual source file name",
+      ),
+      expand_virtual_source_name(
+        mapping.source_dataset,
+        block_number,
+        "virtual source dataset path",
+      ),
+      mapping.source_selection,
+      RegionHyperslab(
+        concrete_start,
+        stride.copy(),
+        concrete_count,
+        block.copy(),
+      ),
+      resolver,
+      referring_file,
+      depth,
+      true,
+      output,
+    )
+    if block_number == 0xFFFFFFFFFFFFFFFFUL {
+      break
+    }
+    block_number = block_number + 1UL
+  }
+}
+
+///|
 fn Hdf5File::read_virtual_dataset_indices_payload(
   self : Hdf5File,
   _path : String,
@@ -837,149 +1587,10 @@ fn Hdf5File::read_virtual_dataset_indices_payload(
   if indices.length() == 0 {
     return output.unsafe_reinterpret_as_bytes()
   }
-
   for mapping in read_virtual_mappings(self, metadata.layout) {
-    let (source_name, source_file) = self.virtual_source_file(
-      mapping.source_file,
-      resolver,
-      referring_file,
+    self.apply_virtual_mapping(
+      metadata, indices, mapping, resolver, referring_file, depth, output,
     )
-    let source_path = resolver_canonical_object_path(
-      "/",
-      mapping.source_dataset,
-    )
-    let source_node = source_file.resolve(source_path)
-    guard source_node.kind == Dataset else {
-      raise InvalidField(
-        "virtual dataset source is not a dataset: " + mapping.source_dataset,
-      )
-    }
-    let source_header = source_file.object_header_at(source_node.address)
-    let source_metadata = read_dataset_metadata(
-      source_header,
-      source_file.superblock.offset_size,
-      source_file.superblock.length_size,
-    )
-    guard virtual_datatype_compatible(source_metadata.datatype, datatype) else {
-      raise UnsupportedFeature(
-        "virtual dataset source datatype conversion is not supported",
-      )
-    }
-    validate_region_selection(
-      source_metadata.dataspace,
-      mapping.source_selection,
-    )
-    validate_region_selection(metadata.dataspace, mapping.virtual_selection)
-    if virtual_selection_is_direct(mapping.source_selection) &&
-      virtual_selection_is_direct(mapping.virtual_selection) {
-      let source_count = virtual_selection_count(
-        source_metadata.dataspace,
-        mapping.source_selection,
-      )
-      let virtual_count = virtual_selection_count(
-        metadata.dataspace,
-        mapping.virtual_selection,
-      )
-      guard source_count == virtual_count else {
-        raise InvalidField(
-          "virtual and source selections have different element counts",
-        )
-      }
-      let destinations : Array[Int32] = []
-      let source_indices : Array[UInt64] = []
-      for destination in 0..<indices.length() {
-        match
-          virtual_selection_ordinal_of(
-            metadata.dataspace,
-            mapping.virtual_selection,
-            indices[destination],
-          ) {
-          Some(source_ordinal) => {
-            guard source_ordinal >= 0L && source_ordinal < source_count else {
-              raise InvalidField(
-                "virtual mapping ordinal is outside the source selection",
-              )
-            }
-            source_indices.push(
-              virtual_selection_index_at(
-                source_metadata.dataspace,
-                mapping.source_selection,
-                source_ordinal,
-              ),
-            )
-            destinations.push(destination)
-          }
-          None => ()
-        }
-      }
-      if destinations.length() == 0 {
-        continue
-      }
-      let source_payload = source_file.read_dataset_indices_payload(
-        source_path,
-        source_header,
-        source_metadata,
-        source_indices,
-        resolver,
-        source_name,
-        depth + 1,
-      )
-      let expected = source_indices.length() * datatype.size
-      guard source_payload.length() == expected else {
-        raise InvalidField("virtual dataset source payload has an invalid size")
-      }
-      for match_index in 0..<destinations.length() {
-        output.blit_from_bytes(
-          destinations[match_index] * datatype.size,
-          source_payload,
-          match_index * datatype.size,
-          datatype.size,
-        )
-      }
-      continue
-    }
-    let (_, source_indices) = region_selection_indices(
-      source_metadata.dataspace,
-      mapping.source_selection,
-    )
-    let (_, virtual_indices) = region_selection_indices(
-      metadata.dataspace,
-      mapping.virtual_selection,
-    )
-    guard source_indices.length() == virtual_indices.length() else {
-      raise InvalidField(
-        "virtual and source selections have different element counts",
-      )
-    }
-    if source_indices.length() == 0 {
-      continue
-    }
-    let source_payload = source_file.read_dataset_indices_payload(
-      source_path,
-      source_header,
-      source_metadata,
-      source_indices,
-      resolver,
-      source_name,
-      depth + 1,
-    )
-    let expected = source_indices.length() * datatype.size
-    guard source_payload.length() == expected else {
-      raise InvalidField("virtual dataset source payload has an invalid size")
-    }
-    let locations = virtual_locations(virtual_indices)
-    for destination in 0..<indices.length() {
-      match find_virtual_location(locations, indices[destination]) {
-        Some(source_ordinal) =>
-          output.blit_from_bytes(
-            destination * datatype.size,
-            source_payload,
-            source_ordinal * datatype.size,
-            datatype.size,
-          )
-        None => ()
-      }
-    }
   }
   output.unsafe_reinterpret_as_bytes()
 }

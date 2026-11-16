@@ -100,10 +100,9 @@ MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
   global-heap mapping blocks, including same-file and registered external
   sources, multiple and strided mappings, fill gaps, 4- and 8-byte addresses,
   nested virtual datasets and selection/page/tile reads; mapping checksums,
-  selection bounds/counts, source registration and exact datatype compatibility
-  are validated; all and non-overlapping hyperslab mappings are addressed
-  directly so page and tile reads allocate by request size rather than mapping
-  size;
+  selection bounds/counts, source registration and datatype compatibility are
+  validated; all and non-overlapping hyperslab mappings are addressed directly
+  so page and tile reads allocate by request size rather than mapping size;
 - numeric-layout, scale-offset, vlen-fill, NetCDF-4, external-storage,
   shared-message, virtual-dataset, hard-link, MATLAB-compatible and reference
   fixtures verified;
@@ -121,7 +120,7 @@ structures raise errors; detection is not exhaustive.
 | Framing and navigation | Superblock v0–v3, user blocks, compact/dense groups, hard/soft links, `.`/`..` path normalization, source-backed reads |
 | Dense metadata | FRHP direct/indirect blocks, huge objects, v2 B-tree leaf/internal nodes and SOHM heap IDs |
 | Datasets | Compact, contiguous, virtual storage, external raw data and every supported chunk index |
-| Virtual datasets | Same-file and registered external mappings, multiple/strided selections, fill gaps, nested virtual datasets and 4-/8-byte fixtures; new-file and existing-file writer output is independently read by h5py 3.13.0/HDF5 1.14.6 |
+| Virtual datasets | Same-file and registered external mappings, multiple/strided selections, fill gaps, nested virtual datasets, one unlimited axis with `%b`/`%%`, integer/float and fixed-string conversion, and 4-/8-byte fixtures; new-file and existing-file writer output is independently read by h5py 3.13.0/HDF5 1.14.6 |
 | Fill policies | Default, custom, undefined and `FILL_TIME_NEVER`; malformed messages and external-storage boundaries remain rejected |
 | Filters | Shuffle, deflate, Fletcher32, integer/f32/f64 scale-offset, masks and fill markers; registered caller-defined encoders/decoders with named v2 pipeline entries and per-chunk mask skips |
 | Datatypes | Fixed-point, IEEE/normalized floats, strings, compound, enum, array, time, bitfield, opaque, sequence, references, complex |
@@ -177,10 +176,14 @@ not dereference external targets or external raw data.
 Virtual datasets are decoded from the layout's global-heap mapping object after
 checking its checksum, version, entry count and complete consumption. Every
 mapping validates source registration, source dataset type, selection ranks and
-bounds, equal source/virtual element counts and exact datatype semantics. Source
+bounds, equal source/virtual element counts and datatype compatibility. Source
 elements are copied through the normal dataset path, so compact, contiguous,
 chunked, filtered, external raw-data and nested virtual sources reuse their
-existing readers. Unmapped virtual indices retain the dataset fill value.
+existing readers. Integer/float and same-charset fixed-string values are
+converted to the virtual datatype; other conversions require matching layouts.
+Unmapped virtual indices retain the dataset fill value. A single unlimited
+virtual hyperslab axis expands `%b` source-name substitutions by block number,
+while `%%` produces a literal percent sign.
 
 Fixed-point storage wider than 8 bytes is decoded without truncation into
 `BigInt` values, including bit offsets and both byte orders. Extended binary
@@ -647,7 +650,7 @@ message types emitted by this writer.
   registered external source files, multiple and strided mappings, fill gaps,
   4-/8-byte addresses, nested virtual datasets and full, point, hyperslab, tile
   and selection-page reads through both `Hdf5File` and `Hdf5Resolver`. Mapping
-  checksums, bounds, element counts, source registration and exact datatype
+  checksums, bounds, element counts, source registration and datatype
   compatibility are validated. H5py 3.13.0/HDF5 1.14.6 fixtures and an
   independent verifier cover the generated files; MoonBit covers the same
   values, selections and resolver paths.
@@ -661,3 +664,12 @@ message types emitted by this writer.
   four-byte legacy reference datatypes.
   MoonBit tests cover new and existing files; h5py 3.13.0/HDF5 1.14.6
   independently verifies layout, values, shapes and mapping counts.
+- 2026-11-16: virtual datasets now support one unlimited hyperslab axis with
+  `%b` source file/dataset substitutions and `%%` literals. The reader expands
+  each virtual block and converts integer, floating-point and same-charset
+  fixed-string source values to the virtual datatype; the writer accepts
+  `maximum_dimensions` with unlimited entries and emits extended dataspaces and
+  printf mapping entries. HDF5 1.14.6 fixtures cover file-name and dataset-name
+  substitutions, literal percents, printf plus int16-to-int64 conversion, and
+  direct int16/float32/string conversions; MoonBit tests and the release writer
+  demo cover the read, validation and output paths.

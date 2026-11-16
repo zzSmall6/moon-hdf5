@@ -14,6 +14,10 @@ fn run(args : Array[String]) -> Int32 {
       Int32Values([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
     )
     writer.add_dataset("/vector", [6UL], Int32Values([0, 1, 2, 3, 4, 5]))
+    writer.add_dataset("/block_0", [2UL], Int32Values([10, 11]))
+    writer.add_dataset("/block_1", [2UL], Int32Values([20, 21]))
+    writer.add_dataset("/literal%value", [2UL], Int32Values([7, 8]))
+    writer.add_dataset("/int16_source", [2UL], Int16Values([1, -2]))
     let datatype = @lib.Datatype::write_integer(true, 4)
     writer.add_virtual_dataset("/same", [3UL, 4UL], datatype, [
       {
@@ -94,6 +98,60 @@ fn run(args : Array[String]) -> Int32 {
       ],
       fill_value=@lib.SignedInteger(-1L),
     )
+    writer.add_virtual_dataset(
+      "/printf",
+      [4UL],
+      datatype,
+      [
+        {
+          source_file: ".",
+          source_dataset: "/block_%b",
+          source_selection: @lib.RegionAll,
+          virtual_selection: @lib.RegionHyperslab(
+            [0UL],
+            [2UL],
+            [0xFFFFFFFFFFFFFFFFUL],
+            [2UL],
+          ),
+        },
+      ],
+      maximum_dimensions=[None],
+    )
+    writer.add_virtual_dataset(
+      "/printf_files",
+      [2UL],
+      datatype,
+      [
+        {
+          source_file: "virtual_printf_source_%b.h5",
+          source_dataset: "/data",
+          source_selection: @lib.RegionAll,
+          virtual_selection: @lib.RegionHyperslab(
+            [0UL],
+            [1UL],
+            [0xFFFFFFFFFFFFFFFFUL],
+            [1UL],
+          ),
+        },
+      ],
+      maximum_dimensions=[None],
+    )
+    writer.add_virtual_dataset("/literal", [2UL], datatype, [
+      {
+        source_file: ".",
+        source_dataset: "/literal%%value",
+        source_selection: @lib.RegionAll,
+        virtual_selection: @lib.RegionAll,
+      },
+    ])
+    writer.add_virtual_dataset("/converted", [2UL], datatype, [
+      {
+        source_file: ".",
+        source_dataset: "/int16_source",
+        source_selection: @lib.RegionAll,
+        virtual_selection: @lib.RegionAll,
+      },
+    ])
     @fs.write_bytes_to_file(args[1], writer.encode())
 
     let source_file = @fs.read_file_to_bytes("testdata/symbol_table_32.h5")

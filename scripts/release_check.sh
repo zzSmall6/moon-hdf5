@@ -202,8 +202,12 @@ if [ "${SKIP_H5PY:-0}" = "1" ]; then
 elif [ ! -f testdata/virtual_dataset.h5 ] ||
   [ ! -f testdata/virtual_dataset_32.h5 ] ||
   [ ! -f testdata/virtual_dataset_nested.h5 ] ||
+  [ ! -f testdata/virtual_dataset_printf.h5 ] ||
+  [ ! -f testdata/virtual_dataset_conversion.h5 ] ||
   [ ! -f testdata/virtual_dataset_source.h5 ] ||
-  [ ! -f testdata/virtual_dataset_source_32.h5 ]; then
+  [ ! -f testdata/virtual_dataset_source_32.h5 ] ||
+  [ ! -f testdata/virtual_printf_source_0.h5 ] ||
+  [ ! -f testdata/virtual_printf_source_1.h5 ]; then
   echo "==> Virtual-dataset fixture verification skipped (fixture unavailable)"
 else
   "$python" scripts/verify_virtual_dataset_fixture.py

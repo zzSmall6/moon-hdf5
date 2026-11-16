@@ -9066,6 +9066,18 @@ fn Hdf5Writer::object_payload(
               dataset.dimensions,
               maximum_dimensions=dataset.maximum_dimensions,
             )
+          WritableVirtual(_) =>
+            if virtual_dataset_needs_extended_dataspace(
+                dataset.dimensions,
+                dataset.maximum_dimensions,
+              ) {
+              encode_dataspace(
+                dataset.dimensions,
+                maximum_dimensions=dataset.maximum_dimensions,
+              )
+            } else {
+              encode_dataspace(dataset.dimensions)
+            }
           _ => encode_dataspace(dataset.dimensions)
         },
       )
@@ -10059,7 +10071,12 @@ fn assign_writable_addresses(
             offset = writer_align(
               offset +
               encode_heap_objects([
-                encode_virtual_mapping_block(dataset.dimensions, mappings, 8),
+                encode_virtual_mapping_block(
+                  dataset.dimensions,
+                  dataset.maximum_dimensions,
+                  mappings,
+                  8,
+                ),
               ]).length(),
             )
           }
@@ -10453,7 +10470,12 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
       _ => raise InvalidField("virtual mapping heap has the wrong dataset kind")
     }
     let payload = encode_heap_objects([
-      encode_virtual_mapping_block(dataset.dimensions, mappings, 8),
+      encode_virtual_mapping_block(
+        dataset.dimensions,
+        dataset.maximum_dimensions,
+        mappings,
+        8,
+      ),
     ])
     virtual_payloads.push((metadata.address, payload))
     eof = writer_align(metadata.address.to_int() + payload.length())

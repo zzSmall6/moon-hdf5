@@ -34,6 +34,9 @@ def verify(new_path: Path, edited_path: Path) -> None:
             "strided": np.array([[1, 3], [9, 11]], dtype="<i4"),
             "empty": np.full((2, 2), -5, dtype="<i4"),
             "multiple_mappings": np.arange(6, dtype="<i4"),
+            "printf": np.array([10, 11, 20, 21], dtype="<i4"),
+            "literal": np.array([7, 8], dtype="<i4"),
+            "converted": np.array([1, -2], dtype="<i4"),
         }
         mapping_counts = {
             "same": 1,
@@ -41,6 +44,9 @@ def verify(new_path: Path, edited_path: Path) -> None:
             "strided": 1,
             "empty": 1,
             "multiple_mappings": 2,
+            "printf": 1,
+            "literal": 1,
+            "converted": 1,
         }
         for name, values in expected.items():
             dataset = handle[name]
@@ -49,7 +55,25 @@ def verify(new_path: Path, edited_path: Path) -> None:
             dcpl = dataset.id.get_create_plist()
             for index in range(dcpl.get_virtual_count()):
                 assert dcpl.get_virtual_filename(index) == "."
-                assert dcpl.get_virtual_dsetname(index) in ("/source", "/vector")
+                assert dcpl.get_virtual_dsetname(index) in (
+                    "/source",
+                    "/vector",
+                    "/block_%b",
+                    "/literal%%value",
+                    "/int16_source",
+                )
+
+        assert handle["printf"].maxshape == (None,)
+
+        printf_files = handle["printf_files"]
+        require_virtual(printf_files, 1)
+        assert printf_files.maxshape == (None,)
+        files_dcpl = printf_files.id.get_create_plist()
+        assert (
+            files_dcpl.get_virtual_filename(0)
+            == "virtual_printf_source_%b.h5"
+        )
+        assert files_dcpl.get_virtual_dsetname(0) == "/data"
 
         mapped_source = handle["mapped"].virtual_sources()[0]
         assert mapped_source.dset_name == "/source"

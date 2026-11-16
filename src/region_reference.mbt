@@ -53,6 +53,20 @@ fn validate_region_encoding_size(enc_size : Int32) -> Unit raise Hdf5Error {
 }
 
 ///|
+fn normalize_region_unlimited(value : UInt64, enc_size : Int32) -> UInt64 {
+  let all_ones = if enc_size == 8 {
+    0xFFFFFFFFFFFFFFFFUL
+  } else {
+    (1UL << (enc_size * 8)) - 1UL
+  }
+  if value == all_ones {
+    0xFFFFFFFFFFFFFFFFUL
+  } else {
+    value
+  }
+}
+
+///|
 fn read_region_rank(reader : Reader) -> Int32 raise Hdf5Error {
   let rank = reader.read_u32_le().reinterpret_as_int()
   guard rank >= 0 && rank <= 32 else {
@@ -164,8 +178,12 @@ fn parse_region_hyperslab(
     for _ in 0..<rank {
       start.push(reader.read_uint_le(enc_size))
       stride.push(reader.read_uint_le(enc_size))
-      count.push(reader.read_uint_le(enc_size))
-      block.push(reader.read_uint_le(enc_size))
+      count.push(
+        normalize_region_unlimited(reader.read_uint_le(enc_size), enc_size),
+      )
+      block.push(
+        normalize_region_unlimited(reader.read_uint_le(enc_size), enc_size),
+      )
     }
     return RegionHyperslab(start, stride, count, block)
   }

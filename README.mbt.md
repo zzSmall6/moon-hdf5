@@ -154,7 +154,11 @@ Dataset creation options:
   the external files.
 - `add_virtual_dataset`: virtual storage from one or more source mappings. Use
   `.` for a same-file source; external source names are stored without opening
-  the file.
+  the file. `maximum_dimensions` with a `None` entry declares one unlimited
+  axis. In a single unlimited virtual hyperslab, `%b` in a source file or
+  dataset name expands to the block number and `%%` is a literal percent sign.
+  Numeric and same-charset fixed-string source values are converted to the
+  virtual datatype.
 
 Fixed-size values support Shuffle, deflate, Fletcher32 and scale-offset.
 Variable-length values support Shuffle/deflate and must use fixed-size sequence
@@ -230,11 +234,13 @@ moon-hdf5 is not a drop-in replacement for libhdf5.
 
 - Outside the common-file profile: streaming output, free-space reclamation,
   SWMR and parallel HDF5.
-- Virtual datasets support same-file and registered external sources with all,
-  empty or hyperslab mappings. HDF5 1.14.6 rejects point and block virtual
-  mappings, so the writer rejects them. Writers store source names without
-  opening them; readers require source registration and an exact datatype match.
-  Printf-style source names and datatype conversion are unsupported.
+- Virtual datasets support all, empty and hyperslab mappings, same-file or
+  registered external sources, one unlimited virtual hyperslab axis with
+  `%b`/`%%` source names, and numeric or same-charset fixed-string conversion.
+  Point/block mappings, multiple unlimited axes, unlimited source selections
+  and vlen/reference/compound conversion remain unsupported. Float conversion
+  is limited to 64-bit integer magnitudes and standard binary floats. Writers
+  do not open sources; readers require source registration.
 - The API is memory-resident, editing is append-only, and references or patches
   target existing objects. External raw data is resolver-only, contiguous and
   unfiltered. Dense collections hold 9–65,535 records. Four-byte structured

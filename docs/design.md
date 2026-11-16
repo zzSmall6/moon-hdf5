@@ -50,10 +50,14 @@ writing policy disables its use.
 
 Virtual datasets use a version-4 layout whose global-heap object contains the
 source/virtual selection mappings. The reader validates the mapping-block
-checksum, selection ranks and bounds, source registration, element counts and a
-recursive datatype match before copying source elements into the requested
-virtual indices. Unmapped elements use the declared fill value. The same path
-serves full reads, arbitrary selections, chunk tiles, selection pages and
+checksum, selection ranks and bounds, source registration, element counts and
+recursive datatype compatibility before copying source elements into the
+requested virtual indices. Integer/float and same-charset fixed-string values
+are converted through controlled value semantics; other conversions require a
+byte-identical datatype. A single unlimited virtual hyperslab axis expands
+`%b` in source file/dataset names to the block number and `%%` to a literal
+percent. Unmapped elements use the declared fill value. The same path serves
+full reads, arbitrary selections, chunk tiles, selection pages and
 region-reference targets; nested virtual datasets recurse through the same
 dependency graph with a fixed depth bound. All and non-overlapping hyperslab
 mappings are addressed directly, so a page request reads only the corresponding
@@ -64,8 +68,9 @@ The writer emits the same layout-v4 form. Each virtual dataset appends a
 checksummed mapping block as a global-heap object, then stores its heap address
 and object index in the dataset layout. All, empty and hyperslab selections are
 encoded; HDF5 1.14.6 rejects point and block virtual mappings, so the writer
-rejects them too. Source files are recorded by name but are not opened or
-validated during creation.
+rejects them too. One unlimited hyperslab axis is encoded with an extended
+dataspace and printf source names; source files are recorded by name but are not
+opened or validated during creation.
 
 Filters are decoded through a shared pipeline model: shuffle, deflate,
 Fletcher32, integer scale-offset and f32/f64 decimal scale-offset. Per-chunk
