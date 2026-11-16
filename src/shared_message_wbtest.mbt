@@ -111,6 +111,40 @@ test "shared messages resolve through memory and source files" {
 }
 
 ///|
+test "shared message fixture shares dataspace and datatype fields" {
+  let bytes = @fs.read_file_to_bytes("testdata/shared_messages.h5")
+  let file = Hdf5File::parse(bytes)
+  let mut shared_dataspace = false
+  let mut shared_datatype = false
+  for
+    path in ["/d0", "/d1", "/large0", "/committed_value", "/chunked", "/fill0"] {
+    let node = file.resolve(path)
+    let header = parse_object_header(
+      bytes,
+      node.address,
+      file.superblock.offset_size,
+      file.superblock.length_size,
+      file.superblock.base_address,
+    )
+    for msg_type in [msg_dataspace, msg_datatype] {
+      let message = match header.first(msg_type) {
+        Some(message) => message
+        None => abort("fixture object header is missing a shared field")
+      }
+      if (message.flags.to_int() & shared_message_flag) != 0 {
+        if msg_type == msg_dataspace {
+          shared_dataspace = true
+        } else {
+          shared_datatype = true
+        }
+      }
+    }
+  }
+  assert_true(shared_dataspace)
+  assert_true(shared_datatype)
+}
+
+///|
 test "shared message heap IDs validate their index and size" {
   let context : SharedMessageContext = {
     bytes: b"",

@@ -211,6 +211,12 @@ def main(target_path: Path, source_path: Path, patched_path: Path) -> None:
             assert reference_file_name(library, remote, 0) == target_path.name
             assert reference_attribute_name(library, remote, 0) == "label"
             destroy_references(library, remote, 1)
+            added = read_attribute_reference(
+                library, patched["object_refs"].attrs, "remote_added"
+            )
+            assert reference_file_name(library, added, 0) == target_path.name
+            assert reference_object_name(library, added, 0) == "/group/child"
+            destroy_references(library, added, 1)
     finally:
         os.chdir(previous)
 

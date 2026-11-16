@@ -107,14 +107,26 @@ fn external_reference_demo_patch(
         ),
       ]),
     )
-  @lib.Hdf5File::parse(patched_regions)
+  let patched_attributes = @lib.Hdf5File::parse(patched_regions)
+    .with_external_source("external_reference_target.h5", target)
+    .patch_attribute_values(
+      "/object_refs",
+      "remote",
+      StructuredValues(attribute_type, [
+        @lib.ExternalAttributeReference(
+          "external_reference_target.h5", "/matrix", "label",
+        ),
+      ]),
+    )
+  @lib.Hdf5File::parse(patched_attributes)
   .with_external_source("external_reference_target.h5", target)
-  .patch_attribute_values(
+  .add_attribute(
     "/object_refs",
-    "remote",
-    StructuredValues(attribute_type, [
-      @lib.ExternalAttributeReference(
-        "external_reference_target.h5", "/matrix", "label",
+    "remote_added",
+    [],
+    StructuredValues(object_type, [
+      @lib.ExternalObjectReference(
+        "external_reference_target.h5", "/group/child",
       ),
     ]),
   )

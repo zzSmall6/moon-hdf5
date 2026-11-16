@@ -488,6 +488,7 @@ fn editable_values_heap(
   reference_address_size : Int32,
   regions : Array[Bytes],
   region_address : UInt64,
+  external_references : Array[WritableExternalReference],
 ) -> WritableGlobalHeap raise Hdf5Error {
   let strings : Array[String] = []
   collect_heap_strings(strings, values)
@@ -497,7 +498,7 @@ fn editable_values_heap(
     strings,
     regions,
     sequences: [],
-    external_references: [],
+    external_references,
   }
   let sequences : Array[Bytes] = []
   match values {
@@ -522,7 +523,7 @@ fn editable_values_heap(
     strings,
     regions,
     sequences,
-    external_references: [],
+    external_references,
   }
 }
 
@@ -1256,6 +1257,7 @@ pub fn Hdf5File::add_attribute(
     []
   }
   let reference_attributes : Array[WritableAttribute] = []
+  let external_references : Array[WritableExternalReference] = []
   if has_references {
     match values {
       StructuredValues(datatype, items) =>
@@ -1279,6 +1281,9 @@ pub fn Hdf5File::add_attribute(
             objects,
             reference_attributes,
             reference_address_size~,
+            external_sources=self.external_sources,
+            custom_filters=self.custom_filters,
+            external_references~,
           )
         }
       _ => ()
@@ -1297,7 +1302,7 @@ pub fn Hdf5File::add_attribute(
     0UL
   }
   let initial_heap = editable_values_heap(
-    values, objects, reference_address_size, regions, region_address,
+    values, objects, reference_address_size, regions, region_address, external_references,
   )
   let heap_address = if initial_heap.strings.length() > 0 ||
     initial_heap.sequences.length() > 0 {

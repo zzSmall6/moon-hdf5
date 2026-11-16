@@ -909,3 +909,97 @@ test "attribute editing rejects invalid names and missing targets" {
     Some(InvalidArgument("attribute editing requires a bytes-backed Hdf5File")),
   )
 }
+
+///|
+fn edited_attribute_reference(
+  file : Hdf5File,
+  path : String,
+  name : String,
+) -> Bytes raise Hdf5Error {
+  let attributes = file.attributes(path)
+  let index = match attributes.search_by(attribute => attribute.name == name) {
+    Some(index) => index
+    None => raise InvalidField("edited attribute was not found")
+  }
+  match attributes[index].values {
+    Some(Structured(values)) => {
+      guard values.length() == 1 else {
+        raise InvalidField("edited attribute has an unexpected value count")
+      }
+      match values[0] {
+        Reference(bytes) => bytes
+        _ => raise InvalidField("edited attribute is not a reference")
+      }
+    }
+    _ => raise InvalidField("edited attribute has unexpected values")
+  }
+}
+
+///|
+test "attribute editing writes external version-4 references" {
+  let target = external_reference_target_bytes()
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/local", [1UL], Int64Values([1L]))
+  let file = Hdf5File::parse(writer.encode()).with_external_source(
+    "external_target.h5", target,
+  )
+  let object_type = Datatype::write_version4_object_reference()
+  let region_type = Datatype::write_version4_region_reference()
+  let attribute_type = Datatype::write_version4_attribute_reference()
+  let with_object = file.add_attribute(
+    "/local",
+    "remote_object",
+    [],
+    StructuredValues(object_type, [
+      ExternalObjectReference("external_target.h5", "/matrix"),
+    ]),
+  )
+  let with_region = Hdf5File::parse(with_object)
+    .with_external_source("external_target.h5", target)
+    .add_attribute(
+      "/local",
+      "remote_region",
+      [],
+      StructuredValues(region_type, [
+        ExternalRegionReference("external_target.h5", "/matrix", RegionAll),
+      ]),
+    )
+  let with_attribute = Hdf5File::parse(with_region)
+    .with_external_source("external_target.h5", target)
+    .add_attribute(
+      "/local",
+      "remote_attribute",
+      [],
+      StructuredValues(attribute_type, [
+        ExternalAttributeReference("external_target.h5", "/matrix", "unit"),
+      ]),
+    )
+  let parsed = Hdf5File::parse(with_attribute)
+  let resolver = Hdf5Resolver::new(with_attribute)
+  resolver.add_source("external_target.h5", target)
+
+  let object = resolver
+    .resolve_object_reference(
+      edited_attribute_reference(parsed, "/local", "remote_object"),
+    )
+    .unwrap()
+  assert_eq(object.file, "external_target.h5")
+  assert_eq(object.target.path, Some("/matrix"))
+
+  let region = resolver
+    .resolve_region_reference(
+      edited_attribute_reference(parsed, "/local", "remote_region"),
+    )
+    .unwrap()
+  assert_eq(region.file, "external_target.h5")
+  assert_eq(region.target.selection, RegionAll)
+
+  let attribute = resolver
+    .resolve_attribute_reference(
+      edited_attribute_reference(parsed, "/local", "remote_attribute"),
+    )
+    .unwrap()
+  assert_eq(attribute.file, "external_target.h5")
+  assert_eq(attribute.target.path, Some("/matrix"))
+  assert_eq(attribute.target.attribute_name, "unit")
+}
