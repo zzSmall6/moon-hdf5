@@ -536,13 +536,15 @@ pub fn Hdf5File::add_dataset(
 /// Values are embedded in the new object's data-layout message. Variable-length
 /// and reference payloads reuse the normal appended global-heap path. The
 /// payload is capped at HDF5 1.14.6's 65,524-byte compact limit; large object
-/// headers use continuation chunks. Compact storage is not extendable.
+/// headers use continuation chunks. An optional fill value is stored through
+/// the normal fill-value message. Compact storage is not extendable.
 pub fn Hdf5File::add_compact_dataset(
   self : Hdf5File,
   parent_path : String,
   name : String,
   dimensions : Array[UInt64],
   values : Hdf5WriteValues,
+  fill_value? : Hdf5WriteValues,
 ) -> Bytes raise Hdf5Error {
   validate_editable_link_name(name)
   let (parent_address, header, links) = self.editable_group(parent_path)
@@ -555,18 +557,21 @@ pub fn Hdf5File::add_compact_dataset(
     values,
     reference_address_size=Some(offset_size),
   )
+  let copied_fill = validated_write_fill(
+    values,
+    fill_value,
+    reference_address_size=Some(offset_size),
+  )
+  validate_created_fill_layout(copied_fill, offset_size)
   let tail = @buffer.Buffer::Buffer()
-  let objects = if created_values_need_objects(values) {
+  let objects = if created_values_need_objects(values) ||
+    (copied_fill is Some(fill) && created_values_need_objects(fill)) {
     self.created_reference_objects()
   } else {
     []
   }
   let heap = self.append_created_values_heap(
-    tail,
-    values,
-    None,
-    objects,
-    offset_size,
+    tail, values, copied_fill, objects, offset_size,
   )
   let encoded = encode_write_values(
     values,
@@ -578,7 +583,7 @@ pub fn Hdf5File::add_compact_dataset(
   guard encoded.payload.length() <= 65524 else {
     raise InvalidArgument("compact dataset values exceed 65524 bytes")
   }
-  let object_address = self.append_created_object_with_messages(tail, [
+  let messages : Array[RebuiltObjectMessage] = [
     {
       msg_type: msg_dataspace,
       flags: b'\x00',
@@ -591,13 +596,28 @@ pub fn Hdf5File::add_compact_dataset(
       data: encoded.datatype,
       creation_order: 0UL,
     },
-    {
-      msg_type: msg_data_layout,
+  ]
+  if copied_fill is Some(fill) {
+    messages.push({
+      msg_type: msg_fill_value,
       flags: b'\x00',
-      data: encode_compact_layout(encoded.payload),
+      data: encode_fill_value(
+        fill,
+        heap~,
+        objects~,
+        reference_address_size=offset_size,
+        vlen_address_size=offset_size,
+      ),
       creation_order: 0UL,
-    },
-  ])
+    })
+  }
+  messages.push({
+    msg_type: msg_data_layout,
+    flags: b'\x00',
+    data: encode_compact_layout(encoded.payload),
+    creation_order: 0UL,
+  })
+  let object_address = self.append_created_object_with_messages(tail, messages)
   self.append_created_link(
     parent_address, header, links, object_address, name, tail,
   )

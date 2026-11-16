@@ -134,6 +134,7 @@ fn run(args : Array[String]) -> Int32 {
       "compact_values",
       [3UL],
       @lib.Int16Values([7, 8, 9]),
+      fill_value=@lib.Int16Values([-4]),
     )
     edited = @lib.Hdf5File::parse(edited).add_compact_dataset(
       "/created_root",

@@ -282,6 +282,61 @@ test "compact datasets preserve values references and variable-length data" {
 }
 
 ///|
+test "compact dataset creation stores fills in four- and eight-byte files" {
+  for fixture in ["testdata/symbol_table_32.h5", "testdata/references.h5"] {
+    let file = Hdf5File::parse(@fs.read_file_to_bytes(fixture))
+    let created = file.add_compact_dataset(
+      "/group",
+      "compact_filled",
+      [2UL],
+      Int32Values([1, 2]),
+      fill_value=Int32Values([-9]),
+    ) catch {
+      error =>
+        fail(fixture + ": create filled compact dataset: " + error.message())
+    }
+    let edited = Hdf5File::parse(created)
+    let metadata = edited.read_dataset_metadata("/group/compact_filled")
+    assert_eq(metadata.layout.kind(), Compact)
+    let header = edited.object_header_at(
+      edited.resolve("/group/compact_filled").address,
+    )
+    assert_eq(
+      dataset_fill_value(header, metadata.datatype),
+      b"\xf7\xff\xff\xff",
+    )
+    match edited.read_dataset("/group/compact_filled").values {
+      Integers(values) => assert_eq(values, [1L, 2L])
+      _ => fail(fixture + ": expected compact filled values")
+    }
+
+    let reference_fill = edited.add_compact_dataset(
+      "/group",
+      "compact_reference_fill",
+      [1UL],
+      ObjectReferenceValues([None]),
+      fill_value=ObjectReferenceValues([Some("/matrix")]),
+    ) catch {
+      error =>
+        fail(fixture + ": create compact reference fill: " + error.message())
+    }
+    let reference_file = Hdf5File::parse(reference_fill)
+    let reference_metadata = reference_file.read_dataset_metadata(
+      "/group/compact_reference_fill",
+    )
+    let reference_header = reference_file.object_header_at(
+      reference_file.resolve("/group/compact_reference_fill").address,
+    )
+    let fill = dataset_fill_value(reference_header, reference_metadata.datatype)
+    assert_eq(fill.length(), reference_file.superblock.offset_size)
+    assert_eq(
+      reference_file.resolve_object_reference(fill).map(node => node.path),
+      Some(Some("/matrix")),
+    )
+  }
+}
+
+///|
 test "compact dataset creation validates storage and duplicate names" {
   let writer = Hdf5Writer::new()
   writer.add_group("/group")

@@ -247,6 +247,61 @@ test "writer emits compact datasets and patches them in place" {
 }
 
 ///|
+test "writer stores fill values on contiguous and compact datasets" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset(
+    "/contiguous",
+    [3UL],
+    Int32Values([1, 2, 3]),
+    fill_value=Int32Values([-7]),
+  )
+  writer.add_compact_dataset(
+    "/compact",
+    [3UL],
+    Int32Values([4, 5, 6]),
+    fill_value=Int32Values([-7]),
+  )
+  writer.add_compact_dataset(
+    "/names",
+    [2UL],
+    VariableStringValues(["moon", "数据"]),
+    fill_value=VariableStringValues(["missing"]),
+  )
+  let file = Hdf5File::parse(writer.encode())
+  for path in ["/contiguous", "/compact"] {
+    let metadata = file.read_dataset_metadata(path)
+    let header = file.object_header_at(file.resolve(path).address)
+    assert_true(header.first(msg_fill_value) is Some(_))
+    assert_eq(
+      dataset_fill_value(header, metadata.datatype),
+      b"\xf9\xff\xff\xff",
+    )
+  }
+  assert_eq(integer_values(file.read_dataset("/contiguous")), [1L, 2L, 3L])
+  assert_eq(integer_values(file.read_dataset("/compact")), [4L, 5L, 6L])
+  assert_eq(string_values(file.read_dataset("/names")), ["moon", "数据"])
+  let names_header = file.object_header_at(file.resolve("/names").address)
+  assert_true(names_header.first(msg_fill_value) is Some(_))
+
+  let mismatch = try {
+    let invalid = Hdf5Writer::new()
+    invalid.add_dataset(
+      "/bad",
+      [1UL],
+      Int32Values([1]),
+      fill_value=Int64Values([-1L]),
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    mismatch,
+    Some(InvalidArgument("fill value must be one value of the dataset type")),
+  )
+}
+
+///|
 test "writer enforces the HDF5 compact dataset payload boundary" {
   let writer = Hdf5Writer::new()
   writer.add_compact_dataset(

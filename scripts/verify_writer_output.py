@@ -104,9 +104,11 @@ def verify_file(path: Path) -> None:
             handle["experiment/counts"][:], [[1, 2, 3], [4, 5, 6]]
         )
         assert handle["experiment/counts"].dtype == np.dtype("<i8")
+        assert handle["experiment/counts"].fillvalue == -1
         compact = handle["experiment/compact"]
         assert compact.id.get_create_plist().get_layout() == h5py.h5d.COMPACT
         assert compact.dtype == np.dtype("<i4")
+        assert compact.fillvalue == -1
         np.testing.assert_array_equal(compact[:], [7, 8, 9])
         assert (
             handle["experiment/compact_names"].id.get_create_plist().get_layout()

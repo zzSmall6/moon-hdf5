@@ -2101,11 +2101,13 @@ pub fn Hdf5Writer::add_external_link(
 
 ///|
 /// Adds a contiguous dataset. Empty `dimensions` denotes a scalar dataspace.
+/// An optional fill value must be a single value of the dataset datatype.
 pub fn Hdf5Writer::add_dataset(
   self : Hdf5Writer,
   path : String,
   dimensions : Array[UInt64],
   values : Hdf5WriteValues,
+  fill_value? : Hdf5WriteValues,
 ) -> Unit raise Hdf5Error {
   let normalized = canonical_writer_path(path)
   guard normalized != "/" else {
@@ -2115,6 +2117,7 @@ pub fn Hdf5Writer::add_dataset(
     raise InvalidArgument("writer object path already exists")
   }
   validate_write_values(dimensions, values)
+  let copied_fill = validated_write_fill(values, fill_value)
   self.ensure_groups(writer_parent_path(normalized))
   self.record_link(normalized)
   self.datasets.push({
@@ -2123,19 +2126,21 @@ pub fn Hdf5Writer::add_dataset(
     maximum_dimensions: dimensions.copy(),
     values: copy_write_values(values),
     storage: WritableContiguous,
-    fill_value: None,
+    fill_value: copied_fill,
     chunk_filter_masks: [],
   })
 }
 
 ///|
 /// Adds a compact dataset whose values are stored inline in the object header.
-/// Empty `dimensions` denotes a scalar dataspace.
+/// Empty `dimensions` denotes a scalar dataspace. An optional fill value must
+/// be a single value of the dataset datatype.
 pub fn Hdf5Writer::add_compact_dataset(
   self : Hdf5Writer,
   path : String,
   dimensions : Array[UInt64],
   values : Hdf5WriteValues,
+  fill_value? : Hdf5WriteValues,
 ) -> Unit raise Hdf5Error {
   let normalized = canonical_writer_path(path)
   guard normalized != "/" else {
@@ -2150,6 +2155,7 @@ pub fn Hdf5Writer::add_compact_dataset(
     count <= 65524L / writer_value_element_size(values).to_int64() else {
     raise InvalidArgument("compact dataset values exceed 65524 bytes")
   }
+  let copied_fill = validated_write_fill(values, fill_value)
   self.ensure_groups(writer_parent_path(normalized))
   self.record_link(normalized)
   self.datasets.push({
@@ -2158,7 +2164,7 @@ pub fn Hdf5Writer::add_compact_dataset(
     maximum_dimensions: dimensions.copy(),
     values: copy_write_values(values),
     storage: WritableCompact,
-    fill_value: None,
+    fill_value: copied_fill,
     chunk_filter_masks: [],
   })
 }

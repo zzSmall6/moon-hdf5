@@ -145,8 +145,9 @@ let output = writer.encode()
 
 Dataset creation options:
 
-- `add_dataset`: contiguous storage.
-- `add_compact_dataset`: inline object-header storage, up to 65,524 bytes.
+- `add_dataset`: contiguous storage with an optional fill value.
+- `add_compact_dataset`: inline object-header storage with an optional fill
+  value, up to 65,524 bytes.
 - `add_chunked_dataset`: finite fixed-array chunks or resizable chunks via
   `maximum_dimensions`.
 - `add_extensible_dataset`, `resize_dataset`, `append_dataset` and

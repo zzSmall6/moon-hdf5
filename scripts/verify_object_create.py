@@ -129,6 +129,7 @@ def verify(path: Path) -> None:
         ]
         compact = handle["created_root/compact_values"]
         assert compact.id.get_create_plist().get_layout() == h5py.h5d.COMPACT
+        assert compact.fillvalue == -4
         np.testing.assert_array_equal(compact[:], [7, 8, 9])
         compact_boundary = handle["created_root/compact_boundary"]
         assert (

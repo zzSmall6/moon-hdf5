@@ -455,10 +455,11 @@ an aligned continuation; oversized creation messages spill into checksummed
 `OCHK` chunks. Group headers contain a compact link-info message. Dataset
 headers contain dataspace, datatype and contiguous- or compact-layout messages;
 contiguous payloads are appended first and both layouts use the file's offset
-and length widths. Compact payloads are capped at 65,524 bytes. Committed
-datatype objects contain a datatype message whose reference fields use the file
-address width. Fixed-size numeric, string, complex and structured values are
-supported. Structured writes recursively encode
+and length widths. Optional fill values use the normal fill-value message and
+may share values through SOHM. Compact payloads are capped at 65,524 bytes.
+Committed datatype objects contain a datatype message whose reference fields
+use the file address width. Fixed-size numeric, string, complex and structured
+values are supported. Structured writes recursively encode
 variable-length strings and sequences plus object and region references nested
 in compound, fixed-array and fixed-base sequence members. Variable-length
 descriptors, reference slots and heap addresses use the file address width, so

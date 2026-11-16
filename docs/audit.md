@@ -762,3 +762,9 @@ message types emitted by this writer.
   `OCHK` continuations for large object headers. Committed datatypes use the
   target file's address width and remain editable through attributes and hard
   links; h5py 3.13.0/HDF5 1.14.6 verifies both 4- and 8-byte-address demos.
+- 2026-11-16: contiguous and compact creation paths now accept typed fill
+  values in both `Hdf5Writer` and `Hdf5File`. Compact fills use the normal
+  fill-value message and participate in SOHM fill sharing for writer output.
+  MoonBit tests cover numeric, variable-length string and object-reference
+  fills in 4- and 8-byte files; h5py 3.13.0/HDF5 1.14.6 verifies new writer
+  and existing-file demo output.

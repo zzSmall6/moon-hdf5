@@ -14,11 +14,13 @@ fn run(args : Array[String]) -> Int32 {
       "/experiment/counts",
       [2UL, 3UL],
       Int64Values([1L, 2L, 3L, 4L, 5L, 6L]),
+      fill_value=Int64Values([-1L]),
     )
     writer.add_compact_dataset(
       "/experiment/compact",
       [3UL],
       Int32Values([7, 8, 9]),
+      fill_value=Int32Values([-1]),
     )
     writer.add_compact_dataset(
       "/experiment/compact_names",
