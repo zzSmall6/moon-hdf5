@@ -20,8 +20,8 @@ This project implements a documented subset of HDF5. The
   chunk/selection iterators for directly addressable mappings.
 - Writing covers groups, datasets, attributes, links, committed datatypes,
   filters, fills, dense/SOHM metadata, nested variable-length and reference
-  values, compact/contiguous/chunked/virtual/external storage, optional
-  zero-filled user blocks, and resizable datasets.
+  values, compact/contiguous/chunked/virtual/external storage, optional user
+  blocks, and resizable datasets.
 - Existing-file editing covers value and attribute patching, attribute and link
   add/rename/delete, object creation/deletion, and append-only metadata rebuilds.
   Virtual datasets can be added to new or existing files.
@@ -155,6 +155,8 @@ Dataset creation options:
   the external files.
 - `set_user_block`: reserve a zero-filled 512 B, 1 KiB, ... or 1 MiB prefix and
   place the superblock after it. Existing user-block files remain editable.
+- `set_user_block_content`: store caller-provided prefix bytes, rounded up to
+  the next permitted user-block size and zero-padded.
 - `add_virtual_dataset`: virtual storage from one or more source mappings. Use
   `.` for a same-file source; external source names are stored without opening
   the file. `maximum_dimensions` with a `None` entry declares one unlimited
@@ -257,8 +259,7 @@ moon-hdf5 is not a drop-in replacement for libhdf5.
   format's 64-bit creation-order field and are not capped at 65,535.
   Four-byte structured values with variable-length custom fills are rejected
   for HDF5 1.14.6 interoperability.
-- User blocks are zero-filled and limited to powers of two from 512 B through
-  1 MiB; arbitrary prefix bytes are not exposed by the writer API.
+- User blocks are limited to powers of two from 512 B through 1 MiB.
 - Detection of unsupported input is not exhaustive. Unsupported structures
   raise `UnsupportedFeature`; malformed input raises `InvalidField` or
   `UnexpectedEof`.

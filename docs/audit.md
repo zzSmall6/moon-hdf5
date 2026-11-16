@@ -227,8 +227,9 @@ indexes support dense links beyond 65,535 records; dense attributes remain
 limited to 65,535 by the attribute-info field. A free-space manager is not
 emitted.
 
-An optional user block reserves a zero-filled power-of-two prefix from 512 B
-through 1 MiB. Internal object and metadata addresses remain base-relative, the
+An optional user block reserves a power-of-two prefix from 512 B through 1 MiB.
+The writer can zero-fill it or store caller-provided bytes padded to the chosen
+size. Internal object and metadata addresses remain base-relative, the
 superblock records the user-block base, and the end-of-file field is absolute.
 The same rule applies when appending objects or patched storage to an existing
 v0 or v3 user-block file, so the base is never subtracted from the final byte
@@ -733,3 +734,8 @@ message types emitted by this writer.
   MoonBit writes and edits a 65,536-link group to 65,537 links; h5py
   3.13.0/HDF5 1.14.6 independently verifies counts, creation-order tracking and
   soft-link targets in both files.
+- 2026-11-16: `Hdf5Writer::set_user_block_content` stores caller-provided
+  prefix bytes in the smallest legal 512 B–1 MiB power-of-two user block and
+  zero-pads the remainder. MoonBit tests cover a 700-byte prefix promoted to
+  1 KiB, relative addresses and rejection above 1 MiB. H5py 3.13.0/HDF5 1.14.6
+  independently verifies the non-zero prefix, superblock offset and file data.

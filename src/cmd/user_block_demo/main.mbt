@@ -8,7 +8,9 @@ fn run(args : Array[String]) -> Int32 {
   }
   try {
     let writer = @lib.Hdf5Writer::new()
-    writer.set_user_block(512)
+    writer.set_user_block_content(
+      Bytes::makei(512, index => ((index * 37 + 11) & 0xFF).to_byte()),
+    )
     writer.add_group("/group")
     writer.add_dataset("/group/values", [4UL], Int32Values([1, 2, 3, 4]))
     writer.add_compact_dataset(

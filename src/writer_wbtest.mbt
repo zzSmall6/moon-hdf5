@@ -77,6 +77,46 @@ test "writer emits a user block with relative addresses" {
 }
 
 ///|
+test "writer emits caller-provided user-block content" {
+  let writer = Hdf5Writer::new()
+  let content = Bytes::makei(700, i => ((i * 37 + 11) & 0xFF).to_byte())
+  writer.set_user_block_content(content)
+  writer.add_dataset("/value", [], UInt64Values([9UL]))
+  let bytes = writer.encode()
+  assert_eq(bytes.get_view(start=0, end=700).unwrap().to_owned(), content)
+  for index in 700..<1024 {
+    assert_eq(bytes[index], b'\x00')
+  }
+  assert_true(signature_at(bytes, 1024))
+  let file = Hdf5File::parse(bytes)
+  assert_eq(file.superblock.base_address, 1024UL)
+  assert_eq(file.superblock.end_of_file_address, bytes.length().to_uint64())
+  assert_eq(unsigned_values(file.read_dataset("/value")), [9UL])
+}
+
+///|
+test "writer validates user-block content" {
+  let writer = Hdf5Writer::new()
+  let error = try {
+    writer.set_user_block_content(Bytes::make(1048577, b'x'))
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    error,
+    Some(InvalidArgument("user block content exceeds 1048576 bytes")),
+  )
+  writer.set_user_block_content(Bytes::make(512, b'x'))
+  writer.set_user_block(512)
+  writer.add_dataset("/empty", [], UInt64Values([0UL]))
+  let bytes = writer.encode()
+  for index in 0..<512 {
+    assert_eq(bytes[index], b'\x00')
+  }
+}
+
+///|
 test "user-block patches keep an absolute end-of-file address" {
   let writer = Hdf5Writer::new()
   writer.set_user_block(1024)

@@ -597,6 +597,7 @@ pub struct Hdf5Writer {
   priv mut share_fills : Bool
   priv mut share_filters : Bool
   priv mut user_block_size : Int32
+  priv mut user_block : Bytes
   priv custom_filters : Array[&Hdf5CustomFilter]
   priv external_sources : Array[Hdf5ExternalSource]
 }
@@ -757,6 +758,7 @@ pub fn Hdf5Writer::new() -> Hdf5Writer {
     share_fills: false,
     share_filters: false,
     user_block_size: 0,
+    user_block: b"",
     custom_filters: [],
     external_sources: [],
   }
@@ -780,6 +782,28 @@ pub fn Hdf5Writer::set_user_block(
     )
   }
   self.user_block_size = size
+  self.user_block = b""
+}
+
+///|
+/// Reserves a user block containing caller-provided prefix bytes.
+///
+/// The block size is the smallest permitted power of two from 512 bytes through
+/// 1 MiB that can hold `content`; remaining bytes are zero-filled. An empty
+/// byte string removes the user block.
+pub fn Hdf5Writer::set_user_block_content(
+  self : Hdf5Writer,
+  content : Bytes,
+) -> Unit raise Hdf5Error {
+  guard content.length() <= 1048576 else {
+    raise InvalidArgument("user block content exceeds 1048576 bytes")
+  }
+  let mut size = if content.length() == 0 { 0 } else { 512 }
+  while size < content.length() {
+    size = size * 2
+  }
+  self.user_block_size = size
+  self.user_block = content
 }
 
 ///|
@@ -10952,7 +10976,11 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
   }
   let file_length = self.user_block_size + eof
   let output = @buffer.Buffer::Buffer(size_hint=file_length)
-  writer_write_zeros(output, self.user_block_size)
+  guard self.user_block.length() <= self.user_block_size else {
+    raise InvalidField("user block content exceeds its reserved size")
+  }
+  writer_write_bytes(output, self.user_block)
+  writer_write_zeros(output, self.user_block_size - self.user_block.length())
   writer_write_bytes(
     output,
     encode_superblock(

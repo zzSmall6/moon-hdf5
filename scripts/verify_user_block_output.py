@@ -10,9 +10,15 @@ import h5py
 import numpy as np
 
 
-def superblock_offsets(data: bytes) -> tuple[int, int, int, int]:
+def expected_user_block() -> bytes:
+    return bytes((index * 37 + 11) & 0xFF for index in range(512))
+
+
+def superblock_offsets(
+    data: bytes, user_block: bytes | None = None
+) -> tuple[int, int, int, int]:
     signature = b"\x89HDF\r\n\x1a\n"
-    assert data[:512] == bytes(512)
+    assert data[:512] == (bytes(512) if user_block is None else user_block)
     assert data[512 : 520] == signature
     version = data[520]
     if version == 3:
@@ -34,7 +40,9 @@ def superblock_offsets(data: bytes) -> tuple[int, int, int, int]:
 
 def verify_created(path: Path, edited: bool) -> None:
     data = path.read_bytes()
-    base_address, eof, signature_offset, version = superblock_offsets(data)
+    base_address, eof, signature_offset, version = superblock_offsets(
+        data, expected_user_block()
+    )
     assert version == 3
     assert eof == len(data)
 
