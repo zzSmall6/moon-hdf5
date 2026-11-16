@@ -421,6 +421,48 @@ test "writer indexes dense links and attributes by creation order" {
 }
 
 ///|
+test "writer stores dense links beyond the 16-bit record boundary" {
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/target", [], UInt64Values([7UL]))
+  writer.add_group("/links")
+  let link_count = 65536
+  for index in 0..<link_count {
+    writer.add_soft_link("/links", "link_" + index.to_string(), "/target")
+  }
+  let bytes = writer.encode()
+  let file = Hdf5File::parse(bytes)
+  let object = file.resolve("/links")
+  let header = parse_object_header(bytes, object.address, 8, 8, 0UL)
+  let links = file.links(header)
+  assert_eq(links.length(), link_count)
+  assert_eq(links[0].name, "link_0")
+  assert_eq(links[link_count - 1].name, "link_65535")
+  assert_true(!header.messages.any(message => message.msg_type == msg_link))
+  let info = header.find(msg_link_info)[0]
+  let reader = Reader::new(info.data)
+  assert_eq(reader.read_u8(), b'\x00')
+  assert_eq(reader.read_u8(), b'\x03')
+  assert_eq(reader.read_uint_le(8), (link_count - 1).to_uint64())
+  for _ in 0..<3 {
+    assert_true(reader.read_uint_le(8) != 0xFFFFFFFFFFFFFFFFUL)
+  }
+
+  let edited = file.add_soft_link("/links", "link_after", "/target")
+  let edited_file = Hdf5File::parse(edited)
+  let edited_object = edited_file.resolve("/links")
+  let edited_header = parse_object_header(
+    edited,
+    edited_object.address,
+    8,
+    8,
+    0UL,
+  )
+  let edited_links = edited_file.links(edited_header)
+  assert_eq(edited_links.length(), link_count + 1)
+  assert_eq(edited_links[link_count].name, "link_after")
+}
+
+///|
 fn writer_test_attribute_name(
   payload : Bytes,
 ) -> (String, Int32) raise Hdf5Error {
@@ -2050,10 +2092,21 @@ test "writer enforces exact dense metadata limits" {
     flags: b'\x00',
     shared_id: None,
   }
-  assert_true(!writer_dense_entries_fit(Array::make(8, entry)))
-  assert_true(writer_dense_entries_fit(Array::make(9, entry)))
-  assert_true(writer_dense_entries_fit(Array::make(65535, entry)))
-  assert_true(!writer_dense_entries_fit(Array::make(65536, entry)))
+  assert_true(
+    !writer_dense_entries_fit(Array::make(8, entry), kind=WritableDenseLinks),
+  )
+  assert_true(
+    writer_dense_entries_fit(Array::make(9, entry), kind=WritableDenseLinks),
+  )
+  assert_true(
+    writer_dense_entries_fit(Array::make(65536, entry), kind=WritableDenseLinks),
+  )
+  assert_true(
+    !writer_dense_entries_fit(
+      Array::make(65536, entry),
+      kind=WritableDenseAttributes,
+    ),
+  )
 
   let at_limit = {
     name: "item",
@@ -2071,8 +2124,18 @@ test "writer enforces exact dense metadata limits" {
     flags: b'\x00',
     shared_id: None,
   }
-  assert_true(writer_dense_entries_fit(Array::make(9, at_limit)))
-  assert_true(writer_dense_entries_fit(Array::make(9, over_limit)))
+  assert_true(
+    writer_dense_entries_fit(
+      Array::make(9, at_limit),
+      kind=WritableDenseAttributes,
+    ),
+  )
+  assert_true(
+    writer_dense_entries_fit(
+      Array::make(9, over_limit),
+      kind=WritableDenseAttributes,
+    ),
+  )
 
   let btree_header = encode_writer_metadata_btree_header(
     8, 1024, 17, 0UL, 65535, 0, 65535UL,

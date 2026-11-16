@@ -570,7 +570,7 @@ fn encode_editable_dense_storage(
   metadata_filters~ : Array[Filter] = [],
   encoded_filters~ : Bytes = b"",
 ) -> (Bytes, Bytes, Bytes) raise Hdf5Error {
-  guard writer_dense_entries_fit(entries) else {
+  guard writer_dense_entries_fit(entries, kind=WritableDenseAttributes) else {
     raise InvalidField("dense attribute metadata is not available")
   }
   writer_sort_dense_entries(entries)

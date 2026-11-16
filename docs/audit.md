@@ -223,7 +223,9 @@ The writer emits a v3 superblock and v2 object headers. Large compact headers us
 checksummed OCHK continuations. Dense collections use FHDB direct blocks, an
 FHIB indirect root when multiple blocks are needed, and a type-1 v2 B-tree for
 huge objects. Multi-level BTHD/BTIN/BTLF name and type 6/9 creation-order
-indexes are limited to 9–65,535 records. A free-space manager is not emitted.
+indexes support dense links beyond 65,535 records; dense attributes remain
+limited to 65,535 by the attribute-info field. A free-space manager is not
+emitted.
 
 An optional user block reserves a zero-filled power-of-two prefix from 512 B
 through 1 MiB. Internal object and metadata addresses remain base-relative, the
@@ -724,3 +726,10 @@ message types emitted by this writer.
   final length and could truncate the declared file size; regression tests now
   cover writer-created v3 files and the v0 fixture. H5py 3.13.0/HDF5 1.14.6
   independently reads the new, patched and existing-edited outputs.
+- 2026-11-16: dense link metadata no longer shares the 65,535-record attribute
+  limit. Link creation order uses the format's 64-bit field, while attribute
+  storage remains bounded by its 16-bit attribute-info field. Hash indexes keep
+  path lookup and creation-order assignment linear for large collections.
+  MoonBit writes and edits a 65,536-link group to 65,537 links; h5py
+  3.13.0/HDF5 1.14.6 independently verifies counts, creation-order tracking and
+  soft-link targets in both files.

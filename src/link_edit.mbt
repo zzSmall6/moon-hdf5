@@ -377,7 +377,7 @@ fn encode_editable_dense_links(
   metadata_filters~ : Array[Filter] = [],
   encoded_filters~ : Bytes = b"",
 ) -> (Bytes, Bytes, Bytes) raise Hdf5Error {
-  guard writer_dense_entries_fit(entries) else {
+  guard writer_dense_entries_fit(entries, kind=WritableDenseLinks) else {
     raise InvalidField("dense link metadata is not available")
   }
   writer_sort_dense_entries(entries)
@@ -456,7 +456,7 @@ fn Hdf5File::write_rebuilt_links(
   links : Array[EditableLink],
   tail : @buffer.Buffer,
 ) -> Bytes raise Hdf5Error {
-  guard links.length() <= 65535 else {
+  guard links.length() <= writer_dense_max_link_records else {
     raise InvalidArgument("too many links for one group")
   }
   let offset_size = self.superblock.offset_size

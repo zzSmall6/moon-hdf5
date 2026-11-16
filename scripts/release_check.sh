@@ -34,6 +34,8 @@ output=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-release.XXXXXX")
 user_block_new=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-user-block-new.XXXXXX")
 user_block_edited=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-user-block-edited.XXXXXX")
 user_block_existing=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-user-block-existing.XXXXXX")
+dense_links=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-dense-links.XXXXXX")
+dense_links_edited=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-dense-links-edited.XXXXXX")
 symbol_compact=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-compact.XXXXXX")
 symbol_dense=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-symbol-dense.XXXXXX")
 filtered_links=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-filtered-links.XXXXXX")
@@ -44,7 +46,7 @@ virtual_edited=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-virtual-edited.XXXXXX")
 created=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created.XXXXXX")
 created8=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created8.XXXXXX")
 deleted=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-deleted.XXXXXX")
-trap 'rm -f "$output" "$user_block_new" "$user_block_edited" "$user_block_existing" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$virtual_new" "$virtual_edited" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"; rm -rf "$external_references"' EXIT HUP INT TERM
+trap 'rm -f "$output" "$user_block_new" "$user_block_edited" "$user_block_existing" "$dense_links" "$dense_links_edited" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$virtual_new" "$virtual_edited" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$deleted"; rm -rf "$external_references"' EXIT HUP INT TERM
 moon run src/cmd/write_demo --target native -- "$output"
 
 python=${H5PY_PYTHON:-}
@@ -76,6 +78,16 @@ if [ "${SKIP_H5PY:-0}" = "1" ]; then
 else
   "$python" scripts/verify_user_block_output.py \
     "$user_block_new" "$user_block_edited" "$user_block_existing"
+fi
+
+echo "==> Dense link output"
+moon run src/cmd/dense_link_demo --target native -- \
+  "$dense_links" "$dense_links_edited"
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> Dense-link verification skipped (SKIP_H5PY=1)"
+else
+  "$python" scripts/verify_dense_link_output.py \
+    "$dense_links" "$dense_links_edited"
 fi
 
 echo "==> Virtual dataset output"

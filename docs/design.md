@@ -176,13 +176,15 @@ float16/32/64 in either byte order. Half-precision values are rounded to
 nearest-even from their f32 representation, including subnormals, infinities and
 NaNs.
 
-Dense link and attribute collections are used for 9–65,535 records. Managed
-heap objects up to 65,535 bytes are packed into one or more FHDB direct blocks,
-with an FHIB indirect root when more than one block is needed. Larger encoded
-objects use huge heap IDs and a type-1 v2 B-tree. Each collection has one FRHP
-header, a BTHD header and BTLF name index, plus a type 6 or 9 creation-order
-index sharing the same heap IDs. Larger sets remain compact and use OCHK
-continuation when needed. A free-space manager is not emitted.
+Dense link collections use the format's 64-bit creation-order field and are not
+capped at 65,535 records. Dense attributes are limited to 9–65,535 records by
+the attribute-info creation-order field. Managed heap objects up to 65,535 bytes
+are packed into one or more FHDB direct blocks, with an FHIB indirect root when
+more than one block is needed. Larger encoded objects use huge heap IDs and a
+type-1 v2 B-tree. Each collection has one FRHP header, a BTHD header and BTLF
+name index, plus a type 6 or 9 creation-order index sharing the same heap IDs.
+Dense metadata that cannot be represented falls back to compact OCHK
+continuations. A free-space manager is not emitted.
 
 The writer supports compact datasets, contiguous datasets, contiguous external
 raw-data slots, finite chunked datasets with fixed-array indexes,

@@ -570,13 +570,11 @@ priv struct WritableExternalLink {
 
 ///|
 priv struct WritableLinkOrder {
-  path : String
   order : UInt64
 }
 
 ///|
 priv struct WritableLinkOrderCounter {
-  parent_path : String
   next_order : UInt64
 }
 
@@ -591,6 +589,10 @@ pub struct Hdf5Writer {
   priv external_links : Array[WritableExternalLink]
   priv link_orders : Array[WritableLinkOrder]
   priv link_order_counters : Array[WritableLinkOrderCounter]
+  priv soft_link_indices : @hashmap.HashMap[String, Int32]
+  priv external_link_indices : @hashmap.HashMap[String, Int32]
+  priv link_order_indices : @hashmap.HashMap[String, Int32]
+  priv link_order_counter_indices : @hashmap.HashMap[String, Int32]
   priv mut share_attributes : Bool
   priv mut share_fills : Bool
   priv mut share_filters : Bool
@@ -747,6 +749,10 @@ pub fn Hdf5Writer::new() -> Hdf5Writer {
     external_links: [],
     link_orders: [],
     link_order_counters: [],
+    soft_link_indices: @hashmap.HashMap([]),
+    external_link_indices: @hashmap.HashMap([]),
+    link_order_indices: @hashmap.HashMap([]),
+    link_order_counter_indices: @hashmap.HashMap([]),
     share_attributes: false,
     share_fills: false,
     share_filters: false,
@@ -1808,18 +1814,12 @@ fn writer_soft_link_path(parent_path : String, name : String) -> String {
 
 ///|
 fn Hdf5Writer::has_soft_link(self : Hdf5Writer, path : String) -> Bool {
-  self.soft_links.search_by(link => {
-    writer_soft_link_path(link.parent_path, link.name) == path
-  })
-  is Some(_)
+  self.soft_link_indices.contains(path)
 }
 
 ///|
 fn Hdf5Writer::has_external_link(self : Hdf5Writer, path : String) -> Bool {
-  self.external_links.search_by(link => {
-    writer_soft_link_path(link.parent_path, link.name) == path
-  })
-  is Some(_)
+  self.external_link_indices.contains(path)
 }
 
 ///|
@@ -1907,26 +1907,26 @@ fn Hdf5Writer::record_link(
   path : String,
 ) -> Unit raise Hdf5Error {
   guard path != "/" else { return }
-  if self.link_orders.search_by(link => link.path == path) is Some(_) {
+  if self.link_order_indices.contains(path) {
     return
   }
   let parent_path = writer_parent_path(path)
-  let counter = match
-    self.link_order_counters.search_by(counter => {
-      counter.parent_path == parent_path
-    }) {
+  let counter = match self.link_order_counter_indices.get(parent_path) {
     Some(index) => index
     None => {
-      self.link_order_counters.push({ parent_path, next_order: 0UL, })
-      self.link_order_counters.length() - 1
+      self.link_order_counters.push({ next_order: 0UL, })
+      let index = self.link_order_counters.length() - 1
+      self.link_order_counter_indices.set(parent_path, index)
+      index
     }
   }
   let order = self.link_order_counters[counter].next_order
   guard order < 0xFFFFFFFFFFFFFFFFUL else {
     raise InvalidArgument("writer has too many links")
   }
-  self.link_orders.push({ path, order, })
-  self.link_order_counters[counter] = { parent_path, next_order: order + 1UL, }
+  self.link_orders.push({ order, })
+  self.link_order_indices.set(path, self.link_orders.length() - 1)
+  self.link_order_counters[counter] = { next_order: order + 1UL, }
 }
 
 ///|
@@ -1934,7 +1934,7 @@ fn Hdf5Writer::link_creation_order(
   self : Hdf5Writer,
   path : String,
 ) -> UInt64 raise Hdf5Error {
-  match self.link_orders.search_by(link => link.path == path) {
+  match self.link_order_indices.get(path) {
     Some(index) => self.link_orders[index].order
     None => raise InvalidField("writer link has no creation order")
   }
@@ -2030,6 +2030,7 @@ pub fn Hdf5Writer::add_soft_link(
   self.ensure_groups(normalized_parent)
   self.record_link(link_path)
   self.soft_links.push({ parent_path: normalized_parent, name, target, })
+  self.soft_link_indices.set(link_path, self.soft_links.length() - 1)
 }
 
 ///|
@@ -2065,6 +2066,7 @@ pub fn Hdf5Writer::add_external_link(
     target_file,
     target_path,
   })
+  self.external_link_indices.set(link_path, self.external_links.length() - 1)
 }
 
 ///|
@@ -7123,7 +7125,10 @@ let writer_dense_threshold : Int32 = 8
 let writer_dense_max_managed_size : Int32 = 65535
 
 ///|
-let writer_dense_max_records : Int32 = 65535
+let writer_dense_max_link_records : Int32 = 0x7FFFFFFF
+
+///|
+let writer_dense_max_attribute_records : Int32 = 65535
 
 ///|
 let writer_dense_btree_node_size : Int32 = 512
@@ -7351,12 +7356,18 @@ fn Hdf5Writer::dense_attribute_entries(
 }
 
 ///|
-fn writer_dense_entries_fit(entries : Array[WritableDenseHeapEntry]) -> Bool {
-  if entries.length() <= writer_dense_threshold ||
-    entries.length() > writer_dense_max_records {
+fn writer_dense_entries_fit(
+  entries : Array[WritableDenseHeapEntry],
+  kind~ : WritableDenseKind,
+) -> Bool {
+  if entries.length() <= writer_dense_threshold {
     return false
   }
-  true
+  match kind {
+    WritableDenseLinks => entries.length() <= writer_dense_max_link_records
+    WritableDenseAttributes =>
+      entries.length() <= writer_dense_max_attribute_records
+  }
 }
 
 ///|
@@ -8564,7 +8575,7 @@ fn Hdf5Writer::encode_dense_metadata(
   } else {
     self.dense_attribute_entries(object.path, heap, objects, shared~)
   }
-  guard writer_dense_entries_fit(entries) else {
+  guard writer_dense_entries_fit(entries, kind~) else {
     raise InvalidField("dense metadata is not available for this object")
   }
   writer_sort_dense_entries(entries)
@@ -9364,7 +9375,7 @@ fn Hdf5Writer::object_payload(
   match object.kind {
     WritableGroup => {
       let entries = self.dense_link_entries(object, objects, track_order=true)
-      if writer_dense_entries_fit(entries) {
+      if writer_dense_entries_fit(entries, kind=WritableDenseLinks) {
         let (heap_address, index_address, order_index_address) = writer_dense_addresses(
           dense,
           object.path,
@@ -9605,7 +9616,7 @@ fn Hdf5Writer::object_payload(
       objects,
       shared~,
     )
-    if writer_dense_entries_fit(entries) {
+    if writer_dense_entries_fit(entries, kind=WritableDenseAttributes) {
       let (heap_address, index_address, order_index_address) = writer_dense_addresses(
         dense,
         object.path,
@@ -10277,6 +10288,7 @@ fn assign_writable_addresses(
             templates,
             shared=shared_candidates,
           ),
+          kind=WritableDenseAttributes,
         ),
       ).length(),
     )
@@ -10357,7 +10369,7 @@ fn assign_writable_addresses(
       ),
     )
     for (kind, dense_entries) in candidates {
-      if writer_dense_entries_fit(dense_entries) {
+      if writer_dense_entries_fit(dense_entries, kind~) {
         let (placeholder_heap, placeholder_index, placeholder_order_index) = writer.encode_dense_metadata(
           object,
           objects,

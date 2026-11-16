@@ -253,9 +253,10 @@ moon-hdf5 is not a drop-in replacement for libhdf5.
   floats. Writers do not open sources; readers require source registration.
 - The API is memory-resident, editing is append-only, and references or patches
   target existing objects. External raw data is resolver-only, contiguous and
-  unfiltered. Dense collections hold 9–65,535 records. Four-byte structured
-  values with variable-length custom fills are rejected for HDF5 1.14.6
-  interoperability.
+  unfiltered. Dense attributes hold 9–65,535 records; dense links use the
+  format's 64-bit creation-order field and are not capped at 65,535.
+  Four-byte structured values with variable-length custom fills are rejected
+  for HDF5 1.14.6 interoperability.
 - User blocks are zero-filled and limited to powers of two from 512 B through
   1 MiB; arbitrary prefix bytes are not exposed by the writer API.
 - Detection of unsupported input is not exhaustive. Unsupported structures
