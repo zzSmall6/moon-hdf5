@@ -157,8 +157,9 @@ Dataset creation options:
   the file. `maximum_dimensions` with a `None` entry declares one unlimited
   axis. In a single unlimited virtual hyperslab, `%b` in a source file or
   dataset name expands to the block number and `%%` is a literal percent sign.
-  Numeric, enum, complex, array, compound and same-charset fixed-string source
-  values are converted to the virtual datatype.
+  Numeric, enum, complex, array, compound, same-charset fixed-string and
+  fixed-string-to-vlen-string source values are converted to the virtual
+  datatype.
 
 Fixed-size values support Shuffle, deflate, Fletcher32 and scale-offset.
 Variable-length values support Shuffle/deflate and must use fixed-size sequence
@@ -236,15 +237,15 @@ moon-hdf5 is not a drop-in replacement for libhdf5.
   SWMR and parallel HDF5.
 - Virtual datasets support all, empty and hyperslab mappings, same-file or
   registered external sources, one unlimited virtual hyperslab axis with
-  `%b`/`%%` source names, and numeric, enum, complex, array, compound and
-  same-charset fixed-string conversion. Compound members map by name; missing
-  target members are zero-filled and extra source members are ignored. Enum
-  conversion uses the underlying integer. Point/block mappings and multiple
-  unlimited axes are rejected by HDF5 1.14.6; unlimited source selections and
-  variable-length/reference conversions have no supported HDF5 1.14.6 VDS
-  conversion path. Float conversion is limited to 64-bit integer magnitudes
-  and standard binary floats. Writers do not open sources; readers require
-  source registration.
+  `%b`/`%%` source names, numeric, enum, complex, array, compound,
+  same-charset fixed-string and fixed-string-to-vlen-string conversion.
+  Compound members map by name; missing target members are zero-filled and
+  extra source members are ignored. Enum conversion uses the underlying
+  integer. Point/block mappings and multiple unlimited axes are rejected by
+  HDF5 1.14.6; unlimited source selections, variable-length source conversions
+  and reference conversions have no supported HDF5 1.14.6 VDS conversion path.
+  Float conversion is limited to 64-bit integer magnitudes and standard binary
+  floats. Writers do not open sources; readers require source registration.
 - The API is memory-resident, editing is append-only, and references or patches
   target existing objects. External raw data is resolver-only, contiguous and
   unfiltered. Dense collections hold 9–65,535 records. Four-byte structured

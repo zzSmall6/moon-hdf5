@@ -146,6 +146,18 @@ def verify() -> None:
             np.array([([1, 2],), ([3, 4],)], dtype=[("q", "<i4", (2,))]),
         )
         np.testing.assert_array_equal(
+            handle["s3_vlen_utf8"][...],
+            np.array([b"ab", b"c", b"def"], dtype=object),
+        )
+        np.testing.assert_array_equal(
+            handle["s3_vlen_strided"][...],
+            np.array([[b"a", b"c"], [b"g", b"i"]], dtype=object),
+        )
+        np.testing.assert_array_equal(
+            handle["s3_vlen_fill"][...],
+            np.array([b"ab", b"c", b"def", b""], dtype=object),
+        )
+        np.testing.assert_array_equal(
             handle["complex64_128"][...], np.array([1 + 2j, 3 + 4j], dtype="<c16")
         )
         for name in (
@@ -163,6 +175,9 @@ def verify() -> None:
             "cmp_nested",
             "cmp_string",
             "cmp_array",
+            "s3_vlen_utf8",
+            "s3_vlen_strided",
+            "s3_vlen_fill",
             "complex64_128",
         ):
             assert handle[name].is_virtual

@@ -54,10 +54,12 @@ checksum, selection ranks and bounds, source registration, element counts and
 recursive datatype compatibility before copying source elements into the
 requested virtual indices. Numeric, enum, complex, fixed-array, compound and
 same-charset fixed-string values are converted through controlled value
-semantics. Compound members are matched by name, missing target members remain
-zero bytes and extra source members are ignored; enum conversion uses the
-underlying integer rather than member names. Other conversions require a
-byte-identical datatype. A single unlimited virtual hyperslab axis expands `%b`
+semantics. Fixed strings targeting variable-length strings are decoded to text
+without materializing a source-file heap descriptor. Compound members are
+matched by name, missing target members remain zero bytes and extra source
+members are ignored; enum conversion uses the underlying integer rather than
+member names. Other conversions require a byte-identical datatype. A single
+unlimited virtual hyperslab axis expands `%b`
 in source file/dataset names to the block number and `%%` to a literal percent.
 Unmapped elements use the declared fill value. The same path serves full reads,
 arbitrary selections, chunk tiles, selection pages and region-reference targets;

@@ -1077,6 +1077,22 @@ fn virtual_datatype_convertible(source : Datatype, target : Datatype) -> Bool {
 }
 
 ///|
+fn virtual_target_is_vlen_string(datatype : Datatype) -> Bool {
+  datatype.class == 9 && datatype.vlen_is_string
+}
+
+///|
+fn virtual_source_is_fixed_string(datatype : Datatype) -> Bool {
+  datatype.class == 3 && datatype.size > 0
+}
+
+///|
+priv enum VirtualMappingDestination {
+  Payload(FixedArray[Byte])
+  Strings(Array[String])
+}
+
+///|
 fn virtual_bigint_from_float(number : Double) -> @bigint.BigInt raise Hdf5Error {
   guard !number.is_nan() && !number.is_inf() else {
     raise InvalidField("cannot convert a non-finite floating value to integer")
@@ -1364,6 +1380,46 @@ fn convert_virtual_payload(
 }
 
 ///|
+fn decode_virtual_string_payload(
+  payload : Bytes,
+  count : Int64,
+  source : Datatype,
+) -> Array[String] raise Hdf5Error {
+  guard virtual_source_is_fixed_string(source) else {
+    raise UnsupportedFeature(
+      "virtual dataset vlen-string conversion requires a fixed-string source",
+    )
+  }
+  guard count >= 0 && count <= 0x7FFFFFFFL else {
+    raise InvalidField("virtual dataset has too many string elements")
+  }
+  guard payload.length().to_int64() >= count * source.size.to_int64() else {
+    raise InvalidField("virtual dataset string source payload is truncated")
+  }
+  let values : Array[String] = []
+  for index in 0..<count.to_int() {
+    match
+      decode_dataset_value(
+        None,
+        b"",
+        payload,
+        index * source.size,
+        source,
+        8,
+        8,
+        0UL,
+      ) {
+      Text(text) => values.push(text)
+      _ =>
+        raise InvalidField(
+          "virtual dataset fixed-string source did not decode as text",
+        )
+    }
+  }
+  values
+}
+
+///|
 fn Hdf5File::read_dataset_indices_payload(
   self : Hdf5File,
   path : String,
@@ -1531,7 +1587,7 @@ fn Hdf5File::apply_virtual_mapping_payload(
   referring_file : String,
   depth : Int32,
   allow_partial : Bool,
-  output : FixedArray[Byte],
+  output : VirtualMappingDestination,
 ) -> Unit raise Hdf5Error {
   let datatype = metadata.datatype
   let (source_name, source_file) = self.virtual_source_file(
@@ -1550,10 +1606,20 @@ fn Hdf5File::apply_virtual_mapping_payload(
     source_file.superblock.offset_size,
     source_file.superblock.length_size,
   )
-  guard virtual_datatype_convertible(source_metadata.datatype, datatype) else {
-    raise UnsupportedFeature(
-      "virtual dataset source datatype conversion is not supported",
-    )
+  let string_destination = output is Strings(_)
+  if string_destination {
+    guard virtual_target_is_vlen_string(datatype) &&
+      virtual_source_is_fixed_string(source_metadata.datatype) else {
+      raise UnsupportedFeature(
+        "virtual dataset vlen-string conversion is not supported",
+      )
+    }
+  } else {
+    guard virtual_datatype_convertible(source_metadata.datatype, datatype) else {
+      raise UnsupportedFeature(
+        "virtual dataset source datatype conversion is not supported",
+      )
+    }
   }
   validate_region_selection(source_metadata.dataspace, source_selection)
   validate_virtual_region_selection(
@@ -1621,26 +1687,40 @@ fn Hdf5File::apply_virtual_mapping_payload(
     guard source_payload.length().to_int64() == expected else {
       raise InvalidField("virtual dataset source payload has an invalid size")
     }
-    let payload = if virtual_datatype_compatible(
-        source_metadata.datatype,
-        datatype,
-      ) {
-      source_payload
-    } else {
-      convert_virtual_payload(
-        source_payload,
-        source_indices.length().to_int64(),
-        source_metadata.datatype,
-        datatype,
-      )
-    }
-    for match_index in 0..<destinations.length() {
-      output.blit_from_bytes(
-        destinations[match_index] * target_size,
-        payload,
-        match_index * target_size,
-        target_size,
-      )
+    match output {
+      Strings(values) => {
+        let strings = decode_virtual_string_payload(
+          source_payload,
+          source_indices.length().to_int64(),
+          source_metadata.datatype,
+        )
+        for match_index in 0..<destinations.length() {
+          values[destinations[match_index]] = strings[match_index]
+        }
+      }
+      Payload(buffer) => {
+        let payload = if virtual_datatype_compatible(
+            source_metadata.datatype,
+            datatype,
+          ) {
+          source_payload
+        } else {
+          convert_virtual_payload(
+            source_payload,
+            source_indices.length().to_int64(),
+            source_metadata.datatype,
+            datatype,
+          )
+        }
+        for match_index in 0..<destinations.length() {
+          buffer.blit_from_bytes(
+            destinations[match_index] * target_size,
+            payload,
+            match_index * target_size,
+            target_size,
+          )
+        }
+      }
     }
     return
   }
@@ -1673,30 +1753,47 @@ fn Hdf5File::apply_virtual_mapping_payload(
   guard source_payload.length().to_int64() == expected else {
     raise InvalidField("virtual dataset source payload has an invalid size")
   }
-  let payload = if virtual_datatype_compatible(
-      source_metadata.datatype,
-      datatype,
-    ) {
-    source_payload
-  } else {
-    convert_virtual_payload(
-      source_payload,
-      source_indices.length().to_int64(),
-      source_metadata.datatype,
-      datatype,
-    )
-  }
   let locations = virtual_locations(virtual_indices)
-  for destination in 0..<indices.length() {
-    match find_virtual_location(locations, indices[destination]) {
-      Some(source_ordinal) =>
-        output.blit_from_bytes(
-          destination * target_size,
-          payload,
-          source_ordinal * target_size,
-          target_size,
+  match output {
+    Strings(values) => {
+      let strings = decode_virtual_string_payload(
+        source_payload,
+        source_indices.length().to_int64(),
+        source_metadata.datatype,
+      )
+      for destination in 0..<indices.length() {
+        match find_virtual_location(locations, indices[destination]) {
+          Some(source_ordinal) => values[destination] = strings[source_ordinal]
+          None => ()
+        }
+      }
+    }
+    Payload(buffer) => {
+      let payload = if virtual_datatype_compatible(
+          source_metadata.datatype,
+          datatype,
+        ) {
+        source_payload
+      } else {
+        convert_virtual_payload(
+          source_payload,
+          source_indices.length().to_int64(),
+          source_metadata.datatype,
+          datatype,
         )
-      None => ()
+      }
+      for destination in 0..<indices.length() {
+        match find_virtual_location(locations, indices[destination]) {
+          Some(source_ordinal) =>
+            buffer.blit_from_bytes(
+              destination * target_size,
+              payload,
+              source_ordinal * target_size,
+              target_size,
+            )
+          None => ()
+        }
+      }
     }
   }
 }
@@ -1710,7 +1807,7 @@ fn Hdf5File::apply_virtual_mapping(
   resolver : Hdf5Resolver?,
   referring_file : String,
   depth : Int32,
-  output : FixedArray[Byte],
+  output : VirtualMappingDestination,
 ) -> Unit raise Hdf5Error {
   let unlimited_axis = virtual_selection_unlimited_axis(
     mapping.virtual_selection,
@@ -1841,7 +1938,13 @@ fn Hdf5File::read_virtual_dataset_indices_payload(
   }
   for mapping in read_virtual_mappings(self, metadata.layout) {
     self.apply_virtual_mapping(
-      metadata, indices, mapping, resolver, referring_file, depth, output,
+      metadata,
+      indices,
+      mapping,
+      resolver,
+      referring_file,
+      depth,
+      Payload(output),
     )
   }
   output.unsafe_reinterpret_as_bytes()
@@ -1857,6 +1960,11 @@ fn Hdf5File::read_virtual_dataset_indices(
   resolver : Hdf5Resolver?,
   referring_file : String,
 ) -> DatasetSelectionResult raise Hdf5Error {
+  if virtual_target_is_vlen_string(metadata.datatype) {
+    return self.read_virtual_vlen_string_indices(
+      header, metadata, dimensions, indices, resolver, referring_file,
+    )
+  }
   let payload = self.read_virtual_dataset_indices_payload(
     "", header, metadata, indices, resolver, referring_file, 0,
   )
@@ -1871,6 +1979,56 @@ fn Hdf5File::read_virtual_dataset_indices(
     source=self.source,
   )
   { dimensions, datatype: metadata.datatype, values, }
+}
+
+///|
+fn Hdf5File::read_virtual_vlen_string_indices(
+  self : Hdf5File,
+  header : ObjectHeader,
+  metadata : DatasetMetadata,
+  dimensions : Array[UInt64],
+  indices : Array[UInt64],
+  resolver : Hdf5Resolver?,
+  referring_file : String,
+) -> DatasetSelectionResult raise Hdf5Error {
+  guard virtual_target_is_vlen_string(metadata.datatype) else {
+    raise InvalidField("expected a variable-length string virtual datatype")
+  }
+  let fill = dataset_fill_value(header, metadata.datatype)
+  let fill_text = if fill.length() == 0 {
+    ""
+  } else {
+    match
+      decode_dataset_value(
+        self.source,
+        self.bytes,
+        fill,
+        0,
+        metadata.datatype,
+        self.superblock.offset_size,
+        self.superblock.length_size,
+        self.superblock.base_address,
+      ) {
+      Text(text) => text
+      _ =>
+        raise InvalidField(
+          "virtual dataset vlen-string fill did not decode as text",
+        )
+    }
+  }
+  let values = Array::make(indices.length(), fill_text)
+  for mapping in read_virtual_mappings(self, metadata.layout) {
+    self.apply_virtual_mapping(
+      metadata,
+      indices,
+      mapping,
+      resolver,
+      referring_file,
+      0,
+      Strings(values),
+    )
+  }
+  { dimensions, datatype: metadata.datatype, values: Strings(values), }
 }
 
 ///|

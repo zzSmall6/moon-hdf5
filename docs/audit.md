@@ -122,7 +122,7 @@ structures raise errors; detection is not exhaustive.
 | Framing and navigation | Superblock v0–v3, user blocks, all 2/4/8-byte address/length combinations, compact/dense groups, hard/soft links, `.`/`..` path normalization, source-backed reads |
 | Dense metadata | FRHP direct/indirect blocks, huge objects, v2 B-tree leaf/internal nodes and SOHM heap IDs |
 | Datasets | Compact, contiguous, virtual storage, external raw data and every supported chunk index |
-| Virtual datasets | Same-file and registered external mappings, multiple/strided selections, fill gaps, nested virtual datasets, one unlimited axis with `%b`/`%%`, numeric/enum/complex/array/compound/fixed-string conversion, and 4-/8-byte fixtures; new-file and existing-file writer output is independently read by h5py 3.13.0/HDF5 1.14.6 |
+| Virtual datasets | Same-file and registered external mappings, multiple/strided selections, fill gaps, nested virtual datasets, one unlimited axis with `%b`/`%%`, numeric/enum/complex/array/compound/fixed-string and fixed-to-vlen-string conversion, and 4-/8-byte fixtures; new-file and existing-file writer output is independently read by h5py 3.13.0/HDF5 1.14.6 |
 | Fill policies | Default, custom, undefined and `FILL_TIME_NEVER`; malformed messages and external-storage boundaries remain rejected |
 | Filters | Shuffle, deflate, Fletcher32, integer/f32/f64 scale-offset, masks and fill markers; registered caller-defined encoders/decoders with named v2 pipeline entries and per-chunk mask skips |
 | Datatypes | Fixed-point, IEEE/normalized floats, strings, compound, enum, array, time, bitfield, opaque, sequence, references, complex |
@@ -181,8 +181,9 @@ mapping validates source registration, source dataset type, selection ranks and
 bounds, equal source/virtual element counts and datatype compatibility. Source
 elements are copied through the normal dataset path, so compact, contiguous,
 chunked, filtered, external raw-data and nested virtual sources reuse their
-existing readers. Integer/float and same-charset fixed-string values are
-converted to the virtual datatype; other conversions require matching layouts.
+existing readers. Integer/float, enum, complex, fixed-array, compound,
+same-charset fixed-string and fixed-to-vlen-string values are converted to the
+virtual datatype; other conversions require matching layouts.
 Unmapped virtual indices retain the dataset fill value. A single unlimited
 virtual hyperslab axis expands `%b` source-name substitutions by block number,
 while `%%` produces a literal percent sign.
@@ -683,3 +684,8 @@ message types emitted by this writer.
   width/reorder/missing/extra/nested/string/array and complex conversions. A
   separate nine-file matrix verifies every 2/4/8-byte address and length-width
   combination with contiguous, compressed chunked and attribute data.
+- 2026-11-16: fixed-string virtual sources can target variable-length UTF-8
+  strings, including strided mappings and unmapped empty-string fills. HDF5
+  1.14.6 fixtures verify direct and strided conversion; variable-length source
+  and reference conversions remain rejected because HDF5 1.14.6 has no safe VDS
+  conversion path for them.

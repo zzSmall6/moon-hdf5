@@ -105,7 +105,7 @@ verifies the committed files.
 | `interop_earliest.h5`, `interop_v108.h5`, `interop_v110.h5`, `interop_32.h5` | Cross-version object matrix and 4-/8-byte addresses |
 | `references*.h5`, `references_layouts_32.h5`, `references_v4.h5`, `nested_reference_32.h5` | Legacy object/region references, version-4 object/region/attribute references, null/dangling targets, layouts, selection versions and 4-byte compound references |
 | `external_references.h5`, `external_reference_target.h5` | Version-4 object, region and attribute references into a registered external HDF5 file, plus a same-file target and null references |
-| `virtual_dataset*.h5` | Same-file and registered external mappings, multiple and strided selections, fill gaps, nested virtual datasets, 4-byte addresses and source files |
+| `virtual_dataset*.h5` | Same-file and registered external mappings, multiple and strided selections, fill gaps, nested virtual datasets, fixed-to-vlen-string conversion, 4-byte addresses and source files |
 | `size_22.h5`–`size_88.h5` | All 2/4/8-byte address and length-width combinations with contiguous, chunked and attribute data |
 | `shared_messages.h5` | SOHM table/indexes/heaps, reserved indexes, field, fill and filter-pipeline sharing, dense shared records and committed targets |
 | `external_storage*.h5`, `external_storage_*.bin` | Multi-file/offset/unaligned raw-data slots and 4-byte-address storage |

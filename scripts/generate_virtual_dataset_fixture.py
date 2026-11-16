@@ -286,11 +286,20 @@ def create_conversion_fixture(path: Path) -> None:
             ),
             track_times=False,
         )
+        string_grid_source = handle.create_dataset(
+            "src_s2_grid",
+            data=np.array(
+                [[b"a", b"b", b"c"], [b"d", b"e", b"f"], [b"g", b"h", b"i"]],
+                dtype="S2",
+            ),
+            track_times=False,
+        )
         complex_source = handle.create_dataset(
             "src_complex64",
             data=np.array([1 + 2j, 3 + 4j], dtype="<c8"),
             track_times=False,
         )
+        vlen_utf8 = h5py.string_dtype(encoding="utf-8")
         for name, source, dtype in (
             ("i16_i64", int16_source, "<i8"),
             ("i16_f64", int16_source, "<f8"),
@@ -322,11 +331,18 @@ def create_conversion_fixture(path: Path) -> None:
                 compound_array_source,
                 [("q", "<i4", (2,))],
             ),
+            ("s3_vlen_utf8", string_source, vlen_utf8),
             ("complex64_128", complex_source, "<c16"),
         ):
             layout = h5py.VirtualLayout(shape=source.shape, dtype=dtype)
             layout[...] = h5py.VirtualSource(source)
             handle.create_virtual_dataset(name, layout)
+        strided_vlen = h5py.VirtualLayout(shape=(2, 2), dtype=vlen_utf8)
+        strided_vlen[:, :] = h5py.VirtualSource(string_grid_source)[::2, ::2]
+        handle.create_virtual_dataset("s3_vlen_strided", strided_vlen)
+        filled_vlen = h5py.VirtualLayout(shape=(4,), dtype=vlen_utf8)
+        filled_vlen[0:3] = h5py.VirtualSource(string_source)
+        handle.create_virtual_dataset("s3_vlen_fill", filled_vlen)
 
 
 def verify(
@@ -453,6 +469,18 @@ def verify(
             np.array([([1, 2],), ([3, 4],)], dtype=[("q", "<i4", (2,))]),
         )
         np.testing.assert_array_equal(
+            handle["s3_vlen_utf8"][...],
+            np.array([b"ab", b"c", b"def"], dtype=object),
+        )
+        np.testing.assert_array_equal(
+            handle["s3_vlen_strided"][...],
+            np.array([[b"a", b"c"], [b"g", b"i"]], dtype=object),
+        )
+        np.testing.assert_array_equal(
+            handle["s3_vlen_fill"][...],
+            np.array([b"ab", b"c", b"def", b""], dtype=object),
+        )
+        np.testing.assert_array_equal(
             handle["complex64_128"][...], np.array([1 + 2j, 3 + 4j], dtype="<c16")
         )
         for name in (
@@ -470,6 +498,9 @@ def verify(
             "cmp_nested",
             "cmp_string",
             "cmp_array",
+            "s3_vlen_utf8",
+            "s3_vlen_strided",
+            "s3_vlen_fill",
             "complex64_128",
         ):
             assert handle[name].is_virtual

@@ -51,6 +51,16 @@ fn virtual_selection_integers(
 }
 
 ///|
+fn virtual_selection_strings(
+  result : DatasetSelectionResult,
+) -> Array[String] raise Hdf5Error {
+  match result.values {
+    Strings(values) => values
+    _ => raise InvalidField("expected virtual selection string values")
+  }
+}
+
+///|
 fn virtual_page_integers(page : DatasetSelectionPage) -> Array[Int64] {
   match page.values {
     Integers(values) => values
@@ -297,6 +307,25 @@ test "virtual datasets expand printf names and convert datatypes" {
   assert_eq(virtual_dataset_strings(conversion.read_dataset("/s3_s8")), [
     "ab", "c", "def",
   ])
+  assert_eq(virtual_dataset_strings(conversion.read_dataset("/s3_vlen_utf8")), [
+    "ab", "c", "def",
+  ])
+  assert_eq(
+    virtual_dataset_strings(conversion.read_dataset("/s3_vlen_strided")),
+    ["a", "c", "g", "i"],
+  )
+  assert_eq(virtual_dataset_strings(conversion.read_dataset("/s3_vlen_fill")), [
+    "ab", "c", "def", "",
+  ])
+  assert_eq(
+    virtual_selection_strings(
+      conversion.read_dataset_selection(
+        "/s3_vlen_fill",
+        Hyperslab([1UL], [2UL], [1UL]),
+      ),
+    ),
+    ["c", "def"],
+  )
   assert_eq(virtual_dataset_integers(conversion.read_dataset("/enum_to_int")), [
     1L, 2L,
   ])
