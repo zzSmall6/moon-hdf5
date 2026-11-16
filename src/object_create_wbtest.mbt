@@ -209,6 +209,261 @@ test "dataset creation works with symbol-table parents and four-byte addresses" 
 }
 
 ///|
+test "compact datasets preserve values references and variable-length data" {
+  for
+    (fixture, reference_size) in [
+      ("testdata/symbol_table_32.h5", 4),
+      ("testdata/references.h5", 8),
+    ] {
+    let file = Hdf5File::parse(@fs.read_file_to_bytes(fixture))
+    let values = file.add_compact_dataset(
+      "/group",
+      "compact_values",
+      [2UL, 3UL],
+      Int32Values([1, 2, 3, 4, 5, 6]),
+    ) catch {
+      error => fail("create compact dataset: " + error.message())
+    }
+    let labels = Hdf5File::parse(values).add_compact_dataset(
+      "/group",
+      "compact_labels",
+      [2UL],
+      VariableStringValues(["moon", "数据"]),
+    ) catch {
+      error => fail("create compact string dataset: " + error.message())
+    }
+    let references = Hdf5File::parse(labels).add_compact_dataset(
+      "/group",
+      "compact_references",
+      [2UL],
+      ObjectReferenceValues([Some("/matrix"), None]),
+    ) catch {
+      error => fail("create compact reference dataset: " + error.message())
+    }
+    let edited = Hdf5File::parse(references)
+    let metadata = edited.read_dataset_metadata("/group/compact_values")
+    assert_eq(metadata.dataspace.dimensions, [2UL, 3UL])
+    assert_eq(metadata.layout.kind(), Compact)
+    match edited.read_dataset("/group/compact_values").values {
+      Integers(items) => assert_eq(items, [1L, 2L, 3L, 4L, 5L, 6L])
+      _ => fail("expected compact integer values")
+    }
+    match edited.read_dataset("/group/compact_labels").values {
+      Strings(items) => assert_eq(items, ["moon", "数据"])
+      _ => fail("expected compact variable-length strings")
+    }
+    let refs = match edited.read_dataset("/group/compact_references").values {
+      Structured(items) => items
+      _ => fail("expected compact object references")
+    }
+    let target = match refs[0] {
+      Reference(bytes) => bytes
+      _ => fail("expected a compact object reference")
+    }
+    assert_eq(target.length(), reference_size)
+    assert_eq(
+      edited.resolve_object_reference(target).unwrap().path,
+      Some("/matrix"),
+    )
+    assert_eq(refs[1], Reference(Bytes::make(reference_size, b'\x00')))
+    let attributed = edited.add_attribute(
+      "/group/compact_values",
+      "unit",
+      [],
+      FixedStringValues(["count"], 8),
+    ) catch {
+      error => fail("attribute a compact dataset: " + error.message())
+    }
+    assert_eq(
+      Hdf5File::parse(attributed).attributes("/group/compact_values")[0].name,
+      "unit",
+    )
+  }
+}
+
+///|
+test "compact dataset creation validates storage and duplicate names" {
+  let writer = Hdf5Writer::new()
+  writer.add_group("/group")
+  let file = Hdf5File::parse(writer.encode())
+  let boundary = file.add_compact_dataset(
+    "/group",
+    "boundary",
+    [65524UL],
+    UInt8Values(Array::make(65524, 1U)),
+  ) catch {
+    error => fail("create boundary compact dataset: " + error.message())
+  }
+  let boundary_file = Hdf5File::parse(boundary)
+  assert_eq(
+    boundary_file.read_dataset_metadata("/group/boundary").layout.kind(),
+    Compact,
+  )
+  match boundary_file.read_dataset("/group/boundary").values {
+    UnsignedIntegers(items) => {
+      assert_eq(items.length(), 65524)
+      assert_eq(items[0], 1UL)
+      assert_eq(items[65523], 1UL)
+    }
+    _ => fail("expected boundary compact integer values")
+  }
+  let too_large = try {
+    ignore(
+      file.add_compact_dataset(
+        "/group",
+        "large",
+        [65525UL],
+        UInt8Values(Array::make(65525, 0U)),
+      ),
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    too_large,
+    Some(InvalidArgument("compact dataset values exceed 65524 bytes")),
+  )
+  let created = file.add_compact_dataset(
+    "/group",
+    "created",
+    [2UL],
+    UInt16Values([1U, 2U]),
+  ) catch {
+    error => fail("create compact dataset: " + error.message())
+  }
+  let duplicate = try {
+    ignore(
+      Hdf5File::parse(created).add_compact_dataset(
+        "/group",
+        "created",
+        [1UL],
+        UInt16Values([3U]),
+      ),
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    duplicate,
+    Some(InvalidArgument("link name already exists: created")),
+  )
+}
+
+///|
+test "compact dataset boundary works in four- and eight-byte files" {
+  for fixture in ["testdata/symbol_table_32.h5", "testdata/references.h5"] {
+    let file = Hdf5File::parse(@fs.read_file_to_bytes(fixture))
+    let created = file.add_compact_dataset(
+      "/group",
+      "boundary",
+      [65524UL],
+      UInt8Values(Array::make(65524, 1U)),
+    ) catch {
+      error =>
+        fail(fixture + ": create boundary compact dataset: " + error.message())
+    }
+    let edited = Hdf5File::parse(created)
+    assert_eq(
+      edited.read_dataset_metadata("/group/boundary").layout.kind(),
+      Compact,
+    )
+    match edited.read_dataset("/group/boundary").values {
+      UnsignedIntegers(items) => assert_eq(items.length(), 65524)
+      _ => fail(fixture + ": expected boundary compact integer values")
+    }
+  }
+}
+
+///|
+test "committed datatypes can be added and edited in existing files" {
+  let writer = Hdf5Writer::new()
+  writer.add_group("/types")
+  let file = Hdf5File::parse(writer.encode())
+  let record = Datatype::write_compound([
+    ("id", Datatype::write_integer(false, 4)),
+    ("name", Datatype::write_fixed_string(8)),
+    ("target", Datatype::write_object_reference()),
+  ])
+  let created = file.add_committed_datatype("/types", "record", record) catch {
+    error => fail("create committed datatype: " + error.message())
+  }
+  let edited = Hdf5File::parse(created)
+  let node = edited.resolve("/types/record")
+  assert_eq(node.kind, Datatype)
+  let header = edited.object_header_at(node.address)
+  let message = match header.first(msg_datatype) {
+    Some(message) => message
+    None => fail("committed datatype has no datatype message")
+  }
+  let parsed = parse_datatype(message)
+  assert_eq(parsed.class, record.class)
+  assert_eq(parsed.size, record.size)
+  assert_eq(
+    edited.attributes("/types/record").map(attribute => attribute.name),
+    [],
+  )
+  let attributed = edited.add_attribute(
+    "/types/record",
+    "category",
+    [],
+    FixedStringValues(["record"], 8),
+  ) catch {
+    error => fail("attribute a committed datatype: " + error.message())
+  }
+  let linked = Hdf5File::parse(attributed).add_hard_link(
+    "/types", "record_alias", "/types/record",
+  ) catch {
+    error => fail("link a committed datatype: " + error.message())
+  }
+  let final_file = Hdf5File::parse(linked)
+  assert_eq(final_file.resolve("/types/record_alias").kind, Datatype)
+  assert_eq(
+    final_file
+    .attributes("/types/record_alias")
+    .map(attribute => attribute.name),
+    ["category"],
+  )
+}
+
+///|
+test "committed datatypes use the target file address width" {
+  let file = Hdf5File::parse(
+    @fs.read_file_to_bytes("testdata/symbol_table_32.h5"),
+  )
+  let datatype = Datatype::write_compound([
+    ("name", Datatype::write_vlen_string_with_address_size(4)),
+    ("target", Datatype::write_object_reference_with_address_size(4)),
+  ])
+  let created = file.add_committed_datatype("/group", "wide_record", datatype) catch {
+    error => fail("create 4-byte committed datatype: " + error.message())
+  }
+  let edited = Hdf5File::parse(created)
+  let node = edited.resolve("/group/wide_record")
+  assert_eq(node.kind, Datatype)
+  let header = edited.object_header_at(node.address)
+  let message = match header.first(msg_datatype) {
+    Some(message) => message
+    None => fail("committed datatype has no datatype message")
+  }
+  assert_eq(
+    message.data,
+    encode_writer_datatype(datatype, reference_address_size=4),
+  )
+  let duplicate = try {
+    ignore(edited.add_committed_datatype("/group", "wide_record", datatype))
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    duplicate,
+    Some(InvalidArgument("link name already exists: wide_record")),
+  )
+}
+
+///|
 test "created datasets can receive attributes and links" {
   let writer = Hdf5Writer::new()
   writer.add_group("/targets")

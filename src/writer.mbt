@@ -2147,8 +2147,8 @@ pub fn Hdf5Writer::add_compact_dataset(
   validate_write_values(dimensions, values)
   let count = selection_element_count(dimensions)
   guard count >= 0 &&
-    count <= 65535L / writer_value_element_size(values).to_int64() else {
-    raise InvalidArgument("compact dataset values exceed 65535 bytes")
+    count <= 65524L / writer_value_element_size(values).to_int64() else {
+    raise InvalidArgument("compact dataset values exceed 65524 bytes")
   }
   self.ensure_groups(writer_parent_path(normalized))
   self.record_link(normalized)
@@ -8868,10 +8868,15 @@ fn plan_object_header_chunks(messages : Array[Bytes]) -> Array[Array[Bytes]] {
 }
 
 ///|
-fn encode_object_continuation(address : UInt64, length : UInt64) -> Bytes {
-  let buffer = @buffer.Buffer::Buffer(size_hint=16)
-  buffer.write_uint64_le(address)
-  buffer.write_uint64_le(length)
+fn encode_object_continuation(
+  address : UInt64,
+  length : UInt64,
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+) -> Bytes {
+  let buffer = @buffer.Buffer::Buffer(size_hint=offset_size + length_size)
+  write_uint_width(buffer, address, offset_size)
+  write_uint_width(buffer, length, length_size)
   buffer.to_bytes()
 }
 
@@ -8880,6 +8885,8 @@ fn encode_object_header(
   payload : Bytes,
   start : UInt64,
   creation_order~ : Bool = false,
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
 ) -> Bytes raise Hdf5Error {
   let raw_messages = split_object_header_messages(payload)
   let messages = if creation_order {
@@ -8889,9 +8896,10 @@ fn encode_object_header(
   }
   let chunks = plan_object_header_chunks(messages)
   let message_header_size = if creation_order { 6 } else { 4 }
+  let continuation_data_size = offset_size + length_size
   let initial_message_size = object_header_messages_size(chunks[0])
   let initial_continuation_size = if chunks.length() > 1 {
-    message_header_size + 16
+    message_header_size + continuation_data_size
   } else {
     0
   }
@@ -8906,7 +8914,7 @@ fn encode_object_header(
   let chunk_bodies : Array[Int32] = []
   for index in 0..<chunks.length() {
     let continuation_size = if index + 1 < chunks.length() {
-      message_header_size + 16
+      message_header_size + continuation_data_size
     } else {
       0
     }
@@ -8934,6 +8942,8 @@ fn encode_object_header(
       encode_object_continuation(
         addresses[1],
         (8 + chunk_bodies[1]).to_uint64(),
+        offset_size~,
+        length_size~,
       ),
       creation_order~,
     )
@@ -8976,6 +8986,8 @@ fn encode_object_header(
         encode_object_continuation(
           addresses[index + 1],
           (8 + chunk_bodies[index + 1]).to_uint64(),
+          offset_size~,
+          length_size~,
         ),
         creation_order~,
       )
@@ -9502,8 +9514,8 @@ fn Hdf5Writer::object_payload(
       }
       match dataset.storage {
         WritableCompact => {
-          guard encoded.payload.length() <= 65535 else {
-            raise InvalidField("compact writer dataset exceeds 65535 bytes")
+          guard encoded.payload.length() <= 65524 else {
+            raise InvalidField("compact writer dataset exceeds 65524 bytes")
           }
           write_header_message(
             buffer,

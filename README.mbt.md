@@ -146,7 +146,7 @@ let output = writer.encode()
 Dataset creation options:
 
 - `add_dataset`: contiguous storage.
-- `add_compact_dataset`: inline object-header storage, up to 65,535 bytes.
+- `add_compact_dataset`: inline object-header storage, up to 65,524 bytes.
 - `add_chunked_dataset`: finite fixed-array chunks or resizable chunks via
   `maximum_dimensions`.
 - `add_extensible_dataset`, `resize_dataset`, `append_dataset` and
@@ -216,8 +216,10 @@ let edited = @lib.Hdf5File::parse(with_attribute).add_soft_link(
   names, creation order or storage form when the record can be updated in place.
 - `add_attribute`, `rename_attribute`, `delete_attribute`, `add_*_link`,
   `rename_link` and `delete_link` rebuild compact/dense collections as needed.
-- `add_group`, dataset creation APIs and `delete_object` append objects and
-  attach or detach links through the same rebuild path.
+- `add_group`, dataset creation APIs, `add_compact_dataset`,
+  `add_committed_datatype` and `delete_object` append objects and attach or
+  detach links through the same rebuild path. Compact payloads are capped at
+  65,524 bytes; large object headers use checksummed continuation chunks.
 
 Editing is append-only: new objects, values and rebuilt metadata are appended,
 and superseded bytes remain unreferenced.

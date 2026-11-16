@@ -247,6 +247,41 @@ test "writer emits compact datasets and patches them in place" {
 }
 
 ///|
+test "writer enforces the HDF5 compact dataset payload boundary" {
+  let writer = Hdf5Writer::new()
+  writer.add_compact_dataset(
+    "/boundary",
+    [65524UL],
+    UInt8Values(Array::make(65524, 1U)),
+  )
+  let file = Hdf5File::parse(writer.encode())
+  assert_eq(file.read_dataset_metadata("/boundary").layout.kind(), Compact)
+  match file.read_dataset("/boundary").values {
+    UnsignedIntegers(items) => {
+      assert_eq(items.length(), 65524)
+      assert_eq(items[0], 1UL)
+      assert_eq(items[65523], 1UL)
+    }
+    _ => fail("expected boundary compact integer values")
+  }
+  let oversized = Hdf5Writer::new()
+  let error = try {
+    oversized.add_compact_dataset(
+      "/large",
+      [65525UL],
+      UInt8Values(Array::make(65525, 0U)),
+    )
+    None
+  } catch {
+    error => Some(error)
+  }
+  assert_eq(
+    error,
+    Some(InvalidArgument("compact dataset values exceed 65524 bytes")),
+  )
+}
+
+///|
 test "writer encodes complex values as canonical real and imaginary compounds" {
   let writer = Hdf5Writer::new()
   writer.add_dataset(

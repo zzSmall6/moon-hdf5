@@ -94,9 +94,15 @@ def verify(path: Path) -> None:
         assert sorted(handle["created_root"]) == [
             "chunked",
             "chunked_labels",
+            "compact_boundary",
+            "compact_labels",
+            "compact_records",
+            "compact_references",
+            "compact_values",
             "external",
             "growable",
             "labels",
+            "measurement_type",
             "nested_chunked",
             "nested_records",
             "nested_resizable",
@@ -106,6 +112,10 @@ def verify(path: Path) -> None:
         ]
         assert sorted(handle["group/created_leaf"]) == ["fixed"]
         assert handle["created_root"].attrs["note"] == 11
+        measurement = handle["created_root/measurement_type"]
+        assert isinstance(measurement, h5py.Datatype)
+        assert measurement.dtype.names == ("id", "weight")
+        assert measurement.attrs["unit"].tobytes() == b"kg"
         np.testing.assert_array_equal(
             handle["created_root/numbers"][:],
             np.arange(1, 7).reshape(2, 3),
@@ -117,6 +127,39 @@ def verify(path: Path) -> None:
             "",
             "moon",
         ]
+        compact = handle["created_root/compact_values"]
+        assert compact.id.get_create_plist().get_layout() == h5py.h5d.COMPACT
+        np.testing.assert_array_equal(compact[:], [7, 8, 9])
+        compact_boundary = handle["created_root/compact_boundary"]
+        assert (
+            compact_boundary.id.get_create_plist().get_layout()
+            == h5py.h5d.COMPACT
+        )
+        assert compact_boundary.shape == (65524,)
+        assert compact_boundary[0] == 1
+        assert compact_boundary[-1] == 1
+        compact_labels = handle["created_root/compact_labels"]
+        assert (
+            compact_labels.id.get_create_plist().get_layout()
+            == h5py.h5d.COMPACT
+        )
+        assert compact_labels.asstr()[:].tolist() == ["small", "数据"]
+        compact_references = handle["created_root/compact_references"]
+        assert (
+            compact_references.id.get_create_plist().get_layout()
+            == h5py.h5d.COMPACT
+        )
+        assert reference_addresses(handle, compact_references) == [
+            h5py.h5o.get_info(handle["matrix"].id).addr,
+            0,
+        ]
+        compact_records = handle["created_root/compact_records"]
+        assert (
+            compact_records.id.get_create_plist().get_layout()
+            == h5py.h5d.COMPACT
+        )
+        assert_first_nested_record(compact_records[0], handle, offset_size)
+        assert_second_nested_record(compact_records[1], handle, offset_size)
         chunked = handle["created_root/chunked"]
         assert chunked.shape == (4, 3)
         assert chunked.chunks == (2, 3)
@@ -230,6 +273,9 @@ def verify(path: Path) -> None:
         leaf_dataset_address = h5py.h5o.get_info(
             handle["group/created_leaf/fixed"].id
         ).addr
+        compact_dataset_address = h5py.h5o.get_info(
+            handle["created_root/compact_values"].id
+        ).addr
 
     for address in (root_address, group_address):
         messages = message_types(data, address, offset_size, length_size)
@@ -239,7 +285,7 @@ def verify(path: Path) -> None:
         messages = message_types(data, address, offset_size, length_size)
         assert 0x02 in messages
         assert 0x11 not in messages
-    for address in (dataset_address, leaf_dataset_address):
+    for address in (dataset_address, leaf_dataset_address, compact_dataset_address):
         messages = message_types(data, address, offset_size, length_size)
         assert set(messages) >= {0x01, 0x03, 0x08}
     with tempfile.TemporaryDirectory() as directory:

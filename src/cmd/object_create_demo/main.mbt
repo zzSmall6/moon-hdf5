@@ -116,6 +116,43 @@ fn run(args : Array[String]) -> Int32 {
       [3UL],
       @lib.ObjectReferenceValues([Some("/matrix"), None, Some(reference_target)]),
     )
+    let measurement_type = @lib.Datatype::write_compound([
+      ("id", @lib.Datatype::write_integer(false, 4)),
+      ("weight", @lib.Datatype::write_float(8)),
+    ])
+    edited = @lib.Hdf5File::parse(edited).add_committed_datatype(
+      "/created_root", "measurement_type", measurement_type,
+    )
+    edited = @lib.Hdf5File::parse(edited).add_attribute(
+      "/created_root/measurement_type",
+      "unit",
+      [],
+      @lib.FixedStringValues(["kg"], 4),
+    )
+    edited = @lib.Hdf5File::parse(edited).add_compact_dataset(
+      "/created_root",
+      "compact_values",
+      [3UL],
+      @lib.Int16Values([7, 8, 9]),
+    )
+    edited = @lib.Hdf5File::parse(edited).add_compact_dataset(
+      "/created_root",
+      "compact_boundary",
+      [65524UL],
+      @lib.UInt8Values(Array::make(65524, 1U)),
+    )
+    edited = @lib.Hdf5File::parse(edited).add_compact_dataset(
+      "/created_root",
+      "compact_labels",
+      [2UL],
+      @lib.VariableStringValues(["small", "数据"]),
+    )
+    edited = @lib.Hdf5File::parse(edited).add_compact_dataset(
+      "/created_root",
+      "compact_references",
+      [2UL],
+      @lib.ObjectReferenceValues([Some("/matrix"), None]),
+    )
     let record_type = created_record_type(file.address_size())
     let first_record = created_record(
       "moon",
@@ -136,6 +173,12 @@ fn run(args : Array[String]) -> Int32 {
     edited = @lib.Hdf5File::parse(edited).add_dataset(
       "/created_root",
       "nested_records",
+      [2UL],
+      @lib.StructuredValues(record_type, [first_record, empty_record]),
+    )
+    edited = @lib.Hdf5File::parse(edited).add_compact_dataset(
+      "/created_root",
+      "compact_records",
       [2UL],
       @lib.StructuredValues(record_type, [first_record, empty_record]),
     )

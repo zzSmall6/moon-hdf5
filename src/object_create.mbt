@@ -28,7 +28,7 @@ fn encode_created_object_header(
     writer_write_zeros(body, nil_data_size)
   }
   guard body.length() <= 65535 else {
-    raise UnsupportedFeature("new group object header is too large")
+    raise UnsupportedFeature("new object header is too large")
   }
   let header = @buffer.Buffer::Buffer(size_hint=body.length() + 12)
   writer_write_bytes(header, b"OHDR")
@@ -38,6 +38,32 @@ fn encode_created_object_header(
   writer_write_bytes(header, body.to_bytes())
   header.write_uint_le(metadata_checksum(header.to_bytes(), 0, header.length()))
   header.to_bytes()
+}
+
+///|
+/// Encodes a newly created version 2 object header at `start`, extending large
+/// message collections through checksummed continuation chunks.
+fn encode_created_object_header_with_continuation(
+  messages : Array[RebuiltObjectMessage],
+  start : UInt64,
+  offset_size : Int32,
+  length_size : Int32,
+) -> Bytes raise Hdf5Error {
+  let payload = @buffer.Buffer::Buffer()
+  for message in messages {
+    writer_write_bytes(
+      payload,
+      encode_edit_message(
+        2,
+        0,
+        message.msg_type,
+        message.flags,
+        message.data,
+        message.creation_order,
+      ),
+    )
+  }
+  encode_object_header(payload.to_bytes(), start, offset_size~, length_size~)
 }
 
 ///|
@@ -284,6 +310,66 @@ fn Hdf5File::append_created_object(
 }
 
 ///|
+fn Hdf5File::append_created_object_with_messages(
+  self : Hdf5File,
+  tail : @buffer.Buffer,
+  messages : Array[RebuiltObjectMessage],
+) -> UInt64 raise Hdf5Error {
+  let start = next_aligned_tail_start(
+    self.bytes.length(),
+    tail.length(),
+    "append a new object",
+  )
+  let address = file_offset_to_stored_address(
+    start,
+    self.superblock.base_address,
+  )
+  guard editable_uint_fits_width(address, self.superblock.offset_size) else {
+    raise UnsupportedFeature(
+      "new object address exceeds the file address width",
+    )
+  }
+  self.append_created_object(
+    tail,
+    encode_created_object_header_with_continuation(
+      messages,
+      address,
+      self.superblock.offset_size,
+      self.superblock.length_size,
+    ),
+  )
+}
+
+///|
+fn Hdf5File::append_created_link(
+  self : Hdf5File,
+  parent_address : UInt64,
+  header : ObjectHeader,
+  links : Array[EditableLink],
+  object_address : UInt64,
+  name : String,
+  tail : @buffer.Buffer,
+) -> Bytes raise Hdf5Error {
+  let mut creation_order = 0UL
+  for link in links {
+    if link.creation_order >= creation_order {
+      creation_order = link.creation_order + 1UL
+    }
+  }
+  links.push({
+    link: {
+      name,
+      object_header_address: object_address,
+      cache_type: 0U,
+      link_target: None,
+      external_path: None,
+    },
+    creation_order,
+  })
+  self.write_rebuilt_links(parent_address, header, links, tail)
+}
+
+///|
 /// Adds a new empty group below `parent_path` and returns the updated file.
 ///
 /// The new object header is appended first, then the parent group's complete
@@ -306,23 +392,9 @@ pub fn Hdf5File::add_group(
     tail,
     encode_created_group_header(self.superblock.offset_size),
   )
-  let mut creation_order = 0UL
-  for link in links {
-    if link.creation_order >= creation_order {
-      creation_order = link.creation_order + 1UL
-    }
-  }
-  links.push({
-    link: {
-      name,
-      object_header_address: object_address,
-      cache_type: 0U,
-      link_target: None,
-      external_path: None,
-    },
-    creation_order,
-  })
-  self.write_rebuilt_links(parent_address, header, links, tail)
+  self.append_created_link(
+    parent_address, header, links, object_address, name, tail,
+  )
 }
 
 ///|
@@ -456,6 +528,120 @@ pub fn Hdf5File::add_dataset(
     creation_order,
   })
   self.write_rebuilt_links(parent_address, header, links, tail)
+}
+
+///|
+/// Adds a compact dataset below `parent_path` and returns the updated file.
+///
+/// Values are embedded in the new object's data-layout message. Variable-length
+/// and reference payloads reuse the normal appended global-heap path. The
+/// payload is capped at HDF5 1.14.6's 65,524-byte compact limit; large object
+/// headers use continuation chunks. Compact storage is not extendable.
+pub fn Hdf5File::add_compact_dataset(
+  self : Hdf5File,
+  parent_path : String,
+  name : String,
+  dimensions : Array[UInt64],
+  values : Hdf5WriteValues,
+) -> Bytes raise Hdf5Error {
+  validate_editable_link_name(name)
+  let (parent_address, header, links) = self.editable_group(parent_path)
+  guard editable_link_index(links, name) is None else {
+    raise InvalidArgument("link name already exists: " + name)
+  }
+  let offset_size = self.superblock.offset_size
+  validate_write_values(
+    dimensions,
+    values,
+    reference_address_size=Some(offset_size),
+  )
+  let tail = @buffer.Buffer::Buffer()
+  let objects = if created_values_need_objects(values) {
+    self.created_reference_objects()
+  } else {
+    []
+  }
+  let heap = self.append_created_values_heap(
+    tail,
+    values,
+    None,
+    objects,
+    offset_size,
+  )
+  let encoded = encode_write_values(
+    values,
+    heap~,
+    objects~,
+    reference_address_size=offset_size,
+    vlen_address_size=offset_size,
+  )
+  guard encoded.payload.length() <= 65524 else {
+    raise InvalidArgument("compact dataset values exceed 65524 bytes")
+  }
+  let object_address = self.append_created_object_with_messages(tail, [
+    {
+      msg_type: msg_dataspace,
+      flags: b'\x00',
+      data: encode_dataspace(dimensions),
+      creation_order: 0UL,
+    },
+    {
+      msg_type: msg_datatype,
+      flags: b'\x00',
+      data: encoded.datatype,
+      creation_order: 0UL,
+    },
+    {
+      msg_type: msg_data_layout,
+      flags: b'\x00',
+      data: encode_compact_layout(encoded.payload),
+      creation_order: 0UL,
+    },
+  ])
+  self.append_created_link(
+    parent_address, header, links, object_address, name, tail,
+  )
+}
+
+///|
+/// Adds a named committed datatype below `parent_path` and returns the updated
+/// file.
+///
+/// The datatype message uses the file's address width for legacy and version-4
+/// reference members. The new object can receive attributes and hard links
+/// through the normal editing APIs, and the complete image remains readable by
+/// HDF5 1.14.6.
+pub fn Hdf5File::add_committed_datatype(
+  self : Hdf5File,
+  parent_path : String,
+  name : String,
+  datatype : Datatype,
+) -> Bytes raise Hdf5Error {
+  validate_editable_link_name(name)
+  let (parent_address, header, links) = self.editable_group(parent_path)
+  guard editable_link_index(links, name) is None else {
+    raise InvalidArgument("link name already exists: " + name)
+  }
+  let offset_size = self.superblock.offset_size
+  validate_writer_datatype(
+    datatype,
+    0,
+    reference_address_size=Some(offset_size),
+  )
+  let data = encode_writer_datatype(
+    datatype,
+    reference_address_size=offset_size,
+  )
+  guard data.length() <= 65535 else {
+    raise UnsupportedFeature("committed datatype message is too large")
+  }
+  let tail = @buffer.Buffer::Buffer()
+  let object_address = self.append_created_object_with_messages(tail, [
+    { msg_type: msg_datatype, flags: b'\x00', data, creation_order: 0UL, },
+  ])
+  self.append_created_link(
+    parent_address, header, links, object_address, name, tail,
+  )
 }
 
 ///|

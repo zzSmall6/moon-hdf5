@@ -192,7 +192,7 @@ The writer supports compact datasets, contiguous datasets, contiguous external
 raw-data slots, finite chunked datasets with fixed-array indexes,
 one-unlimited-dimension datasets with extensible-array indexes, and
 multi-unlimited datasets with v2 B-tree chunk indexes. Compact payloads are
-embedded in the layout message and limited to 65,535 bytes. Extensible arrays
+embedded in the layout message and limited to 65,524 bytes. Extensible arrays
 use inline, direct, super-block or paged forms. The v2 B-tree is bulk-built in
 row-major chunk order, with client type 10 for unfiltered chunks and 11 for
 filtered chunks. Fixed axes must match the current shape when appending; each
@@ -447,14 +447,18 @@ and deletion are append-only and leave the previous compact messages, dense
 heap, symbol tables and indexes unreferenced because no free-space manager is
 written.
 
-`add_group` and `add_dataset` append new objects at an aligned EOF and then use
-the same link rebuild path to attach them to an existing parent. A new object
-uses a version 2 `OHDR` header with a padded initial chunk so later attribute or
-link edits can replace it with an aligned continuation. Group headers contain a
-compact link-info message. Dataset headers contain dataspace, datatype and
-contiguous-layout messages; their payload is appended first and the layout uses
-the file's offset and length widths. Fixed-size numeric, string, complex and
-structured values are supported. Structured writes recursively encode
+`add_group`, `add_dataset`, `add_compact_dataset` and `add_committed_datatype`
+append new objects at an aligned EOF and then use the same link rebuild path to
+attach them to an existing parent. A new object uses a version 2 `OHDR` header
+with a padded initial chunk so later attribute or link edits can replace it with
+an aligned continuation; oversized creation messages spill into checksummed
+`OCHK` chunks. Group headers contain a compact link-info message. Dataset
+headers contain dataspace, datatype and contiguous- or compact-layout messages;
+contiguous payloads are appended first and both layouts use the file's offset
+and length widths. Compact payloads are capped at 65,524 bytes. Committed
+datatype objects contain a datatype message whose reference fields use the file
+address width. Fixed-size numeric, string, complex and structured values are
+supported. Structured writes recursively encode
 variable-length strings and sequences plus object and region references nested
 in compound, fixed-array and fixed-base sequence members. Variable-length
 descriptors, reference slots and heap addresses use the file address width, so
