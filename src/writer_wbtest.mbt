@@ -98,15 +98,18 @@ test "writer emits caller-provided user-block content" {
 test "writer validates user-block content" {
   let writer = Hdf5Writer::new()
   let error = try {
-    writer.set_user_block_content(Bytes::make(1048577, b'x'))
+    let _ = user_block_size_for_content(1073741825)
     None
   } catch {
     error => Some(error)
   }
   assert_eq(
     error,
-    Some(InvalidArgument("user block content exceeds 1048576 bytes")),
+    Some(InvalidArgument("user block content exceeds 1073741824 bytes")),
   )
+  assert_eq(user_block_size_for_content(0), 0)
+  assert_eq(user_block_size_for_content(512), 512)
+  assert_eq(user_block_size_for_content(513), 1024)
   writer.set_user_block_content(Bytes::make(512, b'x'))
   writer.set_user_block(512)
   writer.add_dataset("/empty", [], UInt64Values([0UL]))
@@ -114,6 +117,41 @@ test "writer validates user-block content" {
   for index in 0..<512 {
     assert_eq(bytes[index], b'\x00')
   }
+}
+
+///|
+test "writer emits user blocks larger than one MiB" {
+  let writer = Hdf5Writer::new()
+  writer.set_user_block(2 * 1024 * 1024)
+  writer.add_dataset("/value", [], UInt64Values([9UL]))
+  let bytes = writer.encode()
+  assert_true(signature_at(bytes, 2 * 1024 * 1024))
+  assert_eq(bytes[0], b'\x00')
+  assert_eq(bytes[2 * 1024 * 1024 - 1], b'\x00')
+  let file = Hdf5File::parse(bytes)
+  assert_eq(file.superblock.base_address, (2 * 1024 * 1024).to_uint64())
+  assert_eq(unsigned_values(file.read_dataset("/value")), [9UL])
+  let source_file = Hdf5File::parse_source(bytes)
+  assert_eq(source_file.superblock._superblock_offset, 2 * 1024 * 1024)
+  assert_eq(unsigned_values(source_file.read_dataset("/value")), [9UL])
+}
+
+///|
+test "writer promotes user-block content above one MiB" {
+  let writer = Hdf5Writer::new()
+  let length = 1024 * 1024 + 1
+  let content = Bytes::makei(length, index => {
+    ((index * 37 + 11) & 0xFF).to_byte()
+  })
+  writer.set_user_block_content(content)
+  writer.add_dataset("/value", [], UInt64Values([5UL]))
+  let bytes = writer.encode()
+  assert_true(signature_at(bytes, 2 * 1024 * 1024))
+  assert_eq(bytes.get_view(start=0, end=length).unwrap().to_owned(), content)
+  assert_eq(bytes[length], b'\x00')
+  let file = Hdf5File::parse(bytes)
+  assert_eq(file.superblock.base_address, (2 * 1024 * 1024).to_uint64())
+  assert_eq(unsigned_values(file.read_dataset("/value")), [5UL])
 }
 
 ///|
@@ -145,7 +183,7 @@ test "user-block patches keep an absolute end-of-file address" {
 
 ///|
 test "writer rejects invalid user block sizes" {
-  for size in [-1, 1, 511, 513, 1048577] {
+  for size in [-1, 1, 511, 513, 1048577, 2147483647] {
     let writer = Hdf5Writer::new()
     let error = try {
       writer.set_user_block(size)
@@ -157,7 +195,7 @@ test "writer rejects invalid user block sizes" {
       error,
       Some(
         InvalidArgument(
-          "user block size must be zero or a power of two from 512 to 1048576 bytes",
+          "user block size must be zero or a power of two of at least 512 bytes",
         ),
       ),
     )

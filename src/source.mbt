@@ -65,11 +65,17 @@ fn find_source_superblock_offset(
 ) -> UInt64 raise Hdf5Error {
   let length = source.length()
   let mut offset = 0UL
-  while offset <= 1048576UL && offset + 8UL <= length {
+  while offset <= 0x7FFFFFFFUL - 8UL && offset + 8UL <= length {
     if source.read_at(offset, 8) == hdf5_signature {
       return offset
     }
-    offset = if offset == 0UL { 512UL } else { offset * 2UL }
+    offset = if offset == 0UL {
+      512UL
+    } else if offset > 0x3FFFFFFFUL {
+      break
+    } else {
+      offset * 2UL
+    }
   }
   raise InvalidSignature
 }

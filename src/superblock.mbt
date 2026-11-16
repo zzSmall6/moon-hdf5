@@ -15,16 +15,19 @@ fn signature_at(bytes : Bytes, offset : Int32) -> Bool {
 /// Locates the HDF5 superblock, allowing for a user block before it.
 ///
 /// HDF5 places the superblock at byte 0 or at a power-of-two offset of at
-/// least 512 bytes. The scan stops after 1 MiB, matching libhdf5's practical
-/// user-block limit.
+/// least 512 bytes. The scan follows those offsets through the largest
+/// power-of-two position addressable by the in-memory byte buffer.
 fn find_superblock_offset(bytes : Bytes) -> Int32 raise Hdf5Error {
   if signature_at(bytes, 0) {
     return 0
   }
   let mut offset = 512
-  while offset <= 1048576 && offset + 8 <= bytes.length() {
+  while offset <= 0x7FFFFFFF - 8 && offset + 8 <= bytes.length() {
     if signature_at(bytes, offset) {
       return offset
+    }
+    if offset > 0x3FFFFFFF {
+      break
     }
     offset = offset * 2
   }

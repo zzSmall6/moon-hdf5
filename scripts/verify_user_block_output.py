@@ -11,31 +11,40 @@ import numpy as np
 
 
 def expected_user_block() -> bytes:
-    return bytes((index * 37 + 11) & 0xFF for index in range(512))
+    return bytes(
+        (index * 37 + 11) & 0xFF for index in range(2 * 1024 * 1024)
+    )
 
 
 def superblock_offsets(
     data: bytes, user_block: bytes | None = None
 ) -> tuple[int, int, int, int]:
     signature = b"\x89HDF\r\n\x1a\n"
-    assert data[:512] == (bytes(512) if user_block is None else user_block)
-    assert data[512 : 520] == signature
-    version = data[520]
+    prefix = bytes(512) if user_block is None else user_block
+    signature_offset = len(prefix)
+    assert data[:signature_offset] == prefix
+    assert data[signature_offset : signature_offset + 8] == signature
+    version = data[signature_offset + 8]
     if version == 3:
-        assert data[521] == 8 and data[522] == 8
+        assert data[signature_offset + 9] == 8
+        assert data[signature_offset + 10] == 8
         base_address, extension_address, eof, _root = struct.unpack_from(
-            "<QQQQ", data, 524
+            "<QQQQ", data, signature_offset + 12
         )
         assert extension_address == 0xFFFFFFFFFFFFFFFF
     elif version in (0, 1):
-        width = data[525]
-        assert width == 8 and data[526] == 8
-        base_address = int.from_bytes(data[536:544], "little")
-        eof = int.from_bytes(data[552:560], "little")
+        width = data[signature_offset + 13]
+        assert width == 8 and data[signature_offset + 14] == 8
+        base_address = int.from_bytes(
+            data[signature_offset + 24 : signature_offset + 32], "little"
+        )
+        eof = int.from_bytes(
+            data[signature_offset + 40 : signature_offset + 48], "little"
+        )
     else:
         raise AssertionError(f"unsupported superblock version {version}")
-    assert base_address == 512
-    return base_address, eof, 512, version
+    assert base_address == signature_offset
+    return base_address, eof, signature_offset, version
 
 
 def verify_created(path: Path, edited: bool) -> None:
@@ -56,7 +65,7 @@ def verify_created(path: Path, edited: bool) -> None:
         )
         assert [value.decode("utf-8") for value in handle["/labels"][:]] == expected_labels
         assert handle["/group/values"].attrs["unit"].decode("utf-8") == "count"
-    assert signature_offset == 512
+    assert signature_offset == len(expected_user_block())
 
 
 def verify_existing_edited(path: Path) -> None:

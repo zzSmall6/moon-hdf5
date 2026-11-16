@@ -165,7 +165,7 @@ Object, continuation, dense-metadata, global-heap, external-slot and raw-data
 addresses are assigned before final encoding.
 
 `Hdf5Writer::set_user_block` reserves a zero-filled prefix from 512 B through
-1 MiB, while `set_user_block_content` stores caller bytes in the smallest
+1 GiB, while `set_user_block_content` stores caller bytes in the smallest
 permitted size that fits and zero-pads the remainder. Layout addresses stay
 relative to the user-block base, while the v3 superblock records that base and
 an absolute end-of-file address. Output is shifted as a whole, so all embedded

@@ -227,7 +227,9 @@ indexes support dense links beyond 65,535 records; dense attributes remain
 limited to 65,535 by the attribute-info field. A free-space manager is not
 emitted.
 
-An optional user block reserves a power-of-two prefix from 512 B through 1 MiB.
+An optional user block reserves a power-of-two prefix from 512 B through 1 GiB,
+the largest offset addressable by the writer's 32-bit in-memory buffers; HDF5
+itself permits larger blocks.
 The writer can zero-fill it or store caller-provided bytes padded to the chosen
 size. Internal object and metadata addresses remain base-relative, the
 superblock records the user-block base, and the end-of-file field is absolute.
@@ -739,3 +741,8 @@ message types emitted by this writer.
   zero-pads the remainder. MoonBit tests cover a 700-byte prefix promoted to
   1 KiB, relative addresses and rejection above 1 MiB. H5py 3.13.0/HDF5 1.14.6
   independently verifies the non-zero prefix, superblock offset and file data.
+- 2026-11-16: user blocks above 1 MiB are accepted through the 1 GiB limit of
+  the in-memory writer. Memory- and source-backed superblock scans now follow
+  power-of-two offsets instead of stopping at 1 MiB. MoonBit tests cover a
+  2 MiB zero-filled block and 1 MiB + 1 byte of caller content; h5py
+  3.13.0/HDF5 1.14.6 independently reads the 2 MiB release-demo output.

@@ -767,18 +767,18 @@ pub fn Hdf5Writer::new() -> Hdf5Writer {
 ///|
 /// Reserves a zero-filled user block before the HDF5 superblock.
 ///
-/// HDF5 requires a user block to be either absent or a power-of-two size from
-/// 512 bytes through 1 MiB. The writer always emits a version-3 superblock, so
-/// the declared base address is the user-block size and all stored addresses
-/// remain relative to that base.
+/// HDF5 requires a user block to be either absent or a power-of-two size of at
+/// least 512 bytes. The in-memory writer accepts every power of two that fits
+/// its 32-bit buffer offsets, up to 1 GiB. It always emits a version-3
+/// superblock, so the declared base address is the user-block size and all
+/// stored addresses remain relative to that base.
 pub fn Hdf5Writer::set_user_block(
   self : Hdf5Writer,
   size : Int32,
 ) -> Unit raise Hdf5Error {
-  guard size == 0 ||
-    (size >= 512 && size <= 1048576 && (size & (size - 1)) == 0) else {
+  guard size == 0 || (size >= 512 && (size & (size - 1)) == 0) else {
     raise InvalidArgument(
-      "user block size must be zero or a power of two from 512 to 1048576 bytes",
+      "user block size must be zero or a power of two of at least 512 bytes",
     )
   }
   self.user_block_size = size
@@ -789,21 +789,27 @@ pub fn Hdf5Writer::set_user_block(
 /// Reserves a user block containing caller-provided prefix bytes.
 ///
 /// The block size is the smallest permitted power of two from 512 bytes through
-/// 1 MiB that can hold `content`; remaining bytes are zero-filled. An empty
+/// 1 GiB that can hold `content`; remaining bytes are zero-filled. An empty
 /// byte string removes the user block.
 pub fn Hdf5Writer::set_user_block_content(
   self : Hdf5Writer,
   content : Bytes,
 ) -> Unit raise Hdf5Error {
-  guard content.length() <= 1048576 else {
-    raise InvalidArgument("user block content exceeds 1048576 bytes")
-  }
-  let mut size = if content.length() == 0 { 0 } else { 512 }
-  while size < content.length() {
-    size = size * 2
-  }
+  let size = user_block_size_for_content(content.length())
   self.user_block_size = size
   self.user_block = content
+}
+
+///|
+fn user_block_size_for_content(length : Int32) -> Int32 raise Hdf5Error {
+  guard length >= 0 && length <= 1073741824 else {
+    raise InvalidArgument("user block content exceeds 1073741824 bytes")
+  }
+  let mut size = if length == 0 { 0 } else { 512 }
+  while size < length {
+    size = size * 2
+  }
+  size
 }
 
 ///|

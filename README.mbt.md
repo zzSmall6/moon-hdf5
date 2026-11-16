@@ -153,10 +153,10 @@ Dataset creation options:
   `write_dataset_slab`: in-memory resizing, append and rectangular writes.
 - `add_external_dataset`: unfiltered external raw-data slots; the caller creates
   the external files.
-- `set_user_block`: reserve a zero-filled 512 B, 1 KiB, ... or 1 MiB prefix and
+- `set_user_block`: reserve a zero-filled 512 B, 1 KiB, ... or 1 GiB prefix and
   place the superblock after it. Existing user-block files remain editable.
 - `set_user_block_content`: store caller-provided prefix bytes, rounded up to
-  the next permitted user-block size and zero-padded.
+  the next permitted user-block size through 1 GiB and zero-padded.
 - `add_virtual_dataset`: virtual storage from one or more source mappings. Use
   `.` for a same-file source; external source names are stored without opening
   the file. `maximum_dimensions` with a `None` entry declares one unlimited
@@ -259,7 +259,8 @@ moon-hdf5 is not a drop-in replacement for libhdf5.
   format's 64-bit creation-order field and are not capped at 65,535.
   Four-byte structured values with variable-length custom fills are rejected
   for HDF5 1.14.6 interoperability.
-- User blocks are limited to powers of two from 512 B through 1 MiB.
+- The in-memory writer caps user blocks at 1 GiB; HDF5 permits larger
+  power-of-two blocks.
 - Detection of unsupported input is not exhaustive. Unsupported structures
   raise `UnsupportedFeature`; malformed input raises `InvalidField` or
   `UnexpectedEof`.
