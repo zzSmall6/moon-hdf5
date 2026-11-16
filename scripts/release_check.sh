@@ -214,6 +214,17 @@ else
 fi
 
 if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> Address/length width matrix verification skipped (SKIP_H5PY=1)"
+elif ! ls testdata/size_22.h5 testdata/size_24.h5 testdata/size_28.h5 \
+  testdata/size_42.h5 testdata/size_44.h5 testdata/size_48.h5 \
+  testdata/size_82.h5 testdata/size_84.h5 testdata/size_88.h5 \
+  >/dev/null 2>&1; then
+  echo "==> Address/length width matrix verification skipped (fixture unavailable)"
+else
+  "$python" scripts/verify_size_matrix_fixtures.py
+fi
+
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
   echo "==> Hard-link fixture verification skipped (SKIP_H5PY=1)"
 elif [ ! -f testdata/hard_links.h5 ]; then
   echo "==> Hard-link fixture verification skipped (fixture unavailable)"

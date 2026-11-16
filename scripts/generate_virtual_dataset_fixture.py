@@ -235,11 +235,94 @@ def create_conversion_fixture(path: Path) -> None:
             data=np.array([b"ab", b"c", b"def"], dtype="S3"),
             track_times=False,
         )
+        enum_source = handle.create_dataset(
+            "src_enum",
+            data=np.array(
+                [1, 2],
+                dtype=h5py.enum_dtype({"A": 1, "B": 2}, basetype="<i2"),
+            ),
+            track_times=False,
+        )
+        enum_integer_source = handle.create_dataset(
+            "src_enum_integer",
+            data=np.array([1, 2], dtype="<i2"),
+            track_times=False,
+        )
+        target_enum = h5py.enum_dtype({"ONE": 1, "TWO": 2}, basetype="<i4")
+        compound_source = handle.create_dataset(
+            "src_compound",
+            data=np.array(
+                [(1, 2), (3, 4)],
+                dtype=[("a", "<i2"), ("b", "<i2")],
+            ),
+            track_times=False,
+        )
+        compound_a_source = handle.create_dataset(
+            "src_compound_a",
+            data=np.array([(1,), (3,)], dtype=[("a", "<i2")]),
+            track_times=False,
+        )
+        nested_source = handle.create_dataset(
+            "src_nested_compound",
+            data=np.array(
+                [((1, 2.5),), ((3, 4.5),)],
+                dtype=[("p", [("x", "<i2"), ("y", "<f4")])],
+            ),
+            track_times=False,
+        )
+        compound_string_source = handle.create_dataset(
+            "src_compound_string",
+            data=np.array(
+                [(b"ab", 1), (b"c", 2)],
+                dtype=[("s", "S3"), ("n", "<i2")],
+            ),
+            track_times=False,
+        )
+        compound_array_source = handle.create_dataset(
+            "src_compound_array",
+            data=np.array(
+                [([1, 2],), ([3, 4],)],
+                dtype=[("q", "<i2", (2,))],
+            ),
+            track_times=False,
+        )
+        complex_source = handle.create_dataset(
+            "src_complex64",
+            data=np.array([1 + 2j, 3 + 4j], dtype="<c8"),
+            track_times=False,
+        )
         for name, source, dtype in (
             ("i16_i64", int16_source, "<i8"),
             ("i16_f64", int16_source, "<f8"),
             ("f32_i32", float32_source, "<i4"),
             ("s3_s8", string_source, "S8"),
+            ("enum_to_int", enum_source, "<i4"),
+            ("int_to_enum", enum_integer_source, target_enum),
+            ("enum_to_enum", enum_source, target_enum),
+            ("cmp_i16_i32", compound_source, [("a", "<i4"), ("b", "<i4")]),
+            (
+                "cmp_missing",
+                compound_a_source,
+                [("a", "<i4"), ("b", "<i4")],
+            ),
+            ("cmp_extra", compound_source, [("a", "<i4")]),
+            ("cmp_reorder", compound_source, [("b", "<i4"), ("a", "<i4")]),
+            (
+                "cmp_nested",
+                nested_source,
+                [("p", [("x", "<i4"), ("y", "<f8")])],
+            ),
+            (
+                "cmp_string",
+                compound_string_source,
+                [("s", "S8"), ("n", "<i4")],
+            ),
+            (
+                "cmp_array",
+                compound_array_source,
+                [("q", "<i4", (2,))],
+            ),
+            ("complex64_128", complex_source, "<c16"),
         ):
             layout = h5py.VirtualLayout(shape=source.shape, dtype=dtype)
             layout[...] = h5py.VirtualSource(source)
@@ -323,7 +406,72 @@ def verify(
         np.testing.assert_array_equal(
             handle["s3_s8"][...], np.array([b"ab", b"c", b"def"], dtype="S8")
         )
-        for name in ("i16_i64", "i16_f64", "f32_i32", "s3_s8"):
+        np.testing.assert_array_equal(
+            handle["enum_to_int"][...], np.array([1, 2], dtype="<i4")
+        )
+        np.testing.assert_array_equal(
+            handle["int_to_enum"][...], np.array([1, 2], dtype="<i4")
+        )
+        assert handle["int_to_enum"].dtype.metadata == {"enum": {"ONE": 1, "TWO": 2}}
+        np.testing.assert_array_equal(
+            handle["enum_to_enum"][...], np.array([1, 2], dtype="<i4")
+        )
+        assert handle["enum_to_enum"].dtype.metadata == {
+            "enum": {"ONE": 1, "TWO": 2}
+        }
+        np.testing.assert_array_equal(
+            handle["cmp_i16_i32"][...],
+            np.array([(1, 2), (3, 4)], dtype=[("a", "<i4"), ("b", "<i4")]),
+        )
+        np.testing.assert_array_equal(
+            handle["cmp_missing"][...],
+            np.array([(1, 0), (3, 0)], dtype=[("a", "<i4"), ("b", "<i4")]),
+        )
+        np.testing.assert_array_equal(
+            handle["cmp_extra"][...], np.array([(1,), (3,)], dtype=[("a", "<i4")])
+        )
+        np.testing.assert_array_equal(
+            handle["cmp_reorder"][...],
+            np.array([(2, 1), (4, 3)], dtype=[("b", "<i4"), ("a", "<i4")]),
+        )
+        np.testing.assert_array_equal(
+            handle["cmp_nested"][...],
+            np.array(
+                [((1, 2.5),), ((3, 4.5),)],
+                dtype=[("p", [("x", "<i4"), ("y", "<f8")])],
+            ),
+        )
+        np.testing.assert_array_equal(
+            handle["cmp_string"][...],
+            np.array(
+                [(b"ab", 1), (b"c", 2)],
+                dtype=[("s", "S8"), ("n", "<i4")],
+            ),
+        )
+        np.testing.assert_array_equal(
+            handle["cmp_array"][...],
+            np.array([([1, 2],), ([3, 4],)], dtype=[("q", "<i4", (2,))]),
+        )
+        np.testing.assert_array_equal(
+            handle["complex64_128"][...], np.array([1 + 2j, 3 + 4j], dtype="<c16")
+        )
+        for name in (
+            "i16_i64",
+            "i16_f64",
+            "f32_i32",
+            "s3_s8",
+            "enum_to_int",
+            "int_to_enum",
+            "enum_to_enum",
+            "cmp_i16_i32",
+            "cmp_missing",
+            "cmp_extra",
+            "cmp_reorder",
+            "cmp_nested",
+            "cmp_string",
+            "cmp_array",
+            "complex64_128",
+        ):
             assert handle[name].is_virtual
 
 

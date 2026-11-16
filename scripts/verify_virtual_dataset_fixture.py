@@ -99,7 +99,72 @@ def verify() -> None:
         np.testing.assert_array_equal(
             handle["s3_s8"][...], np.array([b"ab", b"c", b"def"], dtype="S8")
         )
-        for name in ("i16_i64", "i16_f64", "f32_i32", "s3_s8"):
+        np.testing.assert_array_equal(
+            handle["enum_to_int"][...], np.array([1, 2], dtype="<i4")
+        )
+        np.testing.assert_array_equal(
+            handle["int_to_enum"][...], np.array([1, 2], dtype="<i4")
+        )
+        assert handle["int_to_enum"].dtype.metadata == {"enum": {"ONE": 1, "TWO": 2}}
+        np.testing.assert_array_equal(
+            handle["enum_to_enum"][...], np.array([1, 2], dtype="<i4")
+        )
+        assert handle["enum_to_enum"].dtype.metadata == {
+            "enum": {"ONE": 1, "TWO": 2}
+        }
+        np.testing.assert_array_equal(
+            handle["cmp_i16_i32"][...],
+            np.array([(1, 2), (3, 4)], dtype=[("a", "<i4"), ("b", "<i4")]),
+        )
+        np.testing.assert_array_equal(
+            handle["cmp_missing"][...],
+            np.array([(1, 0), (3, 0)], dtype=[("a", "<i4"), ("b", "<i4")]),
+        )
+        np.testing.assert_array_equal(
+            handle["cmp_extra"][...], np.array([(1,), (3,)], dtype=[("a", "<i4")])
+        )
+        np.testing.assert_array_equal(
+            handle["cmp_reorder"][...],
+            np.array([(2, 1), (4, 3)], dtype=[("b", "<i4"), ("a", "<i4")]),
+        )
+        np.testing.assert_array_equal(
+            handle["cmp_nested"][...],
+            np.array(
+                [((1, 2.5),), ((3, 4.5),)],
+                dtype=[("p", [("x", "<i4"), ("y", "<f8")])],
+            ),
+        )
+        np.testing.assert_array_equal(
+            handle["cmp_string"][...],
+            np.array(
+                [(b"ab", 1), (b"c", 2)],
+                dtype=[("s", "S8"), ("n", "<i4")],
+            ),
+        )
+        np.testing.assert_array_equal(
+            handle["cmp_array"][...],
+            np.array([([1, 2],), ([3, 4],)], dtype=[("q", "<i4", (2,))]),
+        )
+        np.testing.assert_array_equal(
+            handle["complex64_128"][...], np.array([1 + 2j, 3 + 4j], dtype="<c16")
+        )
+        for name in (
+            "i16_i64",
+            "i16_f64",
+            "f32_i32",
+            "s3_s8",
+            "enum_to_int",
+            "int_to_enum",
+            "enum_to_enum",
+            "cmp_i16_i32",
+            "cmp_missing",
+            "cmp_extra",
+            "cmp_reorder",
+            "cmp_nested",
+            "cmp_string",
+            "cmp_array",
+            "complex64_128",
+        ):
             assert handle[name].is_virtual
 
     print(

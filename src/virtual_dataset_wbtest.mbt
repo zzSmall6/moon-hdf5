@@ -23,6 +23,24 @@ fn virtual_dataset_strings(dataset : Dataset) -> Array[String] raise Hdf5Error {
 }
 
 ///|
+fn virtual_dataset_enums(dataset : Dataset) -> Array[String] raise Hdf5Error {
+  match dataset.values {
+    Enums(values) => values
+    _ => raise InvalidField("expected virtual dataset enum values")
+  }
+}
+
+///|
+fn virtual_dataset_structured(
+  dataset : Dataset,
+) -> Array[DatasetValue] raise Hdf5Error {
+  match dataset.values {
+    Structured(values) => values
+    _ => raise InvalidField("expected virtual dataset structured values")
+  }
+}
+
+///|
 fn virtual_selection_integers(
   result : DatasetSelectionResult,
 ) -> Array[Int64] raise Hdf5Error {
@@ -279,6 +297,139 @@ test "virtual datasets expand printf names and convert datatypes" {
   assert_eq(virtual_dataset_strings(conversion.read_dataset("/s3_s8")), [
     "ab", "c", "def",
   ])
+  assert_eq(virtual_dataset_integers(conversion.read_dataset("/enum_to_int")), [
+    1L, 2L,
+  ])
+  assert_eq(virtual_dataset_enums(conversion.read_dataset("/int_to_enum")), [
+    "ONE", "TWO",
+  ])
+  assert_eq(virtual_dataset_enums(conversion.read_dataset("/enum_to_enum")), [
+    "ONE", "TWO",
+  ])
+  assert_eq(
+    virtual_dataset_structured(conversion.read_dataset("/cmp_i16_i32")),
+    [
+      Compound([
+        { name: "a", value: SignedInteger(1L), },
+        { name: "b", value: SignedInteger(2L), },
+      ]),
+      Compound([
+        { name: "a", value: SignedInteger(3L), },
+        { name: "b", value: SignedInteger(4L), },
+      ]),
+    ],
+  )
+  assert_eq(
+    virtual_dataset_structured(conversion.read_dataset("/cmp_missing")),
+    [
+      Compound([
+        { name: "a", value: SignedInteger(1L), },
+        { name: "b", value: SignedInteger(0L), },
+      ]),
+      Compound([
+        { name: "a", value: SignedInteger(3L), },
+        { name: "b", value: SignedInteger(0L), },
+      ]),
+    ],
+  )
+  assert_eq(virtual_dataset_structured(conversion.read_dataset("/cmp_extra")), [
+    Compound([{ name: "a", value: SignedInteger(1L), }]),
+    Compound([{ name: "a", value: SignedInteger(3L), }]),
+  ])
+  assert_eq(
+    virtual_dataset_structured(conversion.read_dataset("/cmp_reorder")),
+    [
+      Compound([
+        { name: "b", value: SignedInteger(2L), },
+        { name: "a", value: SignedInteger(1L), },
+      ]),
+      Compound([
+        { name: "b", value: SignedInteger(4L), },
+        { name: "a", value: SignedInteger(3L), },
+      ]),
+    ],
+  )
+  assert_eq(
+    virtual_dataset_structured(conversion.read_dataset("/cmp_nested")),
+    [
+      Compound([
+        {
+          name: "p",
+          value: Compound([
+            { name: "x", value: SignedInteger(1L), },
+            { name: "y", value: FloatingPoint(2.5), },
+          ]),
+        },
+      ]),
+      Compound([
+        {
+          name: "p",
+          value: Compound([
+            { name: "x", value: SignedInteger(3L), },
+            { name: "y", value: FloatingPoint(4.5), },
+          ]),
+        },
+      ]),
+    ],
+  )
+  assert_eq(
+    virtual_dataset_structured(conversion.read_dataset("/cmp_string")),
+    [
+      Compound([
+        { name: "s", value: Text("ab"), },
+        { name: "n", value: SignedInteger(1L), },
+      ]),
+      Compound([
+        { name: "s", value: Text("c"), },
+        { name: "n", value: SignedInteger(2L), },
+      ]),
+    ],
+  )
+  assert_eq(virtual_dataset_structured(conversion.read_dataset("/cmp_array")), [
+    Compound([
+      { name: "q", value: Elements([SignedInteger(1L), SignedInteger(2L)]), },
+    ]),
+    Compound([
+      { name: "q", value: Elements([SignedInteger(3L), SignedInteger(4L)]), },
+    ]),
+  ])
+  assert_eq(
+    virtual_dataset_structured(conversion.read_dataset("/complex64_128")),
+    [
+      Compound([
+        { name: "r", value: FloatingPoint(1.0), },
+        { name: "i", value: FloatingPoint(2.0), },
+      ]),
+      Compound([
+        { name: "r", value: FloatingPoint(3.0), },
+        { name: "i", value: FloatingPoint(4.0), },
+      ]),
+    ],
+  )
+}
+
+///|
+test "virtual complex datatype conversion encodes both components" {
+  let component32 = Datatype::write_float(4)
+  let component64 = Datatype::write_float(8)
+  let source : Datatype = {
+    ..component32,
+    class: 11,
+    size: 8,
+    base_types: [component32],
+  }
+  let target : Datatype = {
+    ..component64,
+    class: 11,
+    size: 16,
+    base_types: [component64],
+  }
+  assert_true(virtual_datatype_convertible(source, target))
+  let encoded = encode_virtual_value(source, target, Complex(1.25, -2.5))
+  assert_eq(
+    decode_dataset_value(None, b"", encoded, 0, target, 8, 8, 0UL),
+    Complex(1.25, -2.5),
+  )
 }
 
 ///|

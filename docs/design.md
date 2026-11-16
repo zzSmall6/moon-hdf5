@@ -52,17 +52,20 @@ Virtual datasets use a version-4 layout whose global-heap object contains the
 source/virtual selection mappings. The reader validates the mapping-block
 checksum, selection ranks and bounds, source registration, element counts and
 recursive datatype compatibility before copying source elements into the
-requested virtual indices. Integer/float and same-charset fixed-string values
-are converted through controlled value semantics; other conversions require a
-byte-identical datatype. A single unlimited virtual hyperslab axis expands
-`%b` in source file/dataset names to the block number and `%%` to a literal
-percent. Unmapped elements use the declared fill value. The same path serves
-full reads, arbitrary selections, chunk tiles, selection pages and
-region-reference targets; nested virtual datasets recurse through the same
-dependency graph with a fixed depth bound. All and non-overlapping hyperslab
-mappings are addressed directly, so a page request reads only the corresponding
-source elements even when the mapping itself contains very many elements. Point
-and irregular block mappings retain the materialized mapping path.
+requested virtual indices. Numeric, enum, complex, fixed-array, compound and
+same-charset fixed-string values are converted through controlled value
+semantics. Compound members are matched by name, missing target members remain
+zero bytes and extra source members are ignored; enum conversion uses the
+underlying integer rather than member names. Other conversions require a
+byte-identical datatype. A single unlimited virtual hyperslab axis expands `%b`
+in source file/dataset names to the block number and `%%` to a literal percent.
+Unmapped elements use the declared fill value. The same path serves full reads,
+arbitrary selections, chunk tiles, selection pages and region-reference targets;
+nested virtual datasets recurse through the same dependency graph with a fixed
+depth bound. All and non-overlapping hyperslab mappings are addressed directly,
+so a page request reads only the corresponding source elements even when the
+mapping itself contains very many elements. Point and irregular block mappings
+retain the materialized mapping path.
 
 The writer emits the same layout-v4 form. Each virtual dataset appends a
 checksummed mapping block as a global-heap object, then stores its heap address

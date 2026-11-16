@@ -884,13 +884,107 @@ fn virtual_base_types_equal(
 }
 
 ///|
+fn virtual_enum_datatype_is_valid(datatype : Datatype) -> Bool {
+  datatype.class == 8 &&
+  datatype.base_types.length() == 1 &&
+  datatype.base_types[0].class == 0 &&
+  datatype.base_types[0].size == datatype.size &&
+  datatype.base_types[0].bit_offset >= 0 &&
+  datatype.base_types[0].bit_precision > 0 &&
+  datatype.base_types[0].bit_offset + datatype.base_types[0].bit_precision <=
+  datatype.size * 8
+}
+
+///|
+fn virtual_compound_datatype_convertible(
+  source : Datatype,
+  target : Datatype,
+) -> Bool {
+  for target_member in target.compound_members {
+    match
+      source.compound_members.search_by(source_member => {
+        source_member.name == target_member.name
+      }) {
+      Some(source_member_index) =>
+        if !virtual_datatype_convertible(
+            source.compound_members[source_member_index].datatype,
+            target_member.datatype,
+          ) {
+          return false
+        }
+      None => ()
+    }
+  }
+  true
+}
+
+///|
+fn virtual_array_datatype_convertible(
+  source : Datatype,
+  target : Datatype,
+) -> Bool {
+  source.array_dimensions == target.array_dimensions &&
+  source.base_types.length() == 1 &&
+  target.base_types.length() == 1 &&
+  virtual_datatype_convertible(source.base_types[0], target.base_types[0])
+}
+
+///|
+fn virtual_complex_datatype_convertible(
+  source : Datatype,
+  target : Datatype,
+) -> Bool {
+  source.base_types.length() == 1 &&
+  target.base_types.length() == 1 &&
+  source.base_types[0].class == 1 &&
+  target.base_types[0].class == 1 &&
+  virtual_datatype_convertible(source.base_types[0], target.base_types[0])
+}
+
+///|
+fn virtual_numeric_target_convertible(target : Datatype) -> Bool {
+  if target.class == 1 {
+    virtual_float_target_is_standard(target)
+  } else if target.class == 0 {
+    target.bit_offset >= 0 &&
+    target.bit_precision > 0 &&
+    target.bit_offset + target.bit_precision <= target.size * 8
+  } else if target.class == 8 {
+    virtual_enum_datatype_is_valid(target)
+  } else {
+    false
+  }
+}
+
+///|
 priv enum VirtualNumericValue {
   VirtualInteger(@bigint.BigInt)
   VirtualFloat(Double)
 }
 
 ///|
+fn virtual_enum_member_integer(
+  datatype : Datatype,
+  name : String,
+) -> @bigint.BigInt raise Hdf5Error {
+  guard virtual_enum_datatype_is_valid(datatype) else {
+    raise InvalidField("virtual dataset enum datatype is invalid")
+  }
+  for enum_member in datatype.enum_members {
+    if enum_member.name == name {
+      return match enum_member.value {
+        EnumValue::Signed(number) => @bigint.BigInt::from_int64(number)
+        EnumValue::Unsigned(number) => @bigint.BigInt::from_uint64(number)
+        EnumValue::Big(number) => number
+      }
+    }
+  }
+  raise InvalidField("virtual dataset enum value does not match a member")
+}
+
+///|
 fn virtual_numeric_value(
+  source : Datatype,
   value : DatasetValue,
 ) -> VirtualNumericValue raise Hdf5Error {
   match value {
@@ -899,6 +993,8 @@ fn virtual_numeric_value(
       VirtualInteger(@bigint.BigInt::from_uint64(number))
     BigInteger(number) => VirtualInteger(number)
     FloatingPoint(number) => VirtualFloat(number)
+    Enumeration(name) =>
+      VirtualInteger(virtual_enum_member_integer(source, name))
     _ =>
       raise UnsupportedFeature(
         "virtual dataset numeric conversion requires a numeric source value",
@@ -957,14 +1053,25 @@ fn virtual_datatype_convertible(source : Datatype, target : Datatype) -> Bool {
   if virtual_datatype_compatible(source, target) {
     return true
   }
+  let source_numeric = source.class == 0 ||
+    source.class == 1 ||
+    source.class == 8
+  let target_numeric = target.class == 0 ||
+    target.class == 1 ||
+    target.class == 8
+  if source_numeric && target_numeric {
+    let source_supported = if source.class == 8 {
+      virtual_enum_datatype_is_valid(source)
+    } else {
+      true
+    }
+    return source_supported && virtual_numeric_target_convertible(target)
+  }
   match (source.class, target.class) {
-    (0, 0) | (0, 1) | (1, 0) | (1, 1) =>
-      if target.class == 1 {
-        virtual_float_target_is_standard(target)
-      } else {
-        target.bit_offset >= 0 && target.bit_precision > 0
-      }
     (3, 3) => source.string_charset == target.string_charset && target.size > 0
+    (6, 6) => virtual_compound_datatype_convertible(source, target)
+    (10, 10) => virtual_array_datatype_convertible(source, target)
+    (11, 11) => virtual_complex_datatype_convertible(source, target)
     _ => false
   }
 }
@@ -1051,6 +1158,182 @@ fn encode_virtual_integer(
 }
 
 ///|
+fn encode_virtual_numeric_value(
+  buffer : @buffer.Buffer,
+  source : Datatype,
+  target : Datatype,
+  value : DatasetValue,
+) -> Unit raise Hdf5Error {
+  let number = match virtual_numeric_value(source, value) {
+    VirtualInteger(number) => number
+    VirtualFloat(number) =>
+      if target.class == 1 {
+        writer_write_bytes(
+          buffer,
+          encode_structured_value(target, FloatingPoint(number)),
+        )
+        return
+      } else {
+        virtual_bigint_from_float(number)
+      }
+  }
+  if target.class == 1 {
+    let number = virtual_bigint_to_float(number)
+    writer_write_bytes(
+      buffer,
+      encode_structured_value(target, FloatingPoint(number)),
+    )
+  } else if target.class == 8 {
+    guard target.base_types.length() == 1 else {
+      raise InvalidField("virtual dataset enum target has no base type")
+    }
+    encode_virtual_integer(buffer, number, target.base_types[0])
+  } else {
+    encode_virtual_integer(buffer, number, target)
+  }
+}
+
+///|
+fn encode_virtual_compound_value(
+  buffer : @buffer.Buffer,
+  source : Datatype,
+  target : Datatype,
+  value : DatasetValue,
+) -> Unit raise Hdf5Error {
+  guard source.class == 6 && value is Compound(fields) else {
+    raise UnsupportedFeature(
+      "virtual dataset compound conversion requires compound values",
+    )
+  }
+  let output = FixedArray::make(target.size, b'\x00')
+  for target_member in target.compound_members {
+    match
+      source.compound_members.search_by(source_member => {
+        source_member.name == target_member.name
+      }) {
+      Some(source_member_index) =>
+        match fields.search_by(field => field.name == target_member.name) {
+          Some(field_index) => {
+            guard target_member.offset >= 0 &&
+              target_member.offset.to_int64() +
+              target_member.datatype.size.to_int64() <=
+              target.size.to_int64() else {
+              raise InvalidField(
+                "virtual dataset compound member exceeds its target size",
+              )
+            }
+            let encoded = encode_virtual_value(
+              source.compound_members[source_member_index].datatype,
+              target_member.datatype,
+              fields[field_index].value,
+            )
+            output.blit_from_bytes(
+              target_member.offset,
+              encoded,
+              0,
+              encoded.length(),
+            )
+          }
+          None =>
+            raise InvalidField(
+              "virtual dataset compound source value is missing a member",
+            )
+        }
+      None => ()
+    }
+  }
+  writer_write_bytes(buffer, output.unsafe_reinterpret_as_bytes())
+}
+
+///|
+fn encode_virtual_array_value(
+  buffer : @buffer.Buffer,
+  source : Datatype,
+  target : Datatype,
+  value : DatasetValue,
+) -> Unit raise Hdf5Error {
+  guard source.base_types.length() == 1 &&
+    target.base_types.length() == 1 &&
+    value is Elements(items) else {
+    raise UnsupportedFeature(
+      "virtual dataset array conversion requires array values",
+    )
+  }
+  let target_base = target.base_types[0]
+  guard target_base.size > 0 && target.size % target_base.size == 0 else {
+    raise InvalidField("virtual dataset array target layout is invalid")
+  }
+  let expected = target.size / target_base.size
+  guard items.length() == expected && expected > 0 else {
+    raise InvalidField(
+      "virtual dataset array source and target element counts differ",
+    )
+  }
+  for index in 0..<expected {
+    writer_write_bytes(
+      buffer,
+      encode_virtual_value(source.base_types[0], target_base, items[index]),
+    )
+  }
+}
+
+///|
+fn encode_virtual_complex_value(
+  buffer : @buffer.Buffer,
+  target : Datatype,
+  value : DatasetValue,
+) -> Unit raise Hdf5Error {
+  guard target.base_types.length() == 1 && value is Complex(real, imaginary) else {
+    raise UnsupportedFeature(
+      "virtual dataset complex conversion requires complex values",
+    )
+  }
+  writer_write_bytes(
+    buffer,
+    encode_structured_value(target.base_types[0], FloatingPoint(real)),
+  )
+  writer_write_bytes(
+    buffer,
+    encode_structured_value(target.base_types[0], FloatingPoint(imaginary)),
+  )
+}
+
+///|
+fn encode_virtual_value(
+  source : Datatype,
+  target : Datatype,
+  value : DatasetValue,
+) -> Bytes raise Hdf5Error {
+  let buffer = @buffer.Buffer::Buffer(size_hint=target.size)
+  match target.class {
+    0 | 1 | 8 => encode_virtual_numeric_value(buffer, source, target, value)
+    3 =>
+      match value {
+        Text(text) =>
+          writer_write_bytes(
+            buffer,
+            encode_structured_value(target, Text(text)),
+          )
+        _ =>
+          raise UnsupportedFeature(
+            "virtual dataset string conversion requires a string source value",
+          )
+      }
+    6 => encode_virtual_compound_value(buffer, source, target, value)
+    10 => encode_virtual_array_value(buffer, source, target, value)
+    11 => encode_virtual_complex_value(buffer, target, value)
+    _ =>
+      raise UnsupportedFeature(
+        "virtual dataset datatype conversion is not supported for this target class",
+      )
+  }
+  guard buffer.length() == target.size else {
+    raise InvalidField("virtual dataset conversion produced an invalid size")
+  }
+  buffer.to_bytes()
+}
+
+///|
 fn convert_virtual_payload(
   payload : Bytes,
   count : Int64,
@@ -1059,6 +1342,9 @@ fn convert_virtual_payload(
 ) -> Bytes raise Hdf5Error {
   guard count >= 0 && count <= 0x7FFFFFFFL else {
     raise InvalidField("virtual dataset conversion has too many elements")
+  }
+  guard count * target.size.to_int64() <= 0x7FFFFFFFL else {
+    raise InvalidField("virtual dataset conversion output is too large")
   }
   let output = @buffer.Buffer::Buffer(size_hint=count.to_int() * target.size)
   for index in 0..<count.to_int() {
@@ -1072,41 +1358,7 @@ fn convert_virtual_payload(
       8,
       0UL,
     )
-    match target.class {
-      0 => {
-        let number = match virtual_numeric_value(value) {
-          VirtualInteger(number) => number
-          VirtualFloat(number) => virtual_bigint_from_float(number)
-        }
-        encode_virtual_integer(output, number, target)
-      }
-      1 => {
-        let number = match virtual_numeric_value(value) {
-          VirtualInteger(number) => virtual_bigint_to_float(number)
-          VirtualFloat(number) => number
-        }
-        writer_write_bytes(
-          output,
-          encode_structured_value(target, FloatingPoint(number)),
-        )
-      }
-      3 =>
-        match value {
-          Text(text) =>
-            writer_write_bytes(
-              output,
-              encode_structured_value(target, Text(text)),
-            )
-          _ =>
-            raise UnsupportedFeature(
-              "virtual dataset string conversion requires a string source value",
-            )
-        }
-      _ =>
-        raise UnsupportedFeature(
-          "virtual dataset datatype conversion is not supported for this target class",
-        )
-    }
+    writer_write_bytes(output, encode_virtual_value(source, target, value))
   }
   output.to_bytes()
 }

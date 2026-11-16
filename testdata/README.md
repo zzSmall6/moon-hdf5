@@ -28,6 +28,7 @@ python3 -m venv /tmp/moon-hdf5-h5py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_matlab73_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_wide_numeric_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_virtual_dataset_fixture.py
+/tmp/moon-hdf5-h5py/bin/python scripts/generate_size_matrix_fixtures.py
 ```
 
 The v114 generator refuses other HDF5 versions. A newer HDF5 2.x environment can
@@ -79,6 +80,7 @@ Independent verifiers run with the HDF5 1.14.6 environment:
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_netcdf4_fixture.py testdata/netcdf4_1_7_5.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_wide_numeric_fixture.py testdata/wide_numeric.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_virtual_dataset_fixture.py
+/tmp/moon-hdf5-h5py/bin/python scripts/verify_size_matrix_fixtures.py
 ```
 
 Regeneration is not part of the release gate; `scripts/release_check.sh`
@@ -104,6 +106,7 @@ verifies the committed files.
 | `references*.h5`, `references_layouts_32.h5`, `references_v4.h5`, `nested_reference_32.h5` | Legacy object/region references, version-4 object/region/attribute references, null/dangling targets, layouts, selection versions and 4-byte compound references |
 | `external_references.h5`, `external_reference_target.h5` | Version-4 object, region and attribute references into a registered external HDF5 file, plus a same-file target and null references |
 | `virtual_dataset*.h5` | Same-file and registered external mappings, multiple and strided selections, fill gaps, nested virtual datasets, 4-byte addresses and source files |
+| `size_22.h5`–`size_88.h5` | All 2/4/8-byte address and length-width combinations with contiguous, chunked and attribute data |
 | `shared_messages.h5` | SOHM table/indexes/heaps, reserved indexes, field, fill and filter-pipeline sharing, dense shared records and committed targets |
 | `external_storage*.h5`, `external_storage_*.bin` | Multi-file/offset/unaligned raw-data slots and 4-byte-address storage |
 | `vlen_fills.h5` | Default/custom variable-length string fills from producer files |

@@ -103,6 +103,8 @@ MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
   selection bounds/counts, source registration and datatype compatibility are
   validated; all and non-overlapping hyperslab mappings are addressed directly
   so page and tile reads allocate by request size rather than mapping size;
+- every 2/4/8-byte address and length-width combination is covered by committed
+  files containing contiguous, compressed chunked and attribute data;
 - numeric-layout, scale-offset, vlen-fill, NetCDF-4, external-storage,
   shared-message, virtual-dataset, hard-link, MATLAB-compatible and reference
   fixtures verified;
@@ -117,10 +119,10 @@ structures raise errors; detection is not exhaustive.
 
 | Area | Evidence |
 | --- | --- |
-| Framing and navigation | Superblock v0–v3, user blocks, compact/dense groups, hard/soft links, `.`/`..` path normalization, source-backed reads |
+| Framing and navigation | Superblock v0–v3, user blocks, all 2/4/8-byte address/length combinations, compact/dense groups, hard/soft links, `.`/`..` path normalization, source-backed reads |
 | Dense metadata | FRHP direct/indirect blocks, huge objects, v2 B-tree leaf/internal nodes and SOHM heap IDs |
 | Datasets | Compact, contiguous, virtual storage, external raw data and every supported chunk index |
-| Virtual datasets | Same-file and registered external mappings, multiple/strided selections, fill gaps, nested virtual datasets, one unlimited axis with `%b`/`%%`, integer/float and fixed-string conversion, and 4-/8-byte fixtures; new-file and existing-file writer output is independently read by h5py 3.13.0/HDF5 1.14.6 |
+| Virtual datasets | Same-file and registered external mappings, multiple/strided selections, fill gaps, nested virtual datasets, one unlimited axis with `%b`/`%%`, numeric/enum/complex/array/compound/fixed-string conversion, and 4-/8-byte fixtures; new-file and existing-file writer output is independently read by h5py 3.13.0/HDF5 1.14.6 |
 | Fill policies | Default, custom, undefined and `FILL_TIME_NEVER`; malformed messages and external-storage boundaries remain rejected |
 | Filters | Shuffle, deflate, Fletcher32, integer/f32/f64 scale-offset, masks and fill markers; registered caller-defined encoders/decoders with named v2 pipeline entries and per-chunk mask skips |
 | Datatypes | Fixed-point, IEEE/normalized floats, strings, compound, enum, array, time, bitfield, opaque, sequence, references, complex |
@@ -673,3 +675,11 @@ message types emitted by this writer.
   substitutions, literal percents, printf plus int16-to-int64 conversion, and
   direct int16/float32/string conversions; MoonBit tests and the release writer
   demo cover the read, validation and output paths.
+- 2026-11-16: virtual-dataset conversion now covers enum underlying integers,
+  fixed-array elements, complex components and recursive compounds. Compound
+  target members are matched by name, missing target members are zero-filled,
+  extra source members are ignored and nested conversions recurse. HDF5 1.14.6
+  fixtures cover enum-to-integer, integer-to-enum, enum-to-enum, compound
+  width/reorder/missing/extra/nested/string/array and complex conversions. A
+  separate nine-file matrix verifies every 2/4/8-byte address and length-width
+  combination with contiguous, compressed chunked and attribute data.
