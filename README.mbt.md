@@ -19,7 +19,7 @@ verification notes. Public APIs are listed in
 - Existing files support value and attribute patching, resize and append,
   attribute/link add, rename and delete, and object creation/deletion. Every
   edit returns a new byte image.
-- The release gate passes 478 tests on each target, plus independent h5py
+- The release gate passes 480 tests on each target, plus independent h5py
   3.13.0/HDF5 1.14.6 interoperability checks.
 
 ## Installation
@@ -82,8 +82,9 @@ let compact = file.read_dataset_as(
 ```
 
 The typed APIs cover every supported storage layout. The release gate checks
-both MoonBit-written conversions with h5py and conversion of an HDF5 1.14.6
-fixture read back through MoonBit.
+binary16 boundaries, integer width/order/offset layouts, extended floats,
+opaque resizing, complex-component precision, bounded chunk/selection
+conversion, and numeric fixture round-trips with h5py against HDF5 1.14.6.
 
 ## Writing
 

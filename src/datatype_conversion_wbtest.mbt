@@ -842,3 +842,93 @@ test "typed existing-file APIs add and patch converted values" {
     ["ab", "c"],
   )
 }
+
+///|
+fn conversion_test_raw_datatype(
+  class_ : Int32,
+  size_ : Int32,
+  version_~ : Int32 = 1,
+  base_types_~ : Array[Datatype] = [],
+  compound_members_~ : Array[CompoundMember] = [],
+  enum_members_~ : Array[EnumMember] = [],
+  array_dimensions_~ : Array[UInt64] = [],
+  bit_precision_~ : Int32 = 0,
+  reference_kind_~ : Int32 = 0,
+) -> Datatype {
+  {
+    class: class_,
+    version: version_,
+    size: size_,
+    signed: false,
+    little_endian: true,
+    vlen_is_string: false,
+    enum_members: enum_members_,
+    compound_members: compound_members_,
+    base_types: base_types_,
+    array_dimensions: array_dimensions_,
+    bit_offset: 0,
+    bit_precision: bit_precision_,
+    float_sign_position: 0,
+    float_exponent_position: 0,
+    float_exponent_size: 0,
+    float_mantissa_position: 0,
+    float_mantissa_size: 0,
+    float_exponent_bias: 0,
+    float_normalization: 0,
+    string_padding: 0,
+    string_charset: 0,
+    opaque_tag: "",
+    reference_kind: reference_kind_,
+  }
+}
+
+///|
+test "malformed and over-deep conversion targets fail before decoding values" {
+  let source = Datatype::write_integer(true, 1)
+  let int8_type = Datatype::write_integer(true, 1)
+  let cases : Array[(Datatype, Hdf5Error)] = [
+    (
+      conversion_test_raw_datatype(1, 2, bit_precision_=0),
+      InvalidArgument("conversion target float layout is invalid"),
+    ),
+    (
+      conversion_test_raw_datatype(6, 4),
+      InvalidArgument("conversion target compound has no members"),
+    ),
+    (
+      conversion_test_raw_datatype(8, 1, base_types_=[int8_type], enum_members_=[
+        { name: "OVERFLOW", value: EnumValue::Signed(128L), },
+      ]),
+      InvalidArgument(
+        "conversion target enum member is outside its integer base",
+      ),
+    ),
+    (
+      conversion_test_raw_datatype(10, 3, base_types_=[int8_type], array_dimensions_=[
+        2UL,
+      ]),
+      InvalidArgument("conversion target array layout is invalid"),
+    ),
+    (
+      conversion_test_raw_datatype(7, 4, version_=4, reference_kind_=0),
+      InvalidArgument("conversion target reference layout is invalid"),
+    ),
+  ]
+  for (target, expected) in cases {
+    let error = conversion_test_error(() => {
+      source.convert_values(Integers([]), target) |> ignore
+    })
+    assert_eq(error, Some(expected))
+  }
+
+  let mut deep_target = Datatype::write_float(8)
+  for _ in 0..<17 {
+    deep_target = Datatype::write_array(deep_target, [1UL])
+  }
+  assert_eq(
+    conversion_test_error(() => {
+      source.convert_values(Integers([]), deep_target) |> ignore
+    }),
+    Some(InvalidArgument("conversion target datatype is invalid or too deep")),
+  )
+}

@@ -22,6 +22,44 @@ fn conversion_integer_values(values : @lib.DatasetValues) -> Array[Int64] {
 }
 
 ///|
+fn conversion_memory_values(
+  datatype : @lib.Datatype,
+  values : @lib.DatasetValues,
+) -> @lib.Hdf5WriteValues {
+  match values {
+    Integers(items) => @lib.Int64Values(items)
+    UnsignedIntegers(items) => @lib.UInt64Values(items)
+    BigIntegers(items) =>
+      @lib.BigIntegerValues(items, datatype.size, datatype.signed)
+    Floats(items) => @lib.Float64Values(items)
+    Structured(items) => @lib.StructuredValues(datatype, items)
+    _ => abort("unsupported converted memory values")
+  }
+}
+
+///|
+fn conversion_copy_dataset_typed(
+  writer : @lib.Hdf5Writer,
+  target_path : String,
+  fixture : @lib.Hdf5File,
+  source_path : String,
+  target_datatype : @lib.Datatype,
+  options? : @lib.Hdf5ConversionOptions,
+) -> Unit raise @lib.Hdf5Error {
+  let converted = fixture.read_dataset_as(
+    source_path,
+    target_datatype,
+    options?,
+  )
+  writer.add_dataset_typed(
+    target_path,
+    converted.dataspace.dimensions,
+    target_datatype,
+    conversion_memory_values(target_datatype, converted.values),
+  )
+}
+
+///|
 fn conversion_string_values(values : @lib.DatasetValues) -> Array[String] {
   match values {
     Strings(items) => items
@@ -74,6 +112,48 @@ fn conversion_sequence_type() -> @lib.Datatype raise @lib.Hdf5Error {
 }
 
 ///|
+fn conversion_double(bits : UInt64) -> Double {
+  bits.reinterpret_as_double()
+}
+
+///|
+fn conversion_collect_chunk_values(
+  file : @lib.Hdf5File,
+  path : String,
+  tile : Array[UInt64],
+  target : @lib.Datatype,
+) -> Array[Int64] raise @lib.Hdf5Error {
+  let iterator = file.chunk_iterator_as(path, tile, target)
+  let values : Array[Int64] = []
+  while true {
+    match iterator.next() {
+      Some(chunk) => values.append(conversion_integer_values(chunk.values))
+      None => break
+    }
+  }
+  values
+}
+
+///|
+fn conversion_collect_selection_values(
+  file : @lib.Hdf5File,
+  path : String,
+  selection : @lib.DatasetSelection,
+  page_size : Int32,
+  target : @lib.Datatype,
+) -> Array[Int64] raise @lib.Hdf5Error {
+  let iterator = file.selection_iterator_as(path, selection, page_size, target)
+  let values : Array[Int64] = []
+  while true {
+    match iterator.next() {
+      Some(page) => values.append(conversion_integer_values(page.values))
+      None => break
+    }
+  }
+  values
+}
+
+///|
 fn conversion_write_generated(
   writer : @lib.Hdf5Writer,
 ) -> Unit raise @lib.Hdf5Error {
@@ -107,6 +187,108 @@ fn conversion_write_generated(
     [3UL],
     @lib.Datatype::write_float(4),
     @lib.Float64Values([1.5, -2.25, 3.0]),
+  )
+  let half_values : Array[Double] = [
+    0.0,
+    -0.0,
+    1.0 / 67108864.0,
+    1.0 / 33554432.0,
+    1.0 / 33554432.0 + 1.0 / 1152921504606846976.0,
+    3.0 / 33554432.0,
+    1.0 / 16777216.0,
+    1.0 + 1.0 / 2048.0,
+    1.0 + 1.0 / 2048.0 + 1.0 / 1099511627776.0,
+    1.0 + 1.0 / 1024.0,
+    65504.0,
+    65519.0,
+    65520.0,
+    -65504.0,
+    -65519.0,
+    -65520.0,
+  ]
+  writer.add_dataset_typed(
+    "/generated/float16_boundaries",
+    [half_values.length().to_uint64()],
+    @lib.Datatype::write_float(2),
+    @lib.Float64Values(half_values),
+    options=@lib.Hdf5ConversionOptions::lossy(),
+  )
+  writer.add_attribute_typed(
+    "/generated/float16_boundaries",
+    "edge_values",
+    [5UL],
+    @lib.Datatype::write_float(2),
+    @lib.Float64Values(Array::makei(5, index => half_values[index])),
+    options=@lib.Hdf5ConversionOptions::lossy(),
+  )
+  let extended_values : Array[Double] = [
+    1.5,
+    -2.25,
+    1.0 / 3.0,
+    0.0,
+    -0.0,
+    conversion_double(0x7FF0000000000000UL),
+    conversion_double(0xFFF0000000000000UL),
+    conversion_double(0x7FF8000000000000UL),
+  ]
+  writer.add_dataset_typed(
+    "/generated/x87_16_le",
+    [extended_values.length().to_uint64()],
+    @lib.Datatype::write_float(16),
+    @lib.Float64Values(extended_values),
+    options=@lib.Hdf5ConversionOptions::lossy(),
+  )
+  writer.add_dataset_typed(
+    "/generated/x87_16_be",
+    [extended_values.length().to_uint64()],
+    @lib.Datatype::write_float_with_order(16, false),
+    @lib.Float64Values(extended_values),
+    options=@lib.Hdf5ConversionOptions::lossy(),
+  )
+  writer.add_dataset_typed(
+    "/generated/integer_be",
+    [4UL],
+    @lib.Datatype::write_integer_with_order(true, 2, false),
+    @lib.Int64Values([-32768L, -1L, 0L, 32767L]),
+  )
+  writer.add_dataset_typed(
+    "/generated/integer_padded",
+    [4UL],
+    @lib.Datatype::write_integer(true, 4, precision=12, offset=4),
+    @lib.Int64Values([-2048L, -1L, 0L, 2047L]),
+  )
+  writer.add_dataset_typed(
+    "/generated/integer_widened",
+    [3UL],
+    @lib.Datatype::write_integer(true, 16),
+    @lib.Int64Values([-1L, 0L, 1L]),
+  )
+  writer.add_dataset_typed(
+    "/generated/integer_unsigned_be",
+    [3UL],
+    @lib.Datatype::write_integer_with_order(false, 4, false),
+    @lib.Int64Values([0L, 1L, 2147483647L]),
+  )
+  let opaque4 = @lib.Datatype::write_opaque(4, "SRC")
+  let opaque6 = @lib.Datatype::write_opaque(6, "DST")
+  let opaque2 = @lib.Datatype::write_opaque(2, "DST")
+  let opaque_values : Array[@lib.DatasetValue] = [
+    @lib.Opaque(b"ABCD"),
+    @lib.Opaque(b"WXYZ"),
+  ]
+  writer.add_dataset_typed(
+    "/generated/opaque_widened",
+    [2UL],
+    opaque6,
+    @lib.StructuredValues(opaque4, opaque_values),
+    options=@lib.Hdf5ConversionOptions::lossy(),
+  )
+  writer.add_dataset_typed(
+    "/generated/opaque_truncated",
+    [2UL],
+    opaque2,
+    @lib.StructuredValues(opaque4, opaque_values),
+    options=@lib.Hdf5ConversionOptions::lossy(),
   )
   writer.add_dataset_typed(
     "/generated/wide",
@@ -226,6 +408,16 @@ fn conversion_write_generated(
     @lib.Complex128Values([(5.0, -6.0)]),
   )
   writer.add_dataset_typed(
+    "/generated/complex_float32",
+    [2UL],
+    @lib.Datatype::write_compound([
+      ("r", @lib.Datatype::write_float(4)),
+      ("i", @lib.Datatype::write_float(4)),
+    ]),
+    @lib.Complex128Values([(1.5, -2.25), (1.0 / 3.0, -7.0 / 9.0)]),
+    options=@lib.Hdf5ConversionOptions::lossy(),
+  )
+  writer.add_dataset_typed(
     "/generated/complex_array",
     [2UL],
     @lib.Datatype::write_array(@lib.Datatype::write_float(8), [2UL]),
@@ -254,6 +446,8 @@ fn conversion_write_generated(
 fn conversion_write_imported(
   writer : @lib.Hdf5Writer,
   fixture : @lib.Hdf5File,
+  numeric : @lib.Hdf5File?,
+  wide : @lib.Hdf5File?,
 ) -> Unit raise @lib.Hdf5Error {
   writer.add_group("/imported")
   let missing : @lib.Hdf5ConversionOptions = {
@@ -336,13 +530,78 @@ fn conversion_write_imported(
       conversion_structured_values(sequences.values),
     ),
   )
+  match numeric {
+    Some(numeric_fixture) => {
+      let int64_type = @lib.Datatype::write_integer(true, 8)
+      let uint64_type = @lib.Datatype::write_integer(false, 8)
+      let float64_type = @lib.Datatype::write_float(8)
+      for
+        (source, target) in [
+          ("/offset", "/imported/numeric_offset"),
+          ("/precision", "/imported/numeric_precision"),
+          ("/big_endian", "/imported/numeric_big_endian"),
+          ("/signed_20", "/imported/numeric_signed20"),
+        ] {
+        conversion_copy_dataset_typed(
+          writer, target, numeric_fixture, source, int64_type,
+        )
+      }
+      conversion_copy_dataset_typed(
+        writer, "/imported/numeric_unsigned40", numeric_fixture, "/unsigned_40_be",
+        uint64_type,
+      )
+      for
+        (source, target) in [
+          ("/half_special", "/imported/numeric_half"),
+          ("/custom_binary_float", "/imported/numeric_custom_float"),
+        ] {
+        conversion_copy_dataset_typed(
+          writer, target, numeric_fixture, source, float64_type,
+        )
+      }
+    }
+    None => ()
+  }
+  match wide {
+    Some(wide_fixture) => {
+      let int128_type = @lib.Datatype::write_integer(true, 16)
+      let uint128_type = @lib.Datatype::write_integer(false, 16)
+      let float64_type = @lib.Datatype::write_float(8)
+      for
+        (source, target, datatype) in [
+          ("/int128_le", "/imported/wide_int128_le", int128_type),
+          ("/int128_be", "/imported/wide_int128_be", int128_type),
+          ("/uint128_le", "/imported/wide_uint128_le", uint128_type),
+          ("/int96_offset_le", "/imported/wide_int96_offset", int128_type),
+        ] {
+        conversion_copy_dataset_typed(
+          writer, target, wide_fixture, source, datatype,
+        )
+      }
+      for
+        (source, target) in [
+          ("/float80_le", "/imported/wide_float80_le"),
+          ("/float80_be", "/imported/wide_float80_be"),
+        ] {
+        conversion_copy_dataset_typed(
+          writer,
+          target,
+          wide_fixture,
+          source,
+          float64_type,
+          options=@lib.Hdf5ConversionOptions::lossy(),
+        )
+      }
+    }
+    None => ()
+  }
 }
 
 ///|
 fn run(args : Array[String]) -> Int32 {
-  if args.length() != 3 {
+  if args.length() < 3 || args.length() > 5 {
     eprintln(
-      "usage: moon run src/cmd/conversion_demo -- <output.h5> <fixture.h5>",
+      "usage: moon run src/cmd/conversion_demo -- <output.h5> <datatypes.h5> [numeric-layouts.h5] [wide-numeric.h5]",
     )
     return 2
   }
@@ -350,10 +609,48 @@ fn run(args : Array[String]) -> Int32 {
     let writer = @lib.Hdf5Writer::new()
     conversion_write_generated(writer)
     let fixture = @lib.Hdf5File::parse(@fs.read_file_to_bytes(args[2]))
-    conversion_write_imported(writer, fixture)
+    let numeric = if args.length() > 3 {
+      Some(@lib.Hdf5File::parse(@fs.read_file_to_bytes(args[3])))
+    } else {
+      None
+    }
+    let wide = if args.length() > 4 {
+      Some(@lib.Hdf5File::parse(@fs.read_file_to_bytes(args[4])))
+    } else {
+      None
+    }
+    conversion_write_imported(writer, fixture, numeric, wide)
 
     let file = @lib.Hdf5File::parse(writer.encode())
-    let patched = file.patch_contiguous_dataset_typed(
+    let int64_type = @lib.Datatype::write_integer(true, 8)
+    let chunk_values = conversion_collect_chunk_values(
+      file,
+      "/generated/chunked",
+      [2UL],
+      int64_type,
+    )
+    let selection_values = conversion_collect_selection_values(
+      file,
+      "/generated/chunked",
+      @lib.Points([[4UL], [0UL], [2UL]]),
+      2,
+      int64_type,
+    )
+    let with_chunk_bridge = file.add_dataset_typed(
+      "/generated",
+      "chunk_bridge",
+      [5UL],
+      int64_type,
+      @lib.Int64Values(chunk_values),
+    )
+    let with_selection_bridge = @lib.Hdf5File::parse(with_chunk_bridge).add_dataset_typed(
+      "/generated",
+      "selection_bridge",
+      [3UL],
+      int64_type,
+      @lib.Int64Values(selection_values),
+    )
+    let patched = @lib.Hdf5File::parse(with_selection_bridge).patch_contiguous_dataset_typed(
       "/generated/narrowed",
       @lib.Int64Values([4L, 5L, 6L]),
     )

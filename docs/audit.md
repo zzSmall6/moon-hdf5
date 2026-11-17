@@ -8,12 +8,13 @@ profile and the documented post-profile extensions.
 The release gate passes with MoonBit 0.10.19 (`moon 0.1.20261102`),
 `moonbitlang/x@0.5.7` and `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 478 tests passed;
-- native: 478 tests passed;
+- wasm: 480 tests passed;
+- native: 480 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - h5py 3.13.0/HDF5 1.14.6 independently read, resized and patched release-demo
   output for all documented storage and metadata paths, including typed
-  datatype conversion in both directions.
+  datatype conversion in both directions, numeric-layout fixture round-trips
+  and bit-level binary16/x87 checks.
 
 No known common-file feature gap remains inside the boundary in
 [compatibility.md](compatibility.md). Unsupported input is rejected rather than
@@ -27,7 +28,7 @@ silently reinterpreted.
 | Datasets and indexes | Compact, contiguous, external raw data, virtual storage and every supported chunk index; sparse/undefined chunks, resize and append; h5py reads release demos after writer and editor output |
 | Virtual data | Multiple/strided mappings, fill gaps, nested virtual datasets, one unlimited axis, 4-/8-byte files and documented datatype conversions; new-file and edited outputs read by h5py |
 | Filters and fills | Shuffle, deflate, Fletcher32, N-bit, integer/f32/f64 scale-offset, masks, fill markers and custom encoders/decoders across indexes and shared pipelines |
-| Datatypes and values | Fixed-point, IEEE/extended floats, strings, compound, enum, array, time, bitfield, opaque, sequence, references and complex values, including nested variable-length/reference members; strict/lossy/no-conversion policies, full width/sign/byte-order and floating-precision conversion matrices, complex-to-array/compound bridging with component-precision checks, direct binary16 rounding, empty no-conversion identity checks, typed read/write/edit APIs and bounded conversion iterators |
+| Datatypes and values | Fixed-point, IEEE/extended floats, strings, compound, enum, array, time, bitfield, opaque, sequence, references and complex values, including nested variable-length/reference members; strict/lossy/no-conversion policies, full width/sign/byte-order and floating-precision conversion matrices, opaque resizing, complex-to-array/compound bridging with component-precision checks, IEEE binary16 rounding, malformed/deep target rejection, empty no-conversion identity checks, typed read/write/edit APIs and bounded conversion iterators |
 | References | Legacy and version-4 object/region/attribute references in datasets and attributes; same-file and registered external targets; 4-/8-byte slots; compact, contiguous and filtered targets |
 | Shared and dense metadata | SOHM table/indexes/heaps, wrappers v1–v3, shared attributes/fills/filter pipelines, dense direct/indirect blocks, huge objects and metadata v2 B-trees |
 | Editing | Value and attribute patching; dataset resize/append; attribute/link add, rename and delete; object creation/deletion; v1/v2 headers and symbol-table conversion; release outputs independently read by h5py |
@@ -50,6 +51,10 @@ silently reinterpreted.
 - Explicit conversion is not an unconditional cross-type cast. Reference kinds
   and widths must match, target enums must contain the converted value, and
   virtual-source vlen/reference conversions remain outside that mapping boundary.
+- Binary16 conversion follows IEEE round-to-nearest-even. HDF5 1.14.6's generic
+  converter differs at some subnormal ties and binary16 overflow values, so the
+  gate checks IEEE bit patterns directly and uses HDF5 conversion parity for
+  scalar float/integer layouts where 1.14.6 agrees.
 - Virtual datasets support the documented reader conversions and one unlimited
   axis. HDF5 1.14.6 point/block mappings, multiple unlimited axes and vlen or
   reference source conversions remain unsupported.

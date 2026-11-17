@@ -256,3 +256,36 @@ test "malformed structured datatype metadata is rejected" {
     Some(InvalidField("complex datatype size does not match its base type")),
   )
 }
+
+///|
+fn wrap_array_datatype(base : Bytes) -> Bytes {
+  let buffer = @buffer.Buffer::Buffer(size_hint=base.length() + 20)
+  buffer.write_byte(b'\x2a')
+  buffer.write_byte(b'\x00')
+  buffer.write_byte(b'\x00')
+  buffer.write_byte(b'\x00')
+  buffer.write_uint_le(1U)
+  buffer.write_byte(b'\x01')
+  buffer.write_byte(b'\x00')
+  buffer.write_byte(b'\x00')
+  buffer.write_byte(b'\x00')
+  buffer.write_uint_le(1U)
+  buffer.write_uint_le(0U)
+  buffer.write_bytes(base)
+  buffer.to_bytes()
+}
+
+///|
+test "datatype parsing bounds nested arrays without overflowing the stack" {
+  let mut valid_type = Datatype::write_integer(true, 1)
+  for _ in 0..<15 {
+    valid_type = Datatype::write_array(valid_type, [1UL])
+  }
+  let valid = encode_writer_datatype(valid_type)
+  assert_eq(parse_datatype_data(valid).class, 10)
+  let too_deep = wrap_array_datatype(valid)
+  assert_eq(
+    structured_datatype_error(too_deep),
+    Some(InvalidField("datatype nesting is too deep")),
+  )
+}

@@ -73,11 +73,14 @@ fi
 
 echo "==> Datatype conversion interoperability"
 moon run src/cmd/conversion_demo --target native -- \
-  "$conversion" testdata/datatypes_v114.h5
+  "$conversion" testdata/datatypes_v114.h5 testdata/numeric_layouts.h5 \
+  testdata/wide_numeric.h5
 if [ "${SKIP_H5PY:-0}" = "1" ]; then
   echo "==> Conversion verification skipped (SKIP_H5PY=1)"
 else
-  "$python" scripts/verify_conversion_interop.py "$conversion"
+  "$python" scripts/verify_conversion_interop.py "$conversion" \
+    testdata/datatypes_v114.h5 testdata/numeric_layouts.h5 \
+    testdata/wide_numeric.h5
 fi
 
 echo "==> User-block output"

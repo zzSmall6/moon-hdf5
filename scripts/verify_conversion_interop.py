@@ -2,11 +2,44 @@
 
 from __future__ import annotations
 
+import math
 import sys
+import warnings
 from pathlib import Path
 
 import h5py
 import numpy as np
+
+
+HALF_VALUES = [
+    0.0,
+    -0.0,
+    1.0 / 67108864.0,
+    1.0 / 33554432.0,
+    1.0 / 33554432.0 + 1.0 / 1152921504606846976.0,
+    3.0 / 33554432.0,
+    1.0 / 16777216.0,
+    1.0 + 1.0 / 2048.0,
+    1.0 + 1.0 / 2048.0 + 1.0 / 1099511627776.0,
+    1.0 + 1.0 / 1024.0,
+    65504.0,
+    65519.0,
+    65520.0,
+    -65504.0,
+    -65519.0,
+    -65520.0,
+]
+
+EXTENDED_VALUES = [
+    1.5,
+    -2.25,
+    1.0 / 3.0,
+    0.0,
+    -0.0,
+    math.inf,
+    -math.inf,
+    math.nan,
+]
 
 
 def _raw_values(dataset: h5py.Dataset) -> tuple[h5py.h5t.TypeID, list[bytes]]:
@@ -15,6 +48,18 @@ def _raw_values(dataset: h5py.Dataset) -> tuple[h5py.h5t.TypeID, list[bytes]]:
     count = space.get_simple_extent_npoints()
     payload = np.zeros((count, datatype.get_size()), dtype=np.uint8)
     dataset.id.read(h5py.h5s.ALL, h5py.h5s.ALL, payload, mtype=datatype)
+    space.close()
+    return datatype, [bytes(row) for row in payload]
+
+
+def _raw_attribute(
+    attribute: h5py.h5a.AttrID,
+) -> tuple[h5py.h5t.TypeID, list[bytes]]:
+    datatype = attribute.get_type()
+    space = attribute.get_space()
+    count = space.get_simple_extent_npoints()
+    payload = np.zeros((count, datatype.get_size()), dtype=np.uint8)
+    attribute.read(payload, mtype=datatype)
     space.close()
     return datatype, [bytes(row) for row in payload]
 
@@ -32,6 +77,49 @@ def _decode_integer(raw: bytes, datatype: h5py.h5t.TypeID, signed: bool) -> int:
     return value
 
 
+def _integer_values(dataset: h5py.Dataset) -> list[int]:
+    datatype, rows = _raw_values(dataset)
+    assert datatype.get_class() == h5py.h5t.INTEGER
+    signed = datatype.get_sign() > 0
+    return [_decode_integer(row, datatype, signed) for row in rows]
+
+
+def _hdf5_conversion_rows(
+    values: list[object], source_dtype: str, target_type: h5py.h5t.TypeID
+) -> list[bytes]:
+    array = np.asarray(values, dtype=source_dtype)
+    with h5py.File("conversion-reference.h5", "w", driver="core", backing_store=False) as reference:
+        dataset = reference.create_dataset("values", data=array)
+        payload = np.zeros((len(values), target_type.get_size()), dtype=np.uint8)
+        dataset.id.read(h5py.h5s.ALL, h5py.h5s.ALL, payload, mtype=target_type)
+    return [bytes(row) for row in payload]
+
+
+def _assert_hdf5_conversion(
+    dataset: h5py.Dataset, values: list[object], source_dtype: str
+) -> None:
+    target_type = dataset.id.get_type()
+    expected = _hdf5_conversion_rows(values, source_dtype, target_type)
+    _, actual = _raw_values(dataset)
+    assert actual == expected, (dataset.name, actual, expected)
+
+
+def _assert_float_vector(actual: np.ndarray, expected: list[float]) -> None:
+    assert len(actual) == len(expected), (actual, expected)
+    for index, (converted, source) in enumerate(zip(actual, expected)):
+        if math.isnan(source):
+            assert math.isnan(float(converted)), (index, converted)
+        elif math.isinf(source):
+            assert math.isinf(float(converted)), (index, converted)
+            assert math.copysign(1.0, float(converted)) == math.copysign(1.0, source)
+        else:
+            assert float(converted) == source, (index, converted, source)
+        if source == 0.0:
+            assert bool(np.signbit(converted)) == (
+                math.copysign(1.0, source) < 0.0
+            )
+
+
 def _assert_compound_value(actual: np.void, expected: dict[str, object]) -> None:
     for name, value in expected.items():
         if isinstance(value, np.ndarray):
@@ -42,7 +130,11 @@ def _assert_compound_value(actual: np.void, expected: dict[str, object]) -> None
             assert actual[name] == value, (name, actual[name], value)
 
 
-def verify(path: Path) -> None:
+def verify(
+    path: Path,
+    numeric_fixture: Path | None = None,
+    wide_fixture: Path | None = None,
+) -> None:
     if h5py.version.hdf5_version != "1.14.6":
         raise SystemExit(
             "conversion verification requires HDF5 1.14.6, found "
@@ -68,6 +160,81 @@ def verify(path: Path) -> None:
         np.testing.assert_array_equal(float32[:], np.array(
             [1.5, -2.25, 3.0], dtype="<f4"
         ))
+        _assert_hdf5_conversion(float32, [1.5, -2.25, 3.0], "<f8")
+
+        float16 = generated["float16_boundaries"]
+        assert float16.dtype == np.dtype("<f2")
+        float16_type, float16_rows = _raw_values(float16)
+        assert float16_type.get_class() == h5py.h5t.FLOAT
+        assert float16_type.get_size() == 2
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            expected_half = np.asarray(HALF_VALUES, dtype="<f8").astype("<f2")
+        assert [int.from_bytes(row, "little") for row in float16_rows] == (
+            expected_half.view("<u2").tolist()
+        )
+        _assert_float_vector(float16[:], [float(value) for value in expected_half])
+        half_attribute_type, half_attribute_rows = _raw_attribute(
+            float16.attrs.get_id("edge_values")
+        )
+        assert half_attribute_type.get_class() == h5py.h5t.FLOAT
+        assert half_attribute_type.get_size() == 2
+        assert [
+            int.from_bytes(row, "little") for row in half_attribute_rows
+        ] == expected_half[:5].view("<u2").tolist()
+
+        for name in ("x87_16_le", "x87_16_be"):
+            extended = generated[name]
+            extended_type = extended.id.get_type()
+            assert extended_type.get_class() == h5py.h5t.FLOAT
+            assert extended_type.get_size() == 16
+            assert extended_type.get_precision() == 80
+            assert extended_type.get_fields() == (79, 64, 15, 0, 63)
+            _assert_float_vector(extended[:], EXTENDED_VALUES)
+
+        integer_be = generated["integer_be"]
+        integer_be_type = integer_be.id.get_type()
+        assert integer_be_type.get_order() == h5py.h5t.ORDER_BE
+        assert _integer_values(integer_be) == [-32768, -1, 0, 32767]
+        _assert_hdf5_conversion(
+            integer_be, [-32768, -1, 0, 32767], "<i8"
+        )
+
+        padded = generated["integer_padded"]
+        padded_type = padded.id.get_type()
+        assert padded_type.get_precision() == 12
+        assert padded_type.get_offset() == 4
+        assert _integer_values(padded) == [-2048, -1, 0, 2047]
+        _assert_hdf5_conversion(
+            padded, [-2048, -1, 0, 2047], "<i8"
+        )
+
+        widened = generated["integer_widened"]
+        widened_type = widened.id.get_type()
+        assert widened_type.get_size() == 16
+        assert widened_type.get_precision() == 128
+        assert _integer_values(widened) == [-1, 0, 1]
+        _assert_hdf5_conversion(widened, [-1, 0, 1], "<i8")
+
+        unsigned_be = generated["integer_unsigned_be"]
+        unsigned_be_type = unsigned_be.id.get_type()
+        assert unsigned_be_type.get_order() == h5py.h5t.ORDER_BE
+        assert unsigned_be_type.get_sign() == 0
+        assert _integer_values(unsigned_be) == [0, 1, 2147483647]
+        _assert_hdf5_conversion(
+            unsigned_be, [0, 1, 2147483647], "<i8"
+        )
+
+        opaque_widened = generated["opaque_widened"]
+        widened_type, widened_rows = _raw_values(opaque_widened)
+        assert widened_type.get_class() == h5py.h5t.OPAQUE
+        assert widened_type.get_size() == 6
+        assert widened_rows == [b"ABCD\x00\x00", b"WXYZ\x00\x00"]
+        opaque_truncated = generated["opaque_truncated"]
+        truncated_type, truncated_rows = _raw_values(opaque_truncated)
+        assert truncated_type.get_class() == h5py.h5t.OPAQUE
+        assert truncated_type.get_size() == 2
+        assert truncated_rows == [b"AB", b"WX"]
 
         wide_type, wide_rows = _raw_values(generated["wide"])
         assert wide_type.get_class() == h5py.h5t.INTEGER
@@ -157,11 +324,36 @@ def verify(path: Path) -> None:
             np.array([[7.0, -8.0], [9.0, 10.0]], dtype="<f8"),
         )
 
+        complex_float32 = generated["complex_float32"]
+        assert complex_float32.dtype == np.dtype("<c8")
+        complex32_type = complex_float32.id.get_type()
+        assert [
+            complex32_type.get_member_name(index)
+            for index in range(complex32_type.get_nmembers())
+        ] == [b"r", b"i"]
+        assert complex32_type.get_member_type(0).get_size() == 4
+        assert complex32_type.get_member_type(1).get_size() == 4
+        np.testing.assert_array_equal(
+            complex_float32[:],
+            np.array(
+                [complex(1.5, -2.25), complex(1.0 / 3.0, -7.0 / 9.0)],
+                dtype="<c8",
+            ),
+        )
+
         chunked = generated["chunked"]
         assert chunked.dtype == np.dtype("<i4")
         assert chunked.chunks == (2,)
         assert chunked.compression == "gzip"
         np.testing.assert_array_equal(chunked[:], [10, 11, 12, 13, 14])
+        np.testing.assert_array_equal(
+            generated["chunk_bridge"][:],
+            [10, 11, 12, 13, 14],
+        )
+        np.testing.assert_array_equal(
+            generated["selection_bridge"][:],
+            [14, 10, 12],
+        )
 
         growing = generated["growing"]
         assert growing.dtype == np.dtype("<f8")
@@ -243,6 +435,51 @@ def verify(path: Path) -> None:
             np.array([(3, 3.5)], dtype=[("id", "<i8"), ("value", "<f8")]),
         )
 
+        if numeric_fixture is not None:
+            with h5py.File(numeric_fixture, "r") as numeric_source:
+                for output_name, source_name in (
+                    ("numeric_offset", "/offset"),
+                    ("numeric_precision", "/precision"),
+                    ("numeric_big_endian", "/big_endian"),
+                    ("numeric_signed20", "/signed_20"),
+                    ("numeric_unsigned40", "/unsigned_40_be"),
+                ):
+                    assert _integer_values(imported[output_name]) == _integer_values(
+                        numeric_source[source_name]
+                    ), output_name
+                for output_name, source_name in (
+                    ("numeric_half", "/half_special"),
+                    ("numeric_custom_float", "/custom_binary_float"),
+                ):
+                    output = imported[output_name]
+                    assert output.dtype == np.dtype("<f8")
+                    _assert_float_vector(
+                        output[:],
+                        [float(value) for value in numeric_source[source_name][:]],
+                    )
+
+        if wide_fixture is not None:
+            with h5py.File(wide_fixture, "r") as wide_source:
+                for output_name, source_name in (
+                    ("wide_int128_le", "/int128_le"),
+                    ("wide_int128_be", "/int128_be"),
+                    ("wide_uint128_le", "/uint128_le"),
+                    ("wide_int96_offset", "/int96_offset_le"),
+                ):
+                    assert _integer_values(imported[output_name]) == _integer_values(
+                        wide_source[source_name]
+                    ), output_name
+                for output_name, source_name in (
+                    ("wide_float80_le", "/float80_le"),
+                    ("wide_float80_be", "/float80_be"),
+                ):
+                    output = imported[output_name]
+                    assert output.dtype == np.dtype("<f8")
+                    _assert_float_vector(
+                        output[:],
+                        [float(value) for value in wide_source[source_name][:]],
+                    )
+
     print(
         f"Verified {path.name} conversion interoperability with h5py "
         f"{h5py.__version__} and HDF5 {h5py.version.hdf5_version}"
@@ -250,8 +487,11 @@ def verify(path: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) < 2 or len(sys.argv) > 5:
         raise SystemExit(
-            "usage: verify_conversion_interop.py <conversion-output.h5>"
+            "usage: verify_conversion_interop.py <conversion-output.h5> "
+            "[datatypes.h5] [numeric-layouts.h5] [wide-numeric.h5]"
         )
-    verify(Path(sys.argv[1]))
+    numeric = Path(sys.argv[3]) if len(sys.argv) > 3 else None
+    wide = Path(sys.argv[4]) if len(sys.argv) > 4 else None
+    verify(Path(sys.argv[1]), numeric, wide)
