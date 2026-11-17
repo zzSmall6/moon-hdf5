@@ -32,6 +32,7 @@ pub(all) struct Attribute {
   datatype : Datatype
   values : DatasetValues?
 }
+pub fn Attribute::convert_to(Self, Datatype, options? : Hdf5ConversionOptions) -> Self raise Hdf5Error
 pub fn Attribute::to_repr(Self) -> @debug.Repr
 
 #derive(Eq, @debug.Debug)
@@ -66,6 +67,7 @@ pub(all) struct Dataset {
   layout : DataLayout
   values : DatasetValues
 }
+pub fn Dataset::convert_to(Self, Datatype, options? : Hdf5ConversionOptions) -> Self raise Hdf5Error
 pub fn Dataset::to_repr(Self) -> @debug.Repr
 
 #derive(@debug.Debug)
@@ -74,7 +76,13 @@ pub(all) struct DatasetChunk {
   dimensions : Array[UInt64]
   values : DatasetValues
 }
+pub fn DatasetChunk::convert_to(Self, Datatype, Datatype, options? : Hdf5ConversionOptions) -> Self raise Hdf5Error
 pub fn DatasetChunk::to_repr(Self) -> @debug.Repr
+
+pub struct DatasetChunkConversionIterator {
+  // private fields
+}
+pub fn DatasetChunkConversionIterator::next(Self) -> DatasetChunk? raise Hdf5Error
 
 pub struct DatasetChunkIterator {
   // private fields
@@ -108,6 +116,11 @@ pub(all) enum DatasetSelection {
 }
 pub fn DatasetSelection::to_repr(Self) -> @debug.Repr
 
+pub struct DatasetSelectionConversionIterator {
+  // private fields
+}
+pub fn DatasetSelectionConversionIterator::next(Self) -> DatasetSelectionPage? raise Hdf5Error
+
 pub struct DatasetSelectionIterator {
   // private fields
 }
@@ -119,6 +132,7 @@ pub(all) struct DatasetSelectionPage {
   datatype : Datatype
   values : DatasetValues
 }
+pub fn DatasetSelectionPage::convert_to(Self, Datatype, options? : Hdf5ConversionOptions) -> Self raise Hdf5Error
 pub fn DatasetSelectionPage::to_repr(Self) -> @debug.Repr
 
 #derive(@debug.Debug)
@@ -127,6 +141,7 @@ pub(all) struct DatasetSelectionResult {
   datatype : Datatype
   values : DatasetValues
 }
+pub fn DatasetSelectionResult::convert_to(Self, Datatype, options? : Hdf5ConversionOptions) -> Self raise Hdf5Error
 pub fn DatasetSelectionResult::to_repr(Self) -> @debug.Repr
 
 #derive(Eq, @debug.Debug)
@@ -215,9 +230,13 @@ pub(all) struct Datatype {
   opaque_tag : String
   reference_kind : Int32
 }
+pub fn Datatype::can_convert_to(Self, Self, options? : Hdf5ConversionOptions) -> Bool
+pub fn Datatype::convert_value(Self, DatasetValue, Self, options? : Hdf5ConversionOptions) -> DatasetValue raise Hdf5Error
+pub fn Datatype::convert_values(Self, DatasetValues, Self, options? : Hdf5ConversionOptions) -> DatasetValues raise Hdf5Error
 pub fn Datatype::to_repr(Self) -> @debug.Repr
 pub fn Datatype::write_array(Self, Array[UInt64]) -> Self raise Hdf5Error
 pub fn Datatype::write_bitfield(Int32, Int32, offset? : Int32, little_endian? : Bool) -> Self raise Hdf5Error
+pub fn Datatype::write_complex(Self) -> Self raise Hdf5Error
 pub fn Datatype::write_compound(Array[(String, Self)]) -> Self raise Hdf5Error
 pub fn Datatype::write_enum(Self, Array[EnumMember]) -> Self raise Hdf5Error
 pub fn Datatype::write_fixed_string(Int32) -> Self raise Hdf5Error
@@ -270,6 +289,28 @@ pub fn Hdf5AttributeReferenceTarget::equal(Self, Self) -> Bool
 pub fn Hdf5AttributeReferenceTarget::not_equal(Self, Self) -> Bool
 pub fn Hdf5AttributeReferenceTarget::to_repr(Self) -> @debug.Repr
 
+#derive(Eq, @debug.Debug)
+pub(all) enum Hdf5ConversionMode {
+  Strict
+  Lossy
+  NoConversion
+}
+pub fn Hdf5ConversionMode::equal(Self, Self) -> Bool
+pub fn Hdf5ConversionMode::not_equal(Self, Self) -> Bool
+pub fn Hdf5ConversionMode::to_repr(Self) -> @debug.Repr
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Hdf5ConversionOptions {
+  mode : Hdf5ConversionMode
+  allow_missing_compound_members : Bool
+}
+pub fn Hdf5ConversionOptions::equal(Self, Self) -> Bool
+pub fn Hdf5ConversionOptions::lossy() -> Self
+pub fn Hdf5ConversionOptions::none() -> Self
+pub fn Hdf5ConversionOptions::not_equal(Self, Self) -> Bool
+pub fn Hdf5ConversionOptions::strict() -> Self
+pub fn Hdf5ConversionOptions::to_repr(Self) -> @debug.Repr
+
 pub(all) struct Hdf5ExternalSlot {
   file_name : String
   file_offset : UInt64
@@ -280,32 +321,49 @@ pub struct Hdf5File {
   // private fields
 }
 pub fn Hdf5File::add_attribute(Self, String, String, Array[UInt64], Hdf5WriteValues) -> Bytes raise Hdf5Error
+pub fn Hdf5File::add_attribute_typed(Self, String, String, Array[UInt64], Datatype, Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_chunked_dataset(Self, String, String, Array[UInt64], Array[UInt32], Hdf5WriteValues, fill_value? : Hdf5WriteValues, maximum_dimensions? : Array[UInt64?], filters? : Array[Hdf5WriteFilter], custom_filters? : Array[&Hdf5CustomFilter]) -> Bytes raise Hdf5Error
+pub fn Hdf5File::add_chunked_dataset_typed(Self, String, String, Array[UInt64], Array[UInt32], Datatype, Hdf5WriteValues, fill_value? : Hdf5WriteValues, maximum_dimensions? : Array[UInt64?], filters? : Array[Hdf5WriteFilter], custom_filters? : Array[&Hdf5CustomFilter], options? : Hdf5ConversionOptions) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_committed_datatype(Self, String, String, Datatype) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_compact_dataset(Self, String, String, Array[UInt64], Hdf5WriteValues, fill_value? : Hdf5WriteValues) -> Bytes raise Hdf5Error
+pub fn Hdf5File::add_compact_dataset_typed(Self, String, String, Array[UInt64], Datatype, Hdf5WriteValues, fill_value? : Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_dataset(Self, String, String, Array[UInt64], Hdf5WriteValues, fill_value? : Hdf5WriteValues) -> Bytes raise Hdf5Error
+pub fn Hdf5File::add_dataset_typed(Self, String, String, Array[UInt64], Datatype, Hdf5WriteValues, fill_value? : Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_external_dataset(Self, String, String, Array[UInt64], Hdf5WriteValues, Array[Hdf5ExternalSlot], fill_value? : Hdf5WriteValues) -> Bytes raise Hdf5Error
+pub fn Hdf5File::add_external_dataset_typed(Self, String, String, Array[UInt64], Datatype, Hdf5WriteValues, Array[Hdf5ExternalSlot], fill_value? : Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_external_link(Self, String, String, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_group(Self, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_hard_link(Self, String, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_soft_link(Self, String, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::add_virtual_dataset(Self, String, String, Array[UInt64], Datatype, Array[Hdf5VirtualMapping], fill_value? : DatasetValue, maximum_dimensions? : Array[UInt64?]) -> Bytes raise Hdf5Error
+pub fn Hdf5File::add_virtual_dataset_typed(Self, String, String, Array[UInt64], Datatype, Array[Hdf5VirtualMapping], fill_value? : Hdf5WriteValues, maximum_dimensions? : Array[UInt64?], options? : Hdf5ConversionOptions) -> Bytes raise Hdf5Error
 pub fn Hdf5File::address_size(Self) -> Int32
 pub fn Hdf5File::append_dataset(Self, String, Array[UInt64], Hdf5WriteValues) -> Bytes raise Hdf5Error
+pub fn Hdf5File::append_dataset_typed(Self, String, Array[UInt64], Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Bytes raise Hdf5Error
 pub fn Hdf5File::attributes(Self, String) -> Array[Attribute] raise Hdf5Error
 pub fn Hdf5File::chunk_iterator(Self, String, Array[UInt64]) -> DatasetChunkIterator raise Hdf5Error
+pub fn Hdf5File::chunk_iterator_as(Self, String, Array[UInt64], Datatype, options? : Hdf5ConversionOptions) -> DatasetChunkConversionIterator raise Hdf5Error
 pub fn Hdf5File::delete_attribute(Self, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::delete_link(Self, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::delete_object(Self, String) -> Bytes raise Hdf5Error
+pub fn Hdf5File::exists(Self, String) -> Bool
+pub fn Hdf5File::object_kind_at(Self, String) -> Hdf5ObjectKind raise Hdf5Error
 pub fn Hdf5File::parse(Bytes) -> Self raise Hdf5Error
 pub fn Hdf5File::parse_source(&Hdf5Source) -> Self raise Hdf5Error
 pub fn Hdf5File::patch_attribute_values(Self, String, String, Hdf5WriteValues) -> Bytes raise Hdf5Error
+pub fn Hdf5File::patch_attribute_values_typed(Self, String, String, Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Bytes raise Hdf5Error
 pub fn Hdf5File::patch_contiguous_dataset(Self, String, Hdf5WriteValues) -> Bytes raise Hdf5Error
+pub fn Hdf5File::patch_contiguous_dataset_typed(Self, String, Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Bytes raise Hdf5Error
 pub fn Hdf5File::patch_dataset_values(Self, String, Hdf5WriteValues) -> Bytes raise Hdf5Error
+pub fn Hdf5File::patch_dataset_values_typed(Self, String, Datatype, Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Bytes raise Hdf5Error
+pub fn Hdf5File::read_attribute(Self, String, String) -> Attribute raise Hdf5Error
+pub fn Hdf5File::read_attribute_as(Self, String, String, Datatype, options? : Hdf5ConversionOptions) -> Attribute raise Hdf5Error
 pub fn Hdf5File::read_attribute_reference(Self, Bytes) -> Attribute? raise Hdf5Error
 pub fn Hdf5File::read_dataset(Self, String) -> Dataset raise Hdf5Error
+pub fn Hdf5File::read_dataset_as(Self, String, Datatype, options? : Hdf5ConversionOptions) -> Dataset raise Hdf5Error
 pub fn Hdf5File::read_dataset_metadata(Self, String) -> DatasetMetadata raise Hdf5Error
 pub fn Hdf5File::read_dataset_selection(Self, String, DatasetSelection) -> DatasetSelectionResult raise Hdf5Error
+pub fn Hdf5File::read_dataset_selection_as(Self, String, DatasetSelection, Datatype, options? : Hdf5ConversionOptions) -> DatasetSelectionResult raise Hdf5Error
 pub fn Hdf5File::read_region_reference(Self, Bytes) -> DatasetSelectionResult? raise Hdf5Error
 pub fn Hdf5File::rename_attribute(Self, String, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::rename_link(Self, String, String, String) -> Bytes raise Hdf5Error
@@ -315,6 +373,7 @@ pub fn Hdf5File::resolve_attribute_reference(Self, Bytes) -> Hdf5AttributeRefere
 pub fn Hdf5File::resolve_object_reference(Self, Bytes) -> Hdf5ReferenceTarget? raise Hdf5Error
 pub fn Hdf5File::resolve_region_reference(Self, Bytes) -> Hdf5RegionReferenceTarget? raise Hdf5Error
 pub fn Hdf5File::selection_iterator(Self, String, DatasetSelection, Int32) -> DatasetSelectionIterator raise Hdf5Error
+pub fn Hdf5File::selection_iterator_as(Self, String, DatasetSelection, Int32, Datatype, options? : Hdf5ConversionOptions) -> DatasetSelectionConversionIterator raise Hdf5Error
 pub fn Hdf5File::superblock_version(Self) -> Int32
 pub fn Hdf5File::walk(Self) -> Array[Hdf5Node] raise Hdf5Error
 pub fn Hdf5File::with_custom_filter(Self, &Hdf5CustomFilter) -> Self raise Hdf5Error
@@ -421,18 +480,26 @@ pub fn Hdf5Resolver::add_custom_filter(Self, &Hdf5CustomFilter) -> Unit raise Hd
 pub fn Hdf5Resolver::add_source(Self, String, &Hdf5Source) -> Unit raise Hdf5Error
 pub fn Hdf5Resolver::attributes(Self, String) -> Array[Attribute] raise Hdf5Error
 pub fn Hdf5Resolver::chunk_iterator(Self, String, Array[UInt64]) -> DatasetChunkIterator raise Hdf5Error
+pub fn Hdf5Resolver::chunk_iterator_as(Self, String, Array[UInt64], Datatype, options? : Hdf5ConversionOptions) -> DatasetChunkConversionIterator raise Hdf5Error
+pub fn Hdf5Resolver::exists(Self, String) -> Bool
 pub fn Hdf5Resolver::new(&Hdf5Source) -> Self
+pub fn Hdf5Resolver::object_kind_at(Self, String) -> Hdf5ObjectKind raise Hdf5Error
 pub fn Hdf5Resolver::open(Self, String) -> Hdf5File raise Hdf5Error
+pub fn Hdf5Resolver::read_attribute(Self, String, String) -> Attribute raise Hdf5Error
+pub fn Hdf5Resolver::read_attribute_as(Self, String, String, Datatype, options? : Hdf5ConversionOptions) -> Attribute raise Hdf5Error
 pub fn Hdf5Resolver::read_attribute_reference(Self, Bytes) -> Attribute? raise Hdf5Error
 pub fn Hdf5Resolver::read_dataset(Self, String) -> Dataset raise Hdf5Error
+pub fn Hdf5Resolver::read_dataset_as(Self, String, Datatype, options? : Hdf5ConversionOptions) -> Dataset raise Hdf5Error
 pub fn Hdf5Resolver::read_dataset_metadata(Self, String) -> DatasetMetadata raise Hdf5Error
 pub fn Hdf5Resolver::read_dataset_selection(Self, String, DatasetSelection) -> DatasetSelectionResult raise Hdf5Error
+pub fn Hdf5Resolver::read_dataset_selection_as(Self, String, DatasetSelection, Datatype, options? : Hdf5ConversionOptions) -> DatasetSelectionResult raise Hdf5Error
 pub fn Hdf5Resolver::read_region_reference(Self, Bytes) -> DatasetSelectionResult? raise Hdf5Error
 pub fn Hdf5Resolver::resolve(Self, String) -> Hdf5ResolvedNode raise Hdf5Error
 pub fn Hdf5Resolver::resolve_attribute_reference(Self, Bytes) -> Hdf5ResolvedAttributeReference? raise Hdf5Error
 pub fn Hdf5Resolver::resolve_object_reference(Self, Bytes) -> Hdf5ResolvedObjectReference? raise Hdf5Error
 pub fn Hdf5Resolver::resolve_region_reference(Self, Bytes) -> Hdf5ResolvedRegionReference? raise Hdf5Error
 pub fn Hdf5Resolver::selection_iterator(Self, String, DatasetSelection, Int32) -> DatasetSelectionIterator raise Hdf5Error
+pub fn Hdf5Resolver::selection_iterator_as(Self, String, DatasetSelection, Int32, Datatype, options? : Hdf5ConversionOptions) -> DatasetSelectionConversionIterator raise Hdf5Error
 
 #derive(Eq, @debug.Debug)
 pub(all) struct Hdf5VirtualMapping {
@@ -479,25 +546,36 @@ pub(all) enum Hdf5WriteValues {
   Complex128Values(Array[(Double, Double)])
   StructuredValues(Datatype, Array[DatasetValue])
 }
+pub fn Hdf5WriteValues::convert_to(Self, Datatype, options? : Hdf5ConversionOptions) -> Self raise Hdf5Error
+pub fn Hdf5WriteValues::memory_datatype(Self) -> Datatype raise Hdf5Error
+pub fn Hdf5WriteValues::to_dataset_values(Self) -> Array[DatasetValue]
 pub fn Hdf5WriteValues::to_repr(Self) -> @debug.Repr
 
 pub struct Hdf5Writer {
   // private fields
 }
 pub fn Hdf5Writer::add_attribute(Self, String, String, Array[UInt64], Hdf5WriteValues) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::add_attribute_typed(Self, String, String, Array[UInt64], Datatype, Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_chunked_dataset(Self, String, Array[UInt64], Array[UInt32], Hdf5WriteValues, fill_value? : Hdf5WriteValues, filters? : Array[Hdf5WriteFilter]) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::add_chunked_dataset_typed(Self, String, Array[UInt64], Array[UInt32], Datatype, Hdf5WriteValues, fill_value? : Hdf5WriteValues, filters? : Array[Hdf5WriteFilter], options? : Hdf5ConversionOptions) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_committed_datatype(Self, String, Datatype) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_compact_dataset(Self, String, Array[UInt64], Hdf5WriteValues, fill_value? : Hdf5WriteValues) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::add_compact_dataset_typed(Self, String, Array[UInt64], Datatype, Hdf5WriteValues, fill_value? : Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_custom_filter(Self, &Hdf5CustomFilter) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_dataset(Self, String, Array[UInt64], Hdf5WriteValues, fill_value? : Hdf5WriteValues) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::add_dataset_typed(Self, String, Array[UInt64], Datatype, Hdf5WriteValues, fill_value? : Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_extensible_dataset(Self, String, Array[UInt64], Array[UInt64?], Array[UInt32], Hdf5WriteValues, fill_value? : Hdf5WriteValues, filters? : Array[Hdf5WriteFilter]) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::add_extensible_dataset_typed(Self, String, Array[UInt64], Array[UInt64?], Array[UInt32], Datatype, Hdf5WriteValues, fill_value? : Hdf5WriteValues, filters? : Array[Hdf5WriteFilter], options? : Hdf5ConversionOptions) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_external_dataset(Self, String, Array[UInt64], Hdf5WriteValues, Array[Hdf5ExternalSlot], fill_value? : Hdf5WriteValues) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::add_external_dataset_typed(Self, String, Array[UInt64], Datatype, Hdf5WriteValues, Array[Hdf5ExternalSlot], fill_value? : Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_external_link(Self, String, String, String, String) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_external_source(Self, String, &Hdf5Source) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_group(Self, String) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_soft_link(Self, String, String, String) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::add_virtual_dataset(Self, String, Array[UInt64], Datatype, Array[Hdf5VirtualMapping], fill_value? : DatasetValue, maximum_dimensions? : Array[UInt64?]) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::add_virtual_dataset_typed(Self, String, Array[UInt64], Datatype, Array[Hdf5VirtualMapping], fill_value? : Hdf5WriteValues, maximum_dimensions? : Array[UInt64?], options? : Hdf5ConversionOptions) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::append_dataset(Self, String, Array[UInt64], Hdf5WriteValues) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::append_dataset_typed(Self, String, Array[UInt64], Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::encode(Self) -> Bytes raise Hdf5Error
 pub fn Hdf5Writer::new() -> Self
 pub fn Hdf5Writer::resize_dataset(Self, String, Array[UInt64]) -> Unit raise Hdf5Error
@@ -508,6 +586,7 @@ pub fn Hdf5Writer::set_filter_sharing(Self, Bool) -> Unit
 pub fn Hdf5Writer::set_user_block(Self, Int32) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::set_user_block_content(Self, Bytes) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::write_dataset_slab(Self, String, Array[UInt64], Array[UInt64], Hdf5WriteValues) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::write_dataset_slab_typed(Self, String, Array[UInt64], Array[UInt64], Datatype, Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Unit raise Hdf5Error
 
 // Type aliases
 

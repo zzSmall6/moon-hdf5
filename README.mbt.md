@@ -19,8 +19,8 @@ verification notes. Public APIs are listed in
 - Existing files support value and attribute patching, resize and append,
   attribute/link add, rename and delete, and object creation/deletion. Every
   edit returns a new byte image.
-- The release gate passes 459 tests on both wasm and native, plus independent
-  h5py 3.13.0/HDF5 1.14.6 interoperability checks.
+- The release gate passes 467 tests on each target, plus independent h5py
+  3.13.0/HDF5 1.14.6 interoperability checks.
 
 ## Installation
 
@@ -60,6 +60,26 @@ let attributes = file.attributes("/matrix")
 version-4 references and links into external files registered with
 `add_source`; reader-side custom chunk and metadata filters are registered
 through `with_custom_filter` or `add_custom_filter`.
+
+## Datatype Conversion
+
+`read_dataset_as`, `read_dataset_selection_as`, `read_attribute_as` and
+`Dataset::convert_to` convert decoded values to an explicit memory datatype.
+The default `Strict` mode rejects narrowing, fractional integer results,
+precision loss and out-of-range values. `Lossy` applies HDF5-style wrapping or
+truncation; `NoConversion` requires identical datatypes. Writer and editor
+`*_typed` methods convert memory values for any supported storage layout, and
+`chunk_iterator_as` / `selection_iterator_as` convert bounded pages.
+
+```moonbit nocheck
+///|
+let floats = file.read_dataset_as("/matrix", @lib.Datatype::write_float(8))
+let compact = file.read_dataset_as(
+  "/matrix",
+  @lib.Datatype::write_float(4),
+  options=@lib.Hdf5ConversionOptions::lossy(),
+)
+```
 
 ## Writing
 
@@ -146,8 +166,7 @@ arguments.
   SWMR, parallel HDF5 and in-file storage reclamation are outside the profile.
 - APIs are memory resident, edits are append-only, and external sources require
   caller registration and caller-managed files.
-- Virtual/external mappings, dense metadata, custom filters and complex value
-  conversions follow the exact constraints in the
+- Mapping, storage and conversion constraints are listed in the
   [compatibility matrix](docs/compatibility.md).
 - Writer limits include 65,524-byte compact payloads, dense attributes up to
   65,535 records and user blocks up to 1 GiB. Four-byte files reject structured

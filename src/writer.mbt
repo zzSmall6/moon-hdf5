@@ -444,6 +444,17 @@ pub fn Datatype::write_array(
 }
 
 ///|
+/// Creates a complex datatype with a floating-point component type.
+pub fn Datatype::write_complex(base : Datatype) -> Datatype raise Hdf5Error {
+  guard base.class == 1 && base.size > 0 && base.size <= 0x7FFFFFFF / 2 else {
+    raise InvalidArgument(
+      "writer complex datatype requires a floating-point base",
+    )
+  }
+  writer_datatype(11, base.size * 2, version=4, base_types=[base])
+}
+
+///|
 /// Creates an enumeration datatype with an integer base type.
 pub fn Datatype::write_enum(
   base : Datatype,
@@ -1452,6 +1463,18 @@ fn validate_writer_datatype(
         )
       }
     }
+    11 => {
+      guard datatype.base_types.length() == 1 && datatype.size % 2 == 0 else {
+        raise InvalidArgument("writer complex datatype is invalid")
+      }
+      let base = datatype.base_types[0]
+      guard base.class == 1 && base.size * 2 == datatype.size else {
+        raise InvalidArgument(
+          "complex datatype size does not match its floating-point base",
+        )
+      }
+      validate_writer_datatype(base, depth + 1, reference_address_size~)
+    }
     _ =>
       raise InvalidArgument("writer structured datatype class is unsupported")
   }
@@ -1720,6 +1743,13 @@ fn validate_structured_value(
       }
       for item in items {
         validate_structured_value(item, base, depth + 1)
+      }
+    }
+    11 => {
+      guard value is Complex(_, _) && datatype.base_types.length() == 1 else {
+        raise InvalidArgument(
+          "structured complex value or datatype has the wrong kind",
+        )
       }
     }
     _ =>
@@ -2394,9 +2424,7 @@ fn writer_values_contain_vlen(values : Hdf5WriteValues) -> Bool {
 }
 
 ///|
-fn writer_values_nbit_datatype(
-  values : Hdf5WriteValues,
-) -> Datatype raise Hdf5Error {
+fn writer_values_datatype(values : Hdf5WriteValues) -> Datatype raise Hdf5Error {
   match values {
     Int8Values(_) => Datatype::write_integer(true, 1)
     Int16Values(_) => Datatype::write_integer(true, 2)
@@ -2570,7 +2598,7 @@ fn validate_writer_filters_for_values(
   let has_nbit = filters.any(filter => filter is Nbit)
   let has_shuffle = filters.any(filter => filter is Shuffle)
   if has_nbit {
-    let datatype = writer_values_nbit_datatype(values)
+    let datatype = writer_values_datatype(values)
     guard nbit_datatype_supported(datatype, 0) else {
       raise UnsupportedFeature("N-bit does not support this datatype")
     }
@@ -2991,11 +3019,28 @@ fn default_structured_value(
   datatype : Datatype,
 ) -> DatasetValue raise Hdf5Error {
   match datatype.class {
-    0 => if datatype.signed { SignedInteger(0L) } else { UnsignedInteger(0UL) }
+    0 =>
+      if datatype.size > 8 {
+        BigInteger(@bigint.BigInt::from_int(0))
+      } else if datatype.signed {
+        SignedInteger(0L)
+      } else {
+        UnsignedInteger(0UL)
+      }
     1 => FloatingPoint(0.0)
-    2 => Time(0UL)
+    2 =>
+      if datatype.size > 8 {
+        BigTime(@bigint.BigInt::from_int(0))
+      } else {
+        Time(0UL)
+      }
     3 => Text("")
-    4 => Bitfield(0UL)
+    4 =>
+      if datatype.size > 8 {
+        BigBitfield(@bigint.BigInt::from_int(0))
+      } else {
+        Bitfield(0UL)
+      }
     5 => Opaque(Bytes::make(datatype.size, b'\x00'))
     6 =>
       Compound(
@@ -3026,13 +3071,14 @@ fn default_structured_value(
       }
       Enumeration(datatype.enum_members[index].name)
     }
-    9 => Sequence([])
+    9 => if datatype.vlen_is_string { Text("") } else { Sequence([]) }
     10 => {
       let base = datatype.base_types[0]
       Elements(
         Array::make(datatype.size / base.size, default_structured_value(base)),
       )
     }
+    11 => Complex(0.0, 0.0)
     _ =>
       raise InvalidArgument("writer structured datatype class is unsupported")
   }
@@ -3946,6 +3992,19 @@ fn encode_writer_datatype(
       )
       buffer.to_bytes()
     }
+    11 => {
+      let buffer = @buffer.Buffer::Buffer()
+      buffer.write_byte(((datatype.version << 4) | 11).to_byte())
+      buffer.write_byte(b'\x01')
+      buffer.write_byte(b'\x00')
+      buffer.write_byte(b'\x00')
+      buffer.write_uint_le(datatype.size.reinterpret_as_uint())
+      writer_write_bytes(
+        buffer,
+        encode_writer_datatype(datatype.base_types[0], reference_address_size~),
+      )
+      buffer.to_bytes()
+    }
     _ => raise InvalidField("writer structured datatype class is unsupported")
   }
 }
@@ -4383,6 +4442,34 @@ fn encode_structured_value(
               ),
             )
           }
+        _ => ()
+      }
+    11 =>
+      match (datatype.base_types[0], value) {
+        (base, Complex(real, imaginary)) => {
+          writer_write_bytes(
+            buffer,
+            encode_structured_value(
+              base,
+              FloatingPoint(real),
+              heap~,
+              objects~,
+              reference_address_size~,
+              vlen_address_size~,
+            ),
+          )
+          writer_write_bytes(
+            buffer,
+            encode_structured_value(
+              base,
+              FloatingPoint(imaginary),
+              heap~,
+              objects~,
+              reference_address_size~,
+              vlen_address_size~,
+            ),
+          )
+        }
         _ => ()
       }
     _ => raise InvalidField("writer structured datatype class is unsupported")
@@ -5473,7 +5560,7 @@ fn encode_filter_pipeline(
         buffer.write_uint16_le(0)
       }
       Nbit => {
-        let datatype = writer_values_nbit_datatype(values)
+        let datatype = writer_values_datatype(values)
         guard datatype.size == element_size else {
           raise InvalidField("N-bit datatype size mismatch")
         }
@@ -5782,7 +5869,7 @@ fn encode_dataset_chunks(
         filters,
         filter_mask,
         encoded.element_size,
-        writer_values_nbit_datatype(dataset.values),
+        writer_values_datatype(dataset.values),
         dataset.values,
         fill,
         custom_filters,

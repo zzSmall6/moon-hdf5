@@ -47,6 +47,17 @@ array, time, bitfield, opaque, sequence, reference and complex classes.
 Fixed-point values honor byte order, offset, precision, sign extension and
 padding. Variable-length values fetch global-heap objects on demand.
 
+Explicit conversion reuses the same datatype model. `Strict` requires
+type-level losslessness and rejects narrowing, fractional integer results,
+precision loss and range overflow. `Lossy` applies HDF5-style wrapping,
+truncation and zero-fill, while `NoConversion` accepts only identical layouts.
+Compound members are matched by name; missing target members require an option
+and receive a typed default. Complex class-11, compound and two-element array
+forms can bridge to one another. Dataset, selection, tile, page and attribute
+`convert_to` methods share the converter; `read_*_as`, typed writer/editor
+methods and `chunk_iterator_as` / `selection_iterator_as` expose it across the
+API without changing storage layout.
+
 Legacy object references resolve to an object header and deterministic hard-link
 path. Legacy dataset-region references resolve a heap selection through the
 normal dataset selection path. Version-4 object references carry an address
@@ -112,6 +123,9 @@ validates compounds, enums, arrays, sequences, variable-length values and
 references. Variable-length strings and sequences use 16-byte descriptors and
 shared global heaps. References resolve after final layout, so forward targets
 work. Region references use a dedicated heap to avoid mixing payload types.
+Typed creation and editing methods convert memory values before the normal
+writer validation and encoding, so contiguous, compact, chunked, external and
+virtual layouts share the same conversion rules.
 
 Built-in filters cover shuffle, deflate, Fletcher32, N-bit and scale-offset.
 Caller filters are registered before use, receive the chunk parameters and
