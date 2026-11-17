@@ -25,7 +25,7 @@ verification notes. Public APIs are listed in
 ## Installation
 
 ```sh
-moon add Zz04321/moon-hdf5@0.4.1
+moon add Zz04321/moon-hdf5@0.4.2
 moon update
 ```
 

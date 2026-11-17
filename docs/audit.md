@@ -69,5 +69,5 @@ silently reinterpreted.
 ## Release history
 
 Historical milestone details are available in the Git history. Version `0.4.1`
-was published before the explicit conversion work; the current worktree is
-GitHub-only until a later registry release.
+was published before the explicit conversion work; `0.4.2` is the registry
+release containing the completed datatype conversion and API layer.
