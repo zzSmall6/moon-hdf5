@@ -81,6 +81,10 @@ let compact = file.read_dataset_as(
 )
 ```
 
+The typed APIs cover every supported storage layout. The release gate checks
+both MoonBit-written conversions with h5py and conversion of an HDF5 1.14.6
+fixture read back through MoonBit.
+
 ## Writing
 
 ```moonbit nocheck

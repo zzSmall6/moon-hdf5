@@ -83,6 +83,7 @@ Independent verifiers run with the HDF5 1.14.6 environment:
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_wide_numeric_fixture.py testdata/wide_numeric.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_virtual_dataset_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_size_matrix_fixtures.py
+/tmp/moon-hdf5-h5py/bin/python scripts/verify_conversion_interop.py /tmp/conversion.h5
 ```
 
 Regeneration is not part of the release gate; `scripts/release_check.sh`

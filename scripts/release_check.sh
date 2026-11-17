@@ -47,7 +47,8 @@ created=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created.XXXXXX")
 created8=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-created8.XXXXXX")
 deleted=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-deleted.XXXXXX")
 resize_append=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-resize-append.XXXXXX")
-trap 'rm -f "$output" "$user_block_new" "$user_block_edited" "$user_block_existing" "$dense_links" "$dense_links_edited" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$virtual_new" "$virtual_edited" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$created.external-refs.bin" "$created8.external-refs.bin" "$deleted" "$resize_append"; rm -rf "$external_references"' EXIT HUP INT TERM
+conversion=$(mktemp "${TMPDIR:-/tmp}/moon-hdf5-conversion.XXXXXX")
+trap 'rm -f "$output" "$user_block_new" "$user_block_edited" "$user_block_existing" "$dense_links" "$dense_links_edited" "$symbol_compact" "$symbol_dense" "$filtered_links" "$extended_floats" "$virtual_new" "$virtual_edited" "$created" "$created8" "$created.external.bin" "$created8.external.bin" "$created.external-refs.bin" "$created8.external-refs.bin" "$deleted" "$resize_append" "$conversion"; rm -rf "$external_references"' EXIT HUP INT TERM
 moon run src/cmd/write_demo --target native -- "$output"
 
 python=${H5PY_PYTHON:-}
@@ -68,6 +69,15 @@ else
     exit 1
   fi
   "$python" scripts/verify_writer_output.py "$output"
+fi
+
+echo "==> Datatype conversion interoperability"
+moon run src/cmd/conversion_demo --target native -- \
+  "$conversion" testdata/datatypes_v114.h5
+if [ "${SKIP_H5PY:-0}" = "1" ]; then
+  echo "==> Conversion verification skipped (SKIP_H5PY=1)"
+else
+  "$python" scripts/verify_conversion_interop.py "$conversion"
 fi
 
 echo "==> User-block output"

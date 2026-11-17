@@ -12,7 +12,8 @@ The release gate passes with MoonBit 0.10.19 (`moon 0.1.20261102`),
 - native: 467 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - h5py 3.13.0/HDF5 1.14.6 independently read, resized and patched release-demo
-  output for all documented storage and metadata paths.
+  output for all documented storage and metadata paths, including typed
+  datatype conversion in both directions.
 
 No known common-file feature gap remains inside the boundary in
 [compatibility.md](compatibility.md). Unsupported input is rejected rather than
