@@ -19,7 +19,7 @@ verification notes. Public APIs are listed in
 - Existing files support value and attribute patching, resize and append,
   attribute/link add, rename and delete, and object creation/deletion. Every
   edit returns a new byte image.
-- The release gate passes 467 tests on each target, plus independent h5py
+- The release gate passes 473 tests on each target, plus independent h5py
   3.13.0/HDF5 1.14.6 interoperability checks.
 
 ## Installation
