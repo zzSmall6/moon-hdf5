@@ -157,12 +157,73 @@ fn matrix_assert_true(condition : Bool, context : String) -> Unit {
 ///|
 fn matrix_round_float(value : Double, target : Datatype) -> Double {
   if target.size == 2 {
-    float16_to_float(writer_float16_bits(Float::from_double(value))).to_double()
+    float16_to_float(writer_float16_bits_from_double(value)).to_double()
   } else if target.size == 4 {
     Float::from_double(value).to_double()
   } else {
     value
   }
+}
+
+///|
+test "half conversion avoids double rounding at binary16 boundaries" {
+  let float16_type = Datatype::write_float(2)
+  let float64_type = Datatype::write_float(8)
+  let lossy = Hdf5ConversionOptions::lossy()
+  let midpoint = 1.0 + 1.0 / 2048.0
+  let above_midpoint = midpoint + 1.0 / 1099511627776.0
+  let below_midpoint = midpoint - 1.0 / 1099511627776.0
+  let upper = 1.0 + 1.0 / 1024.0
+  assert_eq(
+    float64_type.convert_value(
+      FloatingPoint(above_midpoint),
+      float16_type,
+      options=lossy,
+    ),
+    FloatingPoint(upper),
+  )
+  assert_eq(
+    float64_type.convert_value(
+      FloatingPoint(-above_midpoint),
+      float16_type,
+      options=lossy,
+    ),
+    FloatingPoint(-upper),
+  )
+  assert_eq(
+    float64_type.convert_value(
+      FloatingPoint(midpoint),
+      float16_type,
+      options=lossy,
+    ),
+    FloatingPoint(1.0),
+  )
+  assert_eq(
+    float64_type.convert_value(
+      FloatingPoint(below_midpoint),
+      float16_type,
+      options=lossy,
+    ),
+    FloatingPoint(1.0),
+  )
+  assert_true(
+    float16_to_float(writer_float16_bits_from_double(65520.0)).is_inf(),
+  )
+  assert_eq(
+    float16_to_float(writer_float16_bits_from_double(65519.0)).to_double(),
+    65504.0,
+  )
+  assert_eq(writer_float16_bits_from_double(1.0 / 67108864.0), 0U)
+  assert_eq(writer_float16_bits_from_double(-1.0 / 67108864.0), 0x8000U)
+  assert_eq(writer_float16_bits_from_double(1.0 / 33554432.0), 0U)
+  assert_eq(
+    writer_float16_bits_from_double(
+      1.0 / 33554432.0 + 1.0 / 1152921504606846976.0,
+    ),
+    1U,
+  )
+  assert_eq(writer_float16_bits_from_double(1.0 / 16777216.0), 1U)
+  assert_eq(writer_float16_bits_from_double(3.0 / 33554432.0), 2U)
 }
 
 ///|
@@ -388,6 +449,17 @@ test "floating conversion matrix honors strict rounding and lossy truncation" {
 }
 
 ///|
+test "extended floating capability remains conservative under strict mode" {
+  let strict = Hdf5ConversionOptions::strict()
+  let lossy = Hdf5ConversionOptions::lossy()
+  let float64_type = Datatype::write_float(8)
+  let float80_type = Datatype::write_float(10)
+  assert_true(float64_type.can_convert_to(float80_type, options=strict))
+  assert_true(!float80_type.can_convert_to(float64_type, options=strict))
+  assert_true(float80_type.can_convert_to(float64_type, options=lossy))
+}
+
+///|
 test "conversion capability has no strict or lossy false positives" {
   let numeric_types = matrix_integer_types() + matrix_float_types()
   let values : Array[DatasetValue] = [
@@ -482,6 +554,108 @@ test "strict capability is conservative but per-value conversion is precise" {
     float64_type.convert_value(FloatingPoint(1.5), float32_type, options=strict),
     FloatingPoint(1.5),
   )
+}
+
+///|
+test "complex capability honors component precision across bridge forms" {
+  let strict = Hdf5ConversionOptions::strict()
+  let lossy = Hdf5ConversionOptions::lossy()
+  let float16_type = Datatype::write_float(2)
+  let float32_type = Datatype::write_float(4)
+  let float64_type = Datatype::write_float(8)
+  let complex16_type = Datatype::write_complex(float16_type)
+  let complex32_type = Datatype::write_complex(float32_type)
+  let complex64_type = Datatype::write_complex(float64_type)
+  let compound32_type = Datatype::write_compound([
+    ("r", float32_type),
+    ("i", float32_type),
+  ])
+  let compound64_type = Datatype::write_compound([
+    ("r", float64_type),
+    ("i", float64_type),
+  ])
+  let mixed_compound_type = Datatype::write_compound([
+    ("r", float64_type),
+    ("i", float32_type),
+  ])
+  let array32_type = Datatype::write_array(float32_type, [2UL])
+  let array64_type = Datatype::write_array(float64_type, [2UL])
+  assert_true(complex16_type.can_convert_to(complex32_type, options=strict))
+  assert_true(complex32_type.can_convert_to(complex64_type, options=strict))
+  assert_true(!complex64_type.can_convert_to(complex32_type, options=strict))
+  assert_true(complex64_type.can_convert_to(complex32_type, options=lossy))
+  assert_true(!complex64_type.can_convert_to(compound32_type, options=strict))
+  assert_true(!complex64_type.can_convert_to(array32_type, options=strict))
+  assert_true(complex64_type.can_convert_to(compound64_type, options=strict))
+  assert_true(complex64_type.can_convert_to(array64_type, options=strict))
+  assert_true(complex32_type.can_convert_to(compound64_type, options=strict))
+  assert_true(complex32_type.can_convert_to(array64_type, options=strict))
+  assert_true(compound64_type.can_convert_to(complex64_type, options=strict))
+  assert_true(array64_type.can_convert_to(complex64_type, options=strict))
+  assert_true(!compound64_type.can_convert_to(complex32_type, options=strict))
+  assert_true(!array64_type.can_convert_to(complex32_type, options=strict))
+  assert_true(
+    !mixed_compound_type.can_convert_to(complex32_type, options=strict),
+  )
+  assert_true(
+    mixed_compound_type.can_convert_to(complex64_type, options=strict),
+  )
+  assert_eq(
+    complex64_type.convert_value(
+      Complex(1.5, -2.25),
+      complex32_type,
+      options=strict,
+    ),
+    Complex(1.5, -2.25),
+  )
+}
+
+///|
+test "time and bitfield conversions cover narrow and wide integer paths" {
+  let strict = Hdf5ConversionOptions::strict()
+  let time16_type = Datatype::write_time(2)
+  let time64_type = Datatype::write_time(8)
+  let time128_type = Datatype::write_time(16)
+  let bitfield32_type = Datatype::write_bitfield(4, 32)
+  let bitfield128_type = Datatype::write_bitfield(16, 80)
+  let uint64_type = Datatype::write_integer(false, 8)
+  let int64_type = Datatype::write_integer(true, 8)
+  let wide = matrix_pow2(70)
+  assert_eq(
+    time16_type.convert_value(Time(258UL), time128_type, options=strict),
+    BigTime(matrix_big(258)),
+  )
+  assert_eq(
+    bitfield32_type.convert_value(
+      Bitfield(0x1234UL),
+      time128_type,
+      options=strict,
+    ),
+    BigTime(matrix_big(0x1234)),
+  )
+  assert_eq(
+    time64_type.convert_value(Time(1UL << 40), bitfield128_type, options=strict),
+    BigBitfield(matrix_pow2(40)),
+  )
+  assert_eq(
+    bitfield128_type.convert_value(
+      BigBitfield(wide),
+      time128_type,
+      options=strict,
+    ),
+    BigTime(wide),
+  )
+  assert_eq(
+    time16_type.convert_value(Time(5UL), uint64_type, options=strict),
+    UnsignedInteger(5UL),
+  )
+  assert_eq(
+    bitfield32_type.convert_value(Bitfield(5UL), int64_type, options=strict),
+    SignedInteger(5L),
+  )
+  assert_true(time16_type.can_convert_to(bitfield32_type, options=strict))
+  assert_true(bitfield32_type.can_convert_to(time64_type, options=strict))
+  assert_true(bitfield128_type.can_convert_to(time128_type, options=strict))
 }
 
 ///|

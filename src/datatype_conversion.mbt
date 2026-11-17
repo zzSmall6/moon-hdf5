@@ -143,6 +143,20 @@ fn conversion_datatype_equivalent(left : Datatype, right : Datatype) -> Bool {
 }
 
 ///|
+fn conversion_require_mode_compatible(
+  source : Datatype,
+  target : Datatype,
+  options : Hdf5ConversionOptions,
+) -> Unit raise Hdf5Error {
+  if options.mode == NoConversion &&
+    !conversion_datatype_equivalent(source, target) {
+    raise InvalidArgument(
+      "no-conversion mode requires identical source and target datatypes",
+    )
+  }
+}
+
+///|
 fn conversion_validate_target_datatype(
   datatype : Datatype,
   depth : Int32,
@@ -316,64 +330,137 @@ fn conversion_reference_type_compatible(
 }
 
 ///|
-fn conversion_complex_source_is_compatible(source : Datatype) -> Bool {
+fn conversion_complex_source_components(
+  source : Datatype,
+) -> (Datatype, Datatype)? {
   match source.class {
-    11 => source.base_types.length() == 1 && source.base_types[0].class == 1
+    11 =>
+      if source.base_types.length() == 1 && source.base_types[0].class == 1 {
+        Some((source.base_types[0], source.base_types[0]))
+      } else {
+        None
+      }
     10 =>
-      source.base_types.length() == 1 &&
-      conversion_numeric_source(source.base_types[0]) &&
-      source.size == source.base_types[0].size * 2
+      if source.base_types.length() == 1 &&
+        conversion_numeric_source(source.base_types[0]) &&
+        source.size == source.base_types[0].size * 2 {
+        Some((source.base_types[0], source.base_types[0]))
+      } else {
+        None
+      }
     6 => {
-      let mut real = false
-      let mut imaginary = false
+      let mut real : Datatype? = None
+      let mut imaginary : Datatype? = None
       for field in source.compound_members {
         if field.name == "r" || field.name == "real" || field.name == "re" {
-          real = conversion_numeric_source(field.datatype)
+          if conversion_numeric_source(field.datatype) {
+            real = Some(field.datatype)
+          }
         } else if field.name == "i" ||
           field.name == "imag" ||
           field.name == "im" {
-          imaginary = conversion_numeric_source(field.datatype)
+          if conversion_numeric_source(field.datatype) {
+            imaginary = Some(field.datatype)
+          }
         }
       }
-      real && imaginary
+      match (real, imaginary) {
+        (Some(real_type), Some(imaginary_type)) =>
+          Some((real_type, imaginary_type))
+        _ => None
+      }
     }
-    _ => false
+    _ => None
   }
 }
 
 ///|
-fn conversion_complex_compound_target_is_compatible(target : Datatype) -> Bool {
+fn conversion_complex_source_is_compatible(source : Datatype) -> Bool {
+  conversion_complex_source_components(source) is Some(_)
+}
+
+///|
+fn conversion_complex_components_compatible(
+  source : Datatype,
+  target_real : Datatype,
+  target_imaginary : Datatype,
+  strict : Bool,
+) -> Bool {
+  let source_components = conversion_complex_source_components(source)
+  match source_components {
+    Some((real, imaginary)) =>
+      conversion_float_target_compatible(real, target_real, strict) &&
+      conversion_float_target_compatible(imaginary, target_imaginary, strict)
+    None => false
+  }
+}
+
+///|
+fn conversion_complex_compound_target_is_compatible(
+  source : Datatype,
+  target : Datatype,
+  strict : Bool,
+) -> Bool {
   if target.compound_members.length() != 2 {
     return false
   }
-  let mut real = false
-  let mut imaginary = false
+  let mut real : Datatype? = None
+  let mut imaginary : Datatype? = None
   for field in target.compound_members {
     if field.datatype.class != 1 ||
       !conversion_float_target_supported(field.datatype) {
       return false
     }
     if field.name == "r" || field.name == "real" || field.name == "re" {
-      real = true
+      real = Some(field.datatype)
     } else if field.name == "i" || field.name == "imag" || field.name == "im" {
-      imaginary = true
+      imaginary = Some(field.datatype)
     } else {
       return false
     }
   }
-  real && imaginary
+  match (real, imaginary) {
+    (Some(target_real), Some(target_imaginary)) =>
+      conversion_complex_components_compatible(
+        source, target_real, target_imaginary, strict,
+      )
+    _ => false
+  }
 }
 
 ///|
 fn conversion_complex_array_target_is_compatible(
   source : Datatype,
   target : Datatype,
+  strict : Bool,
 ) -> Bool {
   target.base_types.length() == 1 &&
   target.base_types[0].class == 1 &&
   conversion_float_target_supported(target.base_types[0]) &&
   target.size == target.base_types[0].size * 2 &&
-  conversion_complex_source_is_compatible(source)
+  conversion_complex_components_compatible(
+    source,
+    target.base_types[0],
+    target.base_types[0],
+    strict,
+  )
+}
+
+///|
+fn conversion_complex_target_is_compatible(
+  source : Datatype,
+  target : Datatype,
+  strict : Bool,
+) -> Bool {
+  target.base_types.length() == 1 &&
+  target.base_types[0].class == 1 &&
+  conversion_float_target_supported(target.base_types[0]) &&
+  conversion_complex_components_compatible(
+    source,
+    target.base_types[0],
+    target.base_types[0],
+    strict,
+  )
 }
 
 ///|
@@ -475,13 +562,7 @@ fn conversion_float_target_compatible(
       !strict || layout.bit_precision <= target.float_mantissa_size
     None =>
       source.class == 1 &&
-      (
-        !strict ||
-        target.size == 8 ||
-        target.size == 10 ||
-        target.size == 16 ||
-        source.bit_precision <= target.bit_precision
-      )
+      (!strict || source.bit_precision <= target.bit_precision)
   }
 }
 
@@ -666,7 +747,7 @@ fn conversion_round_float(
 ) -> Double raise Hdf5Error {
   if is_ieee_float_layout(target) {
     if target.size == 2 {
-      let bits = writer_float16_bits(Float::from_double(number))
+      let bits = writer_float16_bits_from_double(number)
       float16_to_float(bits).to_double()
     } else if target.size == 4 {
       Float::from_double(number).to_double()
@@ -1050,7 +1131,11 @@ fn conversion_compound_target_value(
   depth : Int32,
 ) -> DatasetValue raise Hdf5Error {
   if conversion_complex_source_is_compatible(source) &&
-    conversion_complex_compound_target_is_compatible(target) {
+    conversion_complex_compound_target_is_compatible(
+      source,
+      target,
+      options.mode == Strict,
+    ) {
     let (real, imaginary) = conversion_complex_components(source, value)
     let output : Array[CompoundFieldValue] = []
     for compound_member in target.compound_members {
@@ -1139,7 +1224,11 @@ fn conversion_array_target_value(
     raise InvalidArgument("array conversion target is missing its base type")
   }
   let base = target.base_types[0]
-  if conversion_complex_array_target_is_compatible(source, target) {
+  if conversion_complex_array_target_is_compatible(
+      source,
+      target,
+      options.mode == Strict,
+    ) {
     let (real, imaginary) = conversion_complex_components(source, value)
     return Elements([
       FloatingPoint(conversion_number_to_target_float(real, base, options.mode)),
@@ -1516,7 +1605,7 @@ fn conversion_type_compatible(
       conversion_compound_target_compatible(source, target, options, depth) ||
       (
         conversion_complex_source_is_compatible(source) &&
-        conversion_complex_compound_target_is_compatible(target)
+        conversion_complex_compound_target_is_compatible(source, target, strict)
       )
     7 => conversion_reference_type_compatible(source, target)
     8 =>
@@ -1569,13 +1658,9 @@ fn conversion_type_compatible(
           depth + 1,
         )
       } else {
-        conversion_complex_array_target_is_compatible(source, target)
+        conversion_complex_array_target_is_compatible(source, target, strict)
       }
-    11 =>
-      conversion_complex_source_is_compatible(source) &&
-      target.base_types.length() == 1 &&
-      target.base_types[0].class == 1 &&
-      conversion_float_target_supported(target.base_types[0])
+    11 => conversion_complex_target_is_compatible(source, target, strict)
     _ => false
   }
 }
@@ -1606,6 +1691,7 @@ pub fn Datatype::convert_values(
 ) -> DatasetValues raise Hdf5Error {
   let policy = options.unwrap_or(Hdf5ConversionOptions::strict())
   conversion_validate_target_datatype(target, 0)
+  conversion_require_mode_compatible(self, target, policy)
   let source_items = conversion_values_to_dataset_values(values)
   let converted : Array[DatasetValue] = []
   for item in source_items {
@@ -1697,6 +1783,9 @@ pub fn Attribute::convert_to(
   target : Datatype,
   options? : Hdf5ConversionOptions,
 ) -> Attribute raise Hdf5Error {
+  let policy = options.unwrap_or(Hdf5ConversionOptions::strict())
+  conversion_validate_target_datatype(target, 0)
+  conversion_require_mode_compatible(self.datatype, target, policy)
   let values = match self.values {
     Some(items) => Some(self.datatype.convert_values(items, target, options?))
     None => None
@@ -1918,6 +2007,9 @@ pub fn Hdf5WriteValues::convert_to(
   options? : Hdf5ConversionOptions,
 ) -> Hdf5WriteValues raise Hdf5Error {
   let source = self.memory_datatype()
+  let policy = options.unwrap_or(Hdf5ConversionOptions::strict())
+  conversion_validate_target_datatype(file_datatype, 0)
+  conversion_require_mode_compatible(source, file_datatype, policy)
   let converted : Array[DatasetValue] = []
   for value in self.to_dataset_values() {
     converted.push(source.convert_value(value, file_datatype, options?))
@@ -2431,12 +2523,14 @@ pub fn Hdf5File::chunk_iterator_as(
 ) -> DatasetChunkConversionIterator raise Hdf5Error {
   let inner = self.chunk_iterator(path, tile_dimensions)
   let target = memory_datatype
+  let policy = options.unwrap_or(Hdf5ConversionOptions::strict())
   conversion_validate_target_datatype(target, 0)
+  conversion_require_mode_compatible(inner.metadata.datatype, target, policy)
   {
     inner,
     source_datatype: inner.metadata.datatype,
     target_datatype: target,
-    options: options.unwrap_or(Hdf5ConversionOptions::strict()),
+    options: policy,
   }
 }
 
@@ -2452,12 +2546,14 @@ pub fn Hdf5Resolver::chunk_iterator_as(
 ) -> DatasetChunkConversionIterator raise Hdf5Error {
   let inner = self.chunk_iterator(path, tile_dimensions)
   let target = memory_datatype
+  let policy = options.unwrap_or(Hdf5ConversionOptions::strict())
   conversion_validate_target_datatype(target, 0)
+  conversion_require_mode_compatible(inner.metadata.datatype, target, policy)
   {
     inner,
     source_datatype: inner.metadata.datatype,
     target_datatype: target,
-    options: options.unwrap_or(Hdf5ConversionOptions::strict()),
+    options: policy,
   }
 }
 
@@ -2504,12 +2600,10 @@ pub fn Hdf5File::selection_iterator_as(
 ) -> DatasetSelectionConversionIterator raise Hdf5Error {
   let inner = self.selection_iterator(path, selection, page_size)
   let target = memory_datatype
+  let policy = options.unwrap_or(Hdf5ConversionOptions::strict())
   conversion_validate_target_datatype(target, 0)
-  {
-    inner,
-    target_datatype: target,
-    options: options.unwrap_or(Hdf5ConversionOptions::strict()),
-  }
+  conversion_require_mode_compatible(inner.metadata.datatype, target, policy)
+  { inner, target_datatype: target, options: policy, }
 }
 
 ///|
@@ -2525,10 +2619,8 @@ pub fn Hdf5Resolver::selection_iterator_as(
 ) -> DatasetSelectionConversionIterator raise Hdf5Error {
   let inner = self.selection_iterator(path, selection, page_size)
   let target = memory_datatype
+  let policy = options.unwrap_or(Hdf5ConversionOptions::strict())
   conversion_validate_target_datatype(target, 0)
-  {
-    inner,
-    target_datatype: target,
-    options: options.unwrap_or(Hdf5ConversionOptions::strict()),
-  }
+  conversion_require_mode_compatible(inner.metadata.datatype, target, policy)
+  { inner, target_datatype: target, options: policy, }
 }

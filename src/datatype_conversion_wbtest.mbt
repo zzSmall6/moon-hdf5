@@ -173,6 +173,61 @@ test "numeric conversion covers ranges precision and wide integers" {
 }
 
 ///|
+test "empty conversions still enforce no-conversion datatype identity" {
+  let source = Datatype::write_integer(true, 4)
+  let target = Datatype::write_integer(true, 8)
+  let none = Hdf5ConversionOptions::none()
+  assert_true(
+    conversion_test_error(() => {
+      source.convert_values(Integers([]), target, options=none) |> ignore
+    })
+    is Some(
+      InvalidArgument(
+        "no-conversion mode requires identical source and target datatypes"
+      )
+    ),
+  )
+  let values = StructuredValues(source, [])
+  assert_true(
+    conversion_test_error(() => {
+      values.convert_to(target, options=none) |> ignore
+    })
+    is Some(
+      InvalidArgument(
+        "no-conversion mode requires identical source and target datatypes"
+      )
+    ),
+  )
+  assert_true(
+    source.convert_values(Integers([]), source, options=none) is Integers([]),
+  )
+  let writer = Hdf5Writer::new()
+  writer.add_dataset("/empty", [0UL], Int32Values([]))
+  let file = Hdf5File::parse(writer.encode())
+  assert_true(
+    conversion_test_error(() => {
+      file.chunk_iterator_as("/empty", [1UL], target, options=none) |> ignore
+    })
+    is Some(
+      InvalidArgument(
+        "no-conversion mode requires identical source and target datatypes"
+      )
+    ),
+  )
+  assert_true(
+    conversion_test_error(() => {
+      file.selection_iterator_as("/empty", Points([]), 1, target, options=none)
+      |> ignore
+    })
+    is Some(
+      InvalidArgument(
+        "no-conversion mode requires identical source and target datatypes"
+      )
+    ),
+  )
+}
+
+///|
 test "conversion capability reflects strict and lossy policies" {
   let int8_type = Datatype::write_integer(true, 1)
   let int16_type = Datatype::write_integer(true, 2)

@@ -53,7 +53,8 @@ precision loss and range overflow. `Lossy` applies HDF5-style wrapping,
 truncation and zero-fill, while `NoConversion` accepts only identical layouts.
 Compound members are matched by name; missing target members require an option
 and receive a typed default. Complex class-11, compound and two-element array
-forms can bridge to one another. Dataset, selection, tile, page and attribute
+forms can bridge to one another when both component types are compatible under
+the selected policy. Dataset, selection, tile, page and attribute
 `convert_to` methods share the converter; `read_*_as`, typed writer/editor
 methods and `chunk_iterator_as` / `selection_iterator_as` expose it across the
 API without changing storage layout.

@@ -444,7 +444,9 @@ pub fn Datatype::write_array(
 }
 
 ///|
-/// Creates a complex datatype with a floating-point component type.
+/// Creates a class-11 complex datatype with a floating-point component type.
+/// Class-11 complex is a post-profile extension; use compound or two-element
+/// array forms for HDF5 1.14.6 common-file interoperability.
 pub fn Datatype::write_complex(base : Datatype) -> Datatype raise Hdf5Error {
   guard base.class == 1 && base.size > 0 && base.size <= 0x7FFFFFFF / 2 else {
     raise InvalidArgument(
@@ -3798,6 +3800,60 @@ fn writer_float16_bits(value : Float) -> UInt32 {
 }
 
 ///|
+fn writer_float16_bits_from_double(value : Double) -> UInt32 {
+  if value.is_nan() {
+    return writer_float16_bits(Float::from_double(value))
+  }
+  let sign = if value.reinterpret_as_uint64() >> 63 != 0UL {
+    0x8000U
+  } else {
+    0U
+  }
+  let magnitude = Double::abs(value)
+  if magnitude.is_inf() {
+    return sign | 0x7C00U
+  }
+  if magnitude == 0.0 {
+    return sign
+  }
+  let candidate = writer_float16_bits(Float::from_double(magnitude)) & 0x7FFFU
+  if candidate == 0x7C00U {
+    return if magnitude >= 65520.0 { sign | 0x7C00U } else { sign | 0x7BFFU }
+  }
+  let candidate_value = float16_to_float(candidate).to_double()
+  if magnitude == candidate_value {
+    return sign | candidate
+  }
+  let neighbor = if candidate_value < magnitude {
+    if candidate == 0x7BFFU {
+      return if magnitude >= 65520.0 {
+        sign | 0x7C00U
+      } else {
+        sign | candidate
+      }
+    }
+    candidate + 1U
+  } else {
+    if candidate == 0U {
+      return sign
+    }
+    candidate - 1U
+  }
+  let neighbor_value = float16_to_float(neighbor).to_double()
+  let midpoint = (candidate_value + neighbor_value) / 2.0
+  let selected = if magnitude > midpoint {
+    neighbor
+  } else if magnitude < midpoint {
+    candidate
+  } else if (candidate & 1U) == 0U {
+    candidate
+  } else {
+    neighbor
+  }
+  sign | selected
+}
+
+///|
 fn encode_writer_datatype(
   datatype : Datatype,
   reference_address_size~ : Int32 = 8,
@@ -4078,7 +4134,7 @@ fn encode_structured_value(
               datatype.little_endian,
             )
           } else if datatype.size == 2 {
-            let bits = writer_float16_bits(Float::from_double(number)).to_uint16()
+            let bits = writer_float16_bits_from_double(number).to_uint16()
             if datatype.little_endian {
               buffer.write_uint16_le(bits)
             } else {
