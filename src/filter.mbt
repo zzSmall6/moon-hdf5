@@ -11,7 +11,7 @@ fn parse_filters(
   custom_filters~ : Array[&Hdf5CustomFilter] = [],
 ) -> Array[Filter] raise Hdf5Error {
   guard (message.flags.to_int() & 2) == 0 else {
-    raise UnsupportedFeature("shared filter pipeline messages")
+    raise InvalidField("shared filter pipeline message was not resolved")
   }
   let reader = Reader::new(message.data)
   let version = reader.read_u8().to_int()

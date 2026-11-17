@@ -36,7 +36,7 @@ independent h5py verification with h5py 3.13.0/HDF5 1.14.6.
 | Fill values | Default, fixed-size, structured, custom vlen-string and vlen-sequence fills; undefined and `FILL_TIME_NEVER` policies; disabled or absent fills zero unallocated storage | Malformed fill messages and unresolvable global-heap targets are rejected |
 | Selections | Hyperslabs, ordered points, bounded-memory tile iteration and bounded-memory selection pages | A single `read_dataset_selection` result is memory resident; use `selection_iterator` for large selections |
 | Shared messages | SOHM table/indexes/heaps, reserved indexes without heaps, wrappers v1–v3, committed targets, dataspace/datatype field sharing, fills, filter pipelines, whole attributes and dense shared records | SOHM must be referenced by the superblock extension; one master table |
-| Dense metadata | Managed, tiny, direct-huge and indirect-huge heap objects; metadata v2 B-trees | Broader non-matrix interoperability remains untested |
+| Dense metadata | Managed, tiny, direct-huge and indirect-huge heap objects; filtered heaps; metadata v2 B-trees | Metadata-heap filters must be registered and decodable |
 | Producer files | netCDF4 1.7.5/libnetcdf 4.10.1/HDF5 2.2.0 structures; hdf5storage 0.2.2 MATLAB metadata | Verifies encoded HDF5 structures, not complete netCDF-4 or MATLAB semantics |
 
 Fixtures cover superblock v0/v2/v3 matrices, HDF5 1.14.6 default/`latest` and

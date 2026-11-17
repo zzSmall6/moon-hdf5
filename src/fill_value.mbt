@@ -30,7 +30,7 @@ fn dataset_fill_value(
       }
   }
   guard (message.flags.to_int() & 0x02) == 0 else {
-    raise UnsupportedFeature("shared fill value messages are not supported yet")
+    raise InvalidField("shared fill value message was not resolved")
   }
   let reader = Reader::new(message.data)
   let mut fill_enabled = true

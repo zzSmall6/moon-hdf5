@@ -35,7 +35,7 @@ cases.
 Add the released package to a MoonBit module:
 
 ```sh
-moon add Zz04321/moon-hdf5@0.3.1
+moon add Zz04321/moon-hdf5@0.4.0
 moon update
 ```
 

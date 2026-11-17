@@ -9,8 +9,8 @@ The MoonBit release checks pass on the current worktree with the stable
 MoonBit 0.10.19 toolchain (`moon 0.1.20261102`), `moonbitlang/x@0.5.7` and
 `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 444 tests passed;
-- native: 444 tests passed;
+- wasm: 459 tests passed;
+- native: 459 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - the writer demo and earlier compact and sparse chunked patch output remain
   covered by prior h5py 3.13.0/HDF5 1.14.6 verification, and the new v1 B-tree
