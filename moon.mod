@@ -13,7 +13,7 @@ name = "Zz04321/moon-hdf5"
 
 source = "src"
 
-version = "0.5.5"
+version = "0.4.3"
 
 readme = "README.mbt.md"
 

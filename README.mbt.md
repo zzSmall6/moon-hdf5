@@ -6,7 +6,7 @@ Runs on wasm and native without a native HDF5 dependency.
 ## Install
 
 ```sh
-moon add Zz04321/moon-hdf5@0.5.5
+moon add Zz04321/moon-hdf5@0.4.3
 moon update
 ```
 

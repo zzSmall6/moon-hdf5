@@ -1,4 +1,4 @@
-# Release audit — 0.5.5
+# Release audit — 0.4.3
 
 Scope: HDF5 1.14.6 common-file support and recent streaming/space-reuse APIs.
 The [compatibility matrix](compatibility.md) defines the supported boundary;
@@ -14,7 +14,7 @@ this audit does not establish complete libhdf5 equivalence.
   FSHD/FSSE writeback and typed source conversion. Existing tests cover empty
   managers, repeated relocation, preserved references and continued HDF5 writes.
 - Updated release metadata and condensed README. The registry version checked
-  before this release was 0.4.2; no 0.5.4 release was listed.
+  before this release was 0.4.2.
 
 ## Verification
 
