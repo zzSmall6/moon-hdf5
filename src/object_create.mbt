@@ -809,6 +809,8 @@ pub fn Hdf5File::add_chunked_dataset(
     maximum_dimensions: encoded_maximum,
     values: copy_write_values(values),
     chunk_source: None,
+    value_source: None,
+    block_dimensions: [],
     storage: if unlimited_axes.length() == 0 {
       WritableChunked(chunk_dimensions.copy(), copy_write_filters(filters))
     } else {

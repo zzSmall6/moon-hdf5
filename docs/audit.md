@@ -1,4 +1,4 @@
-# Code audit — 2026-11-19
+# Code audit — 2026-11-25
 
 Scope: current worktree, reader and writer, against the HDF5 1.14.6 common-file
 profile and the documented post-profile extensions.
@@ -8,8 +8,8 @@ profile and the documented post-profile extensions.
 The release gate passes with MoonBit 0.10.19 (`moon 0.1.20261102`),
 `moonbitlang/x@0.5.7` and `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 491 tests passed;
-- native: 491 tests passed;
+- wasm: 497 tests passed;
+- native: 497 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - h5py 3.13.0/HDF5 1.14.6 independently read, resized and patched release-demo
   output for all documented storage and metadata paths, including typed
@@ -32,7 +32,7 @@ silently reinterpreted.
 | References | Legacy and version-4 object/region/attribute references in datasets and attributes; same-file and registered external targets; 4-/8-byte slots; compact, contiguous and filtered targets |
 | Shared and dense metadata | SOHM table/indexes/heaps, wrappers v1–v3, shared attributes/fills/filter pipelines, dense direct/indirect blocks, huge objects and metadata v2 B-trees |
 | Editing | Value and attribute patching; dataset resize/append; attribute/link add, rename and delete; object creation/deletion; v1/v2 headers and symbol-table conversion; release outputs independently read by h5py |
-| Output sinks | Writer emission resets and fills a random-access sink, emits independent metadata/data writes, propagates sink failures and preserves `encode()` parity; bytes- and source-backed `copy_to` preserve exact bytes with 1 MiB bounded source reads; chunk sources stream finite, extensible-array and v2 B-tree datasets one chunk at a time |
+| Output sinks | Writer emission resets and fills a random-access sink, emits independent metadata/data writes, propagates sink failures and preserves `encode()` parity; bytes- and source-backed `copy_to` preserve exact bytes with 1 MiB bounded source reads; chunk sources stream finite, extensible-array and v2 B-tree datasets one chunk at a time; value sources stream contiguous datasets one block at a time, including scalar, empty, vlen and user-block output |
 
 ## Residual risks
 
@@ -42,9 +42,9 @@ silently reinterpreted.
 - Full datasets and single selection results are memory resident. Use
   `chunk_iterator` or `selection_iterator` for bounded memory.
 - `Hdf5Writer::write_to` avoids retaining a complete output image. In-memory
-  builder inputs remain resident, while `Hdf5ChunkSource` inputs are bounded and
-  may be read several times to plan metadata before final emission. `encode()`
-  still returns one complete image.
+  builder inputs remain resident, while `Hdf5ChunkSource` and `Hdf5ValueSource`
+  inputs are bounded and may be read several times to plan metadata before
+  final emission. `encode()` still returns one complete image.
 - Editing is append-only. Superseded bytes, old heaps and rebuilt metadata are
   not reclaimed because no free-space manager is emitted.
 - Value patching allocates only into existing writable layout or reconstructs
@@ -76,4 +76,5 @@ silently reinterpreted.
 Historical milestone details are available in the Git history. Version `0.4.1`
 was published before the explicit conversion work; `0.4.2` is the registry
 release containing the completed datatype conversion and API layer. Direct sink
-output and bounded file copying are GitHub-only in the current worktree.
+output, bounded file copying, chunk-source streaming and contiguous value-source
+streaming are GitHub-only in the current worktree.

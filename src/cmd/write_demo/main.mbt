@@ -46,6 +46,36 @@ impl @lib.Hdf5ChunkSource for DemoInt64ChunkSource with fn read_chunk(
 }
 
 ///|
+impl @lib.Hdf5ValueSource for DemoInt64ChunkSource with fn read_values(
+  self : DemoInt64ChunkSource,
+  offset : Array[UInt64],
+  dimensions : Array[UInt64],
+) -> @lib.Hdf5WriteValues raise @lib.Hdf5Error {
+  let count = demo_chunk_shape_count(dimensions)
+  let items : Array[Int64] = []
+  let rank = dimensions.length()
+  for linear in 0..<count.to_int() {
+    let coordinates = Array::make(rank, 0)
+    let mut remaining = linear.to_int64()
+    let mut axis = rank
+    while axis > 0 {
+      axis = axis - 1
+      let width = dimensions[axis].reinterpret_as_int64()
+      coordinates[axis] = (remaining % width).to_int()
+      remaining = remaining / width
+    }
+    let mut source_index = 0L
+    for axis in 0..<rank {
+      source_index = source_index * self.dimensions[axis].reinterpret_as_int64() +
+        offset[axis].reinterpret_as_int64() +
+        coordinates[axis].to_int64()
+    }
+    items.push(self.values[source_index.to_int()])
+  }
+  Int64Values(items)
+}
+
+///|
 priv struct DemoStringChunkSource {
   values : Array[String]
 }
@@ -58,6 +88,19 @@ impl @lib.Hdf5ChunkSource for DemoStringChunkSource with fn read_chunk(
   dimensions : Array[UInt64],
 ) -> @lib.Hdf5WriteValues raise @lib.Hdf5Error {
   ignore(chunk_index)
+  let items : Array[String] = []
+  for index in 0..<dimensions[0].reinterpret_as_int64().to_int() {
+    items.push(self.values[offset[0].reinterpret_as_int64().to_int() + index])
+  }
+  VariableStringValues(items)
+}
+
+///|
+impl @lib.Hdf5ValueSource for DemoStringChunkSource with fn read_values(
+  self : DemoStringChunkSource,
+  offset : Array[UInt64],
+  dimensions : Array[UInt64],
+) -> @lib.Hdf5WriteValues raise @lib.Hdf5Error {
   let items : Array[String] = []
   for index in 0..<dimensions[0].reinterpret_as_int64().to_int() {
     items.push(self.values[offset[0].reinterpret_as_int64().to_int() + index])
@@ -220,6 +263,32 @@ fn run(args : Array[String]) -> Int32 {
       { dimensions: [5UL, 7UL], values: source_values, },
       fill_value=Int64Values([-7L]),
       filters=[Shuffle, Deflate(5), Fletcher32],
+    )
+    let contiguous_values = Array::make(35, 0L)
+    for index in 0..<contiguous_values.length() {
+      contiguous_values[index] = index.to_int64() * 3L - 5L
+    }
+    writer.add_dataset_from_source(
+      "/experiment/source_contiguous",
+      [5UL, 7UL],
+      [2U, 3U],
+      Int64Values([]),
+      { dimensions: [5UL, 7UL], values: contiguous_values, },
+      fill_value=Int64Values([-1L]),
+    )
+    writer.add_dataset_from_source(
+      "/experiment/source_contiguous_names",
+      [7UL],
+      [3U],
+      VariableStringValues([]),
+      { values: ["block", "分块", "", "block", "value", "", "分块"], },
+    )
+    writer.add_dataset_from_source(
+      "/experiment/source_scalar",
+      [],
+      [],
+      Int64Values([]),
+      { dimensions: [], values: [123L], },
     )
     writer.add_extensible_dataset_from_source(
       "/experiment/source_series",

@@ -122,6 +122,13 @@ therefore never resident. Variable-length values are pre-scanned to build the
 global heaps. Source-backed datasets are immutable in the builder because its
 resize and patch APIs require resident values.
 
+`Hdf5ValueSource` provides the same bounded-memory model for contiguous
+datasets. Logical blocks are edge-clipped and requested in row-major order;
+each encoded block is written into its row-major destination, so a partial
+block never overwrites adjacent dataset rows. Block dimensions affect memory
+use only, not the on-disk contiguous layout. Variable-length and structured
+blocks are likewise pre-scanned for global-heap planning.
+
 `set_user_block` reserves a zero-filled 512 B–1 GiB prefix;
 `set_user_block_content` stores caller bytes in the smallest legal size and
 zero-pads the remainder. Layout addresses are relative to the user-block base,

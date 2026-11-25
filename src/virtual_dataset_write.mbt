@@ -120,6 +120,8 @@ pub fn Hdf5Writer::add_virtual_dataset(
     maximum_dimensions: maximum,
     values,
     chunk_source: None,
+    value_source: None,
+    block_dimensions: [],
     storage: WritableVirtual(copy_virtual_mappings(mappings)),
     fill_value: copied_fill,
     chunk_filter_masks: [],

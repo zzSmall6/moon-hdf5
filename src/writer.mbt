@@ -533,6 +533,18 @@ pub(open) trait Hdf5ChunkSource {
 }
 
 ///|
+/// Supplies row-major logical blocks of a contiguous dataset.
+///
+/// `offset` and `dimensions` describe the edge-clipped block. The returned
+/// values must have exactly that many elements and the dataset prototype's
+/// datatype. Blocks are requested in row-major order. Sources may be read more
+/// than once while metadata and global heaps are planned and must therefore
+/// return repeatable results.
+pub(open) trait Hdf5ValueSource {
+  fn read_values(Self, offset : Array[UInt64], dimensions : Array[UInt64]) -> Hdf5WriteValues raise Hdf5Error
+}
+
+///|
 priv enum WritableStorage {
   WritableCompact
   WritableContiguous
@@ -561,9 +573,11 @@ priv struct WritableDataset {
   path : String
   dimensions : Array[UInt64]
   maximum_dimensions : Array[UInt64]
-  /// A zero-element prototype when `chunk_source` is present.
+  /// A zero-element prototype when a source is present.
   values : Hdf5WriteValues
   chunk_source : &Hdf5ChunkSource?
+  value_source : &Hdf5ValueSource?
+  block_dimensions : Array[UInt32]
   storage : WritableStorage
   fill_value : Hdf5WriteValues?
   chunk_filter_masks : Array[WritableChunkFilterMask]
@@ -1900,7 +1914,7 @@ fn validate_write_value_prototype(
   let count = writer_value_count(values)
   guard count == 0 || count == 1 else {
     raise InvalidArgument(
-      "chunk source prototype must contain at most one value",
+      "dataset source prototype must contain at most one value",
     )
   }
   let datatype = writer_values_datatype(values)
@@ -2212,6 +2226,68 @@ pub fn Hdf5Writer::add_dataset(
     maximum_dimensions: dimensions.copy(),
     values: copy_write_values(values),
     chunk_source: None,
+    value_source: None,
+    block_dimensions: [],
+    storage: WritableContiguous,
+    fill_value: copied_fill,
+    chunk_filter_masks: [],
+  })
+}
+
+///|
+/// Adds a contiguous dataset whose values are pulled from `source` in blocks.
+///
+/// `prototype` supplies the datatype and may contain zero or one value.
+/// `block_dimensions` controls source read granularity only; the file payload
+/// remains one row-major contiguous region. Blocks are edge-clipped at the
+/// dataset boundary. The source may be read more than once while metadata and
+/// global heaps are planned. Source-backed datasets cannot be resized, appended
+/// or patched in the builder.
+pub fn Hdf5Writer::add_dataset_from_source(
+  self : Hdf5Writer,
+  path : String,
+  dimensions : Array[UInt64],
+  block_dimensions : Array[UInt32],
+  prototype : Hdf5WriteValues,
+  source : &Hdf5ValueSource,
+  fill_value? : Hdf5WriteValues,
+) -> Unit raise Hdf5Error {
+  let normalized = canonical_writer_path(path)
+  guard normalized != "/" else {
+    raise InvalidArgument("a dataset cannot replace the root group")
+  }
+  guard !self.has_entry(normalized) else {
+    raise InvalidArgument("writer object path already exists")
+  }
+  guard dimensions.length() <= 32 else {
+    raise InvalidArgument("writer dataspace rank exceeds 32")
+  }
+  writer_shape_count(dimensions) |> ignore
+  validate_write_value_prototype(prototype)
+  guard block_dimensions.length() == dimensions.length() else {
+    raise InvalidArgument("source block dimensions must match the dataspace")
+  }
+  for block_dimension in block_dimensions {
+    guard block_dimension > 0U && block_dimension <= 0x7FFFFFFFU else {
+      raise InvalidArgument("source block dimension is invalid")
+    }
+  }
+  chunk_grid(dimensions, block_dimensions) |> ignore
+  validate_writer_byte_size(
+    writer_shape_count(dimensions),
+    writer_value_element_size(prototype),
+  )
+  let copied_fill = validated_write_fill(prototype, fill_value)
+  self.ensure_groups(writer_parent_path(normalized))
+  self.record_link(normalized)
+  self.datasets.push({
+    path: normalized,
+    dimensions: dimensions.copy(),
+    maximum_dimensions: dimensions.copy(),
+    values: copy_write_values(prototype),
+    chunk_source: None,
+    value_source: Some(source),
+    block_dimensions: block_dimensions.copy(),
     storage: WritableContiguous,
     fill_value: copied_fill,
     chunk_filter_masks: [],
@@ -2251,6 +2327,8 @@ pub fn Hdf5Writer::add_compact_dataset(
     maximum_dimensions: dimensions.copy(),
     values: copy_write_values(values),
     chunk_source: None,
+    value_source: None,
+    block_dimensions: [],
     storage: WritableCompact,
     fill_value: copied_fill,
     chunk_filter_masks: [],
@@ -2333,6 +2411,8 @@ pub fn Hdf5Writer::add_external_dataset(
     maximum_dimensions: dimensions.copy(),
     values: copy_write_values(values),
     chunk_source: None,
+    value_source: None,
+    block_dimensions: [],
     storage: WritableExternal(slots.copy()),
     fill_value: copied_fill,
     chunk_filter_masks: [],
@@ -2823,6 +2903,8 @@ pub fn Hdf5Writer::add_chunked_dataset(
     maximum_dimensions: dimensions.copy(),
     values: copy_write_values(values),
     chunk_source: None,
+    value_source: None,
+    block_dimensions: [],
     storage: WritableChunked(
       chunk_dimensions.copy(),
       copy_write_filters(filters),
@@ -2883,6 +2965,8 @@ pub fn Hdf5Writer::add_chunked_dataset_from_source(
     maximum_dimensions: dimensions.copy(),
     values: copy_write_values(prototype),
     chunk_source: Some(source),
+    value_source: None,
+    block_dimensions: [],
     storage: WritableChunked(
       chunk_dimensions.copy(),
       copy_write_filters(filters),
@@ -3012,6 +3096,8 @@ pub fn Hdf5Writer::set_chunk_filter_mask(
     maximum_dimensions: dataset.maximum_dimensions,
     values: dataset.values,
     chunk_source: dataset.chunk_source,
+    value_source: dataset.value_source,
+    block_dimensions: dataset.block_dimensions,
     storage: dataset.storage,
     fill_value: dataset.fill_value,
     chunk_filter_masks: masks,
@@ -3126,6 +3212,8 @@ pub fn Hdf5Writer::add_extensible_dataset(
     maximum_dimensions: encoded_maximum,
     values: copy_write_values(values),
     chunk_source: None,
+    value_source: None,
+    block_dimensions: [],
     storage: WritableExtensible(
       chunk_dimensions.copy(),
       copy_write_filters(filters),
@@ -3187,6 +3275,8 @@ pub fn Hdf5Writer::add_extensible_dataset_from_source(
     maximum_dimensions: encoded_maximum,
     values: copy_write_values(prototype),
     chunk_source: Some(source),
+    value_source: None,
+    block_dimensions: [],
     storage: WritableExtensible(
       chunk_dimensions.copy(),
       copy_write_filters(filters),
@@ -3386,10 +3476,8 @@ pub fn Hdf5Writer::resize_dataset(
 ) -> Unit raise Hdf5Error {
   let index = self.writer_dataset_index(path)
   let dataset = self.datasets[index]
-  guard dataset.chunk_source is None else {
-    raise UnsupportedFeature(
-      "datasets backed by a chunk source cannot be resized",
-    )
+  guard dataset.chunk_source is None && dataset.value_source is None else {
+    raise UnsupportedFeature("datasets backed by a source cannot be resized")
   }
   let (chunk_dimensions, filters, unlimited_axes) = match dataset.storage {
     WritableExtensible(chunks, pipeline, axes) => (chunks, pipeline, axes)
@@ -3432,6 +3520,8 @@ pub fn Hdf5Writer::resize_dataset(
     maximum_dimensions: dataset.maximum_dimensions,
     values,
     chunk_source: dataset.chunk_source,
+    value_source: dataset.value_source,
+    block_dimensions: dataset.block_dimensions,
     storage: WritableExtensible(chunk_dimensions, filters, unlimited_axes),
     fill_value: dataset.fill_value,
     chunk_filter_masks: dataset.chunk_filter_masks,
@@ -3601,9 +3691,9 @@ pub fn Hdf5Writer::append_dataset(
 ) -> Unit raise Hdf5Error {
   let index = self.writer_dataset_index(path)
   let dataset = self.datasets[index]
-  guard dataset.chunk_source is None else {
+  guard dataset.chunk_source is None && dataset.value_source is None else {
     raise UnsupportedFeature(
-      "datasets backed by a chunk source cannot be patched in a builder",
+      "datasets backed by a source cannot be patched in a builder",
     )
   }
   let unlimited_axes = match dataset.storage {
@@ -3650,6 +3740,8 @@ pub fn Hdf5Writer::append_dataset(
       true,
     ),
     chunk_source: resized.chunk_source,
+    value_source: resized.value_source,
+    block_dimensions: resized.block_dimensions,
     storage: resized.storage,
     fill_value: resized.fill_value,
     chunk_filter_masks: resized.chunk_filter_masks,
@@ -3673,9 +3765,9 @@ pub fn Hdf5Writer::write_dataset_slab(
 ) -> Unit raise Hdf5Error {
   let index = self.writer_dataset_index(path)
   let dataset = self.datasets[index]
-  guard dataset.chunk_source is None else {
+  guard dataset.chunk_source is None && dataset.value_source is None else {
     raise UnsupportedFeature(
-      "datasets backed by a chunk source cannot be patched in a builder",
+      "datasets backed by a source cannot be patched in a builder",
     )
   }
   let unlimited_axes = match dataset.storage {
@@ -3725,6 +3817,8 @@ pub fn Hdf5Writer::write_dataset_slab(
       true,
     ),
     chunk_source: resized.chunk_source,
+    value_source: resized.value_source,
+    block_dimensions: resized.block_dimensions,
     storage: resized.storage,
     fill_value: resized.fill_value,
     chunk_filter_masks: resized.chunk_filter_masks,
@@ -5062,6 +5156,24 @@ fn encode_contiguous_layout(address : UInt64, size : Int32) -> Bytes {
 }
 
 ///|
+fn writer_contiguous_payload_size(
+  dataset : WritableDataset,
+  heap : WritableGlobalHeap,
+  objects : Array[WritableObject],
+) -> Int32 raise Hdf5Error {
+  match dataset.value_source {
+    Some(_) => {
+      let element_size = encode_write_values(dataset.values, heap~, objects~).element_size
+      let count = writer_shape_count(dataset.dimensions)
+      validate_writer_byte_size(count, element_size)
+      count * element_size
+    }
+    None =>
+      encode_write_values(dataset.values, heap~, objects~).payload.length()
+  }
+}
+
+///|
 fn encode_compact_layout(payload : Bytes) -> Bytes {
   let buffer = @buffer.Buffer::Buffer(size_hint=4 + payload.length())
   buffer.write_byte(b'\x03')
@@ -6198,6 +6310,65 @@ fn scan_chunk_source_values(
       }
       None => ()
     }
+  }
+}
+
+///|
+fn scan_value_source_values(
+  dataset : WritableDataset,
+  callback : (Hdf5WriteValues) -> Unit raise Hdf5Error,
+) -> Unit raise Hdf5Error {
+  let source = match dataset.value_source {
+    Some(source) => source
+    None => return
+  }
+  let order : Array[Int32] = []
+  for axis in 0..<dataset.dimensions.length() {
+    order.push(axis)
+  }
+  let (grid, block_count) = chunk_grid(
+    dataset.dimensions,
+    dataset.block_dimensions,
+  )
+  for index in 0..<block_count {
+    match
+      writer_chunk_edge_shape(
+        dataset,
+        index,
+        grid,
+        order,
+        dataset.block_dimensions,
+      ) {
+      Some((offsets, dimensions)) => {
+        let values = source.read_values(offsets.copy(), dimensions.copy())
+        guard same_write_datatype(
+          dataset.values,
+          values,
+          reference_address_size=Some(8),
+        ) else {
+          raise InvalidArgument("value source returned a different datatype")
+        }
+        validate_write_values(
+          dimensions,
+          values,
+          reference_address_size=Some(8),
+        )
+        callback(values)
+      }
+      None => ()
+    }
+  }
+}
+
+///|
+fn scan_dataset_source_values(
+  dataset : WritableDataset,
+  callback : (Hdf5WriteValues) -> Unit raise Hdf5Error,
+) -> Unit raise Hdf5Error {
+  if dataset.chunk_source is Some(_) {
+    scan_chunk_source_values(dataset, callback)
+  } else if dataset.value_source is Some(_) {
+    scan_value_source_values(dataset, callback)
   }
 }
 
@@ -7811,6 +7982,185 @@ fn write_source_chunk_storage(
       cursor.to_uint64(),
       Bytes::make(end - cursor, b'\x00'),
     )
+  }
+}
+
+///|
+fn writer_linear_element_index(
+  dimensions : Array[UInt64],
+  offsets : Array[UInt64],
+) -> Int32 raise Hdf5Error {
+  guard dimensions.length() == offsets.length() else {
+    raise InvalidField("source block rank changed")
+  }
+  let mut index = 0L
+  for axis in 0..<dimensions.length() {
+    guard offsets[axis] <= dimensions[axis] else {
+      raise InvalidField("source block lies outside the dataset")
+    }
+    index = index * dimensions[axis].reinterpret_as_int64() +
+      offsets[axis].reinterpret_as_int64()
+  }
+  guard index <= 0x7FFFFFFFL else {
+    raise InvalidArgument("source dataset is too large")
+  }
+  index.to_int()
+}
+
+///|
+fn writer_linear_coordinates(
+  index : Int32,
+  dimensions : Array[UInt64],
+) -> Array[UInt64] raise Hdf5Error {
+  guard index >= 0 else {
+    raise InvalidField("source block row index is negative")
+  }
+  let coordinates = Array::make(dimensions.length(), 0UL)
+  let mut remaining = index
+  let mut axis = dimensions.length()
+  while axis > 0 {
+    axis = axis - 1
+    let width = dimensions[axis].reinterpret_as_int64().to_int()
+    guard width > 0 else {
+      raise InvalidField("source block row dimension is zero")
+    }
+    coordinates[axis] = (remaining % width).to_uint64()
+    remaining = remaining / width
+  }
+  guard remaining == 0 else {
+    raise InvalidField("source block row index is outside its dimensions")
+  }
+  coordinates
+}
+
+///|
+fn write_source_contiguous_block(
+  sink : &Hdf5Sink,
+  user_block_size : Int32,
+  start : UInt64,
+  dataset : WritableDataset,
+  payload : Bytes,
+  element_size : Int32,
+  offsets : Array[UInt64],
+  dimensions : Array[UInt64],
+) -> Unit raise Hdf5Error {
+  if dimensions.length() == 0 {
+    guard payload.length() == element_size else {
+      raise InvalidField("scalar value source changed its block size")
+    }
+    writer_sink_write_at(sink, user_block_size, start, payload)
+    return
+  }
+  let outer_dimensions = dimensions.copy()
+  let row_elements = match outer_dimensions.pop() {
+    Some(width) => width.reinterpret_as_int64().to_int()
+    None => raise InvalidField("source block lost its inner dimension")
+  }
+  guard row_elements > 0 else {
+    raise InvalidField("source block inner dimension is zero")
+  }
+  validate_writer_byte_size(row_elements, element_size)
+  let row_size = row_elements * element_size
+  let row_count = writer_shape_count(outer_dimensions)
+  validate_writer_byte_size(row_count, row_size)
+  guard payload.length() == row_count * row_size else {
+    raise InvalidField("value source changed its block payload size")
+  }
+  for row in 0..<row_count {
+    let relative = writer_linear_coordinates(row, outer_dimensions)
+    let absolute = offsets.copy()
+    for axis in 0..<outer_dimensions.length() {
+      guard absolute[axis] <= 0xFFFFFFFFFFFFFFFFUL - relative[axis] else {
+        raise InvalidField("source block row offset overflowed")
+      }
+      absolute[axis] = absolute[axis] + relative[axis]
+    }
+    let linear = writer_linear_element_index(dataset.dimensions, absolute)
+    validate_writer_byte_size(linear, element_size)
+    let byte_offset = linear * element_size
+    let view_start = row * row_size
+    let view = match
+      payload.get_view(start=view_start, end=view_start + row_size) {
+      Some(view) => view
+      None => raise InvalidField("source block row payload is truncated")
+    }
+    writer_sink_write_at(
+      sink,
+      user_block_size,
+      start + byte_offset.to_uint64(),
+      view.to_owned(),
+    )
+  }
+}
+
+///|
+fn write_source_contiguous_storage(
+  sink : &Hdf5Sink,
+  user_block_size : Int32,
+  start : UInt64,
+  dataset : WritableDataset,
+  heap : WritableGlobalHeap,
+  objects : Array[WritableObject],
+) -> Unit raise Hdf5Error {
+  let source = match dataset.value_source {
+    Some(source) => source
+    None => raise InvalidField("source contiguous storage lost its source")
+  }
+  let encoded = encode_write_values(dataset.values, heap~, objects~)
+  let expected_size = writer_contiguous_payload_size(dataset, heap, objects)
+  let order : Array[Int32] = []
+  for axis in 0..<dataset.dimensions.length() {
+    order.push(axis)
+  }
+  let (grid, block_count) = chunk_grid(
+    dataset.dimensions,
+    dataset.block_dimensions,
+  )
+  for index in 0..<block_count {
+    let (offsets, dimensions) = match
+      writer_chunk_edge_shape(
+        dataset,
+        index,
+        grid,
+        order,
+        dataset.block_dimensions,
+      ) {
+      Some(shape) => shape
+      None =>
+        raise InvalidField("value source requested a block outside the dataset")
+    }
+    let values = source.read_values(offsets.copy(), dimensions.copy())
+    guard same_write_datatype(
+      dataset.values,
+      values,
+      reference_address_size=Some(8),
+    ) else {
+      raise InvalidArgument("value source returned a different datatype")
+    }
+    validate_write_values(dimensions, values, reference_address_size=Some(8))
+    let block = encode_write_values(values, heap~, objects~)
+    guard block.element_size == encoded.element_size else {
+      raise InvalidField("value source changed its element size")
+    }
+    let element_count = writer_shape_count(dimensions)
+    validate_writer_byte_size(element_count, block.element_size)
+    let block_size = element_count * block.element_size
+    guard block.payload.length() == block_size else {
+      raise InvalidField("value source changed its block size")
+    }
+    write_source_contiguous_block(
+      sink,
+      user_block_size,
+      start,
+      dataset,
+      block.payload,
+      block.element_size,
+      offsets,
+      dimensions,
+    )
+  }
+  guard writer_contiguous_payload_size(dataset, heap, objects) == expected_size else {
+    raise InvalidField("value source changed its dataset size")
   }
 }
 
@@ -10332,7 +10682,8 @@ fn Hdf5Writer::object_payload(
           )
         }
         WritableContiguous => {
-          let address = if encoded.payload.length() == 0 {
+          let data_size = writer_contiguous_payload_size(dataset, heap, objects)
+          let address = if data_size == 0 {
             0xFFFFFFFFFFFFFFFFUL
           } else {
             object.raw_address
@@ -10340,7 +10691,7 @@ fn Hdf5Writer::object_payload(
           write_header_message(
             buffer,
             msg_data_layout,
-            encode_contiguous_layout(address, encoded.payload.length()),
+            encode_contiguous_layout(address, data_size),
           )
         }
         WritableExternal(slots) => {
@@ -10890,7 +11241,7 @@ fn Hdf5Writer::global_heap_strings(
     }
     match dataset.values {
       VariableStringValues(_) | StructuredValues(_, _) =>
-        scan_chunk_source_values(dataset, chunk => {
+        scan_dataset_source_values(dataset, chunk => {
           collect_heap_strings(strings, chunk)
           match chunk {
             StructuredValues(datatype, items) =>
@@ -10946,7 +11297,7 @@ fn Hdf5Writer::global_heap_sequences(
     }
     match dataset.values {
       StructuredValues(_, _) =>
-        scan_chunk_source_values(dataset, chunk => {
+        scan_dataset_source_values(dataset, chunk => {
           match chunk {
             StructuredValues(datatype, items) =>
               for item in items {
@@ -11009,7 +11360,7 @@ fn Hdf5Writer::global_heap_regions(
     }
     match dataset.values {
       StructuredValues(_, _) =>
-        scan_chunk_source_values(dataset, chunk => {
+        scan_dataset_source_values(dataset, chunk => {
           match chunk {
             StructuredValues(datatype, items) =>
               for item in items {
@@ -11355,7 +11706,7 @@ fn assign_writable_addresses(
         let has_storage = match dataset.storage {
           WritableCompact => false
           WritableContiguous =>
-            encode_write_values(dataset.values, objects~).payload.length() > 0
+            writer_contiguous_payload_size(dataset, heap, objects) > 0
           WritableChunked(_, _) => true
           WritableExtensible(_, _, _) => true
           WritableExternal(_) => false
@@ -11373,8 +11724,7 @@ fn assign_writable_addresses(
             WritableCompact => offset
             WritableContiguous =>
               writer_align(
-                offset +
-                encode_write_values(dataset.values, heap~, objects~).payload.length(),
+                offset + writer_contiguous_payload_size(dataset, heap, objects),
               )
             WritableChunked(_, _) | WritableExtensible(_, _, _) =>
               writer_align(
@@ -11762,7 +12112,29 @@ pub fn Hdf5Writer::write_to(
         let payload = match dataset.storage {
           WritableCompact => b""
           WritableContiguous =>
-            encode_write_values(dataset.values, heap=layout.heap, objects~).payload
+            match dataset.value_source {
+              Some(_) => {
+                let size = writer_contiguous_payload_size(
+                  dataset,
+                  layout.heap,
+                  objects,
+                )
+                if size > 0 {
+                  write_source_contiguous_storage(
+                    sink,
+                    self.user_block_size,
+                    object.raw_address,
+                    dataset,
+                    layout.heap,
+                    objects,
+                  )
+                  eof = writer_align(object.raw_address.to_int() + size)
+                }
+                b""
+              }
+              None =>
+                encode_write_values(dataset.values, heap=layout.heap, objects~).payload
+            }
           WritableChunked(_, _) =>
             match dataset.chunk_source {
               Some(_) => {

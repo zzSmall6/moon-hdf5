@@ -23,9 +23,9 @@ verification notes. Public APIs are listed in
   `encode()` is the in-memory convenience path. `Hdf5File::copy_to` streams
   bytes-backed or source-backed files in bounded chunks.
 - Chunked and extensible datasets can read values from an `Hdf5ChunkSource`;
-  chunks are converted, filtered and written one at a time instead of holding
-  the complete dataset.
-- The release gate passes 491 tests on each target, plus independent h5py
+  contiguous datasets can read edge-clipped blocks from an `Hdf5ValueSource`.
+  Both paths stream output without holding the complete dataset.
+- The release gate passes 497 tests on each target, plus independent h5py
   3.13.0/HDF5 1.14.6 interoperability checks.
 
 ## Installation
@@ -152,6 +152,23 @@ Sources must return repeatable edge-clipped chunks. `add_extensible_dataset_from
 has the same contract. Source-backed datasets cannot be resized or patched in
 the builder.
 
+For a contiguous dataset, supply logical block dimensions rather than chunks:
+
+```moonbit nocheck
+///|
+writer.add_dataset_from_source(
+  "/experiment/streamed-contiguous",
+  [rows, columns],
+  [64U, 64U],
+  @lib.Float32Values([]),
+  source,
+)
+```
+
+`Hdf5ValueSource` blocks are edge-clipped and requested in row-major order.
+`block_dimensions` controls memory use only; the file still contains one
+row-major contiguous payload.
+
 ## Editing Existing Files
 
 ```moonbit nocheck
@@ -201,8 +218,8 @@ arguments.
   streaming output, SWMR, parallel HDF5 and in-file storage reclamation are
   outside the profile.
 - In-memory writer inputs and single dataset/selection results are memory
-  resident; chunk-source output and read iterators are bounded. Edits return a
-  complete byte image. Output sinks must support random access. Edits are
+  resident; source-backed output and read iterators are bounded. Edits return
+  a complete byte image. Output sinks must support random access. Edits are
   append-only, and external sources require caller registration and
   caller-managed files.
 - Mapping, storage and conversion constraints are listed in the

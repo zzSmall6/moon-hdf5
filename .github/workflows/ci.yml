@@ -16,7 +16,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install MoonBit
         run: |
@@ -53,3 +53,38 @@ jobs:
 
       - name: Test (native)
         run: moon test --target native
+
+  interoperability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MOONBIT_INSTALL_VERSION: "0.10.19+bee578715"
+      H5PY_PYTHON: python
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python verification dependencies
+        run: python -m pip install --disable-pip-version-check "h5py==3.13.0" "numpy<3"
+
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | \
+            bash -s -- "$MOONBIT_INSTALL_VERSION"
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+      - name: Show toolchain version
+        run: moon version --all
+
+      - name: Update dependencies
+        run: moon update
+
+      - name: Run the release gate with h5py interoperability
+        run: ./scripts/release_check.sh

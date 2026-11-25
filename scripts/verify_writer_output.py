@@ -99,8 +99,11 @@ def verify_file(path: Path) -> None:
             "region_target",
             "series",
             "source_chunked",
+            "source_contiguous",
+            "source_contiguous_names",
             "source_matrix",
             "source_names",
+            "source_scalar",
             "source_series",
             "string_fill",
         ]
@@ -255,6 +258,30 @@ def verify_file(path: Path) -> None:
         assert source_chunked.compression == "gzip"
         assert source_chunked.compression_opts == 5
         assert source_chunked.fletcher32
+        source_contiguous = handle["experiment/source_contiguous"]
+        contiguous_expected = (
+            np.arange(35, dtype="<i8") * 3 - 5
+        ).reshape(5, 7)
+        np.testing.assert_array_equal(source_contiguous[:], contiguous_expected)
+        assert source_contiguous.chunks is None
+        assert (
+            source_contiguous.id.get_create_plist().get_layout()
+            == h5py.h5d.CONTIGUOUS
+        )
+        assert source_contiguous.fillvalue == -1
+        assert handle["experiment/source_contiguous_names"].asstr()[:].tolist() == [
+            "block",
+            "分块",
+            "",
+            "block",
+            "value",
+            "",
+            "分块",
+        ]
+        source_scalar = handle["experiment/source_scalar"]
+        assert source_scalar.shape == ()
+        assert source_scalar[()] == 123
+        assert source_scalar.chunks is None
         source_series = handle["experiment/source_series"]
         np.testing.assert_array_equal(
             source_series[:], [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
