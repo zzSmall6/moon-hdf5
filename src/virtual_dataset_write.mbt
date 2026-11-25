@@ -119,6 +119,7 @@ pub fn Hdf5Writer::add_virtual_dataset(
     dimensions: dimensions.copy(),
     maximum_dimensions: maximum,
     values,
+    chunk_source: None,
     storage: WritableVirtual(copy_virtual_mappings(mappings)),
     fill_value: copied_fill,
     chunk_filter_masks: [],

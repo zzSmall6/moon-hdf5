@@ -98,6 +98,10 @@ def verify_file(path: Path) -> None:
             "region_references",
             "region_target",
             "series",
+            "source_chunked",
+            "source_matrix",
+            "source_names",
+            "source_series",
             "string_fill",
         ]
         np.testing.assert_array_equal(
@@ -238,6 +242,50 @@ def verify_file(path: Path) -> None:
         assert chunked.compression == "gzip"
         assert chunked.compression_opts == 6
         assert chunked.fletcher32
+        source_chunked = handle["experiment/source_chunked"]
+        source_expected = (
+            np.arange(35, dtype="<i8") * 2 - 15
+        ).reshape(5, 7)
+        source_expected[0, 0] = -7
+        source_expected[2, 4] = -7
+        np.testing.assert_array_equal(source_chunked[:], source_expected)
+        assert source_chunked.chunks == (2, 3)
+        assert source_chunked.fillvalue == -7
+        assert source_chunked.shuffle
+        assert source_chunked.compression == "gzip"
+        assert source_chunked.compression_opts == 5
+        assert source_chunked.fletcher32
+        source_series = handle["experiment/source_series"]
+        np.testing.assert_array_equal(
+            source_series[:], [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+        )
+        assert source_series.maxshape == (None, 4)
+        assert source_series.chunks == (2, 2)
+        assert source_series.fillvalue == -1
+        assert source_series.compression == "gzip"
+        source_matrix = handle["experiment/source_matrix"]
+        np.testing.assert_array_equal(
+            source_matrix[:], [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+        )
+        assert source_matrix.maxshape == (None, None)
+        assert source_matrix.chunks == (1, 2)
+        assert source_matrix.fillvalue == -1
+        assert source_matrix.shuffle
+        assert source_matrix.compression == "gzip"
+        assert layout_index_type(data, source_matrix) == 5
+        source_names = handle["experiment/source_names"]
+        assert source_names.asstr()[:].tolist() == [
+            "stream",
+            "流式",
+            "",
+            "stream",
+            "chunk",
+            "",
+            "流式",
+        ]
+        assert source_names.chunks == (3,)
+        assert source_names.shuffle
+        assert source_names.compression == "gzip"
         shared_fill_addresses = {
             "chunked": h5py.h5o.get_info(chunked.id).addr,
             "string_fill": h5py.h5o.get_info(

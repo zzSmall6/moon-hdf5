@@ -111,8 +111,16 @@ v2 object headers and checksummed OCHK continuations.
 they are encoded, without retaining a complete output image. The sink contract
 allows out-of-order writes, zero-filled gaps and final length truncation.
 `encode` is the convenience path that writes to `Hdf5MemorySink` and returns a
-snapshot. Builder input values remain memory resident. `Hdf5File::copy_to`
-uses the same sink to copy bytes- or source-backed files in 1 MiB chunks.
+snapshot. `Hdf5File::copy_to` uses the same sink to copy bytes- or source-backed
+files in 1 MiB chunks.
+
+`Hdf5ChunkSource` backs finite and extensible chunked datasets with repeatable
+edge-clipped chunks. Address planning records just the stored size of each
+chunk; final emission regenerates and filters one chunk at a time directly into
+the sink. The complete dataset and the complete set of compressed chunks are
+therefore never resident. Variable-length values are pre-scanned to build the
+global heaps. Source-backed datasets are immutable in the builder because its
+resize and patch APIs require resident values.
 
 `set_user_block` reserves a zero-filled 512 B–1 GiB prefix;
 `set_user_block_content` stores caller bytes in the smallest legal size and
@@ -123,7 +131,8 @@ New objects include groups, contiguous, compact, chunked, external and virtual
 datasets, committed datatypes, attributes and links. Compact payloads are
 limited to 65,524 bytes. Chunked output supports fixed-array indexes, an
 extensible-array index for one unlimited axis and a v2 B-tree for multiple
-unlimited axes. The v2 tree is bulk-built from the final chunk set.
+unlimited axes. The v2 tree is bulk-built from the final chunk set. Source-backed
+chunks use the same indexes but keep only per-chunk sizes during planning.
 
 Numeric output covers signed/unsigned integers, IEEE float16/32/64 and x87
 80-bit extended floats in either byte order. Structured encoding recursively

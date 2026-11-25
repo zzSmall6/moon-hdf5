@@ -22,7 +22,10 @@ verification notes. Public APIs are listed in
 - Writers can emit directly into a caller-provided random-access `Hdf5Sink`;
   `encode()` is the in-memory convenience path. `Hdf5File::copy_to` streams
   bytes-backed or source-backed files in bounded chunks.
-- The release gate passes 485 tests on each target, plus independent h5py
+- Chunked and extensible datasets can read values from an `Hdf5ChunkSource`;
+  chunks are converted, filtered and written one at a time instead of holding
+  the complete dataset.
+- The release gate passes 491 tests on each target, plus independent h5py
   3.13.0/HDF5 1.14.6 interoperability checks.
 
 ## Installation
@@ -130,6 +133,25 @@ custom filters. See the [compatibility matrix](docs/compatibility.md) for exact
 variants and constraints. `encode()` is shorthand for writing to an
 `Hdf5MemorySink` and taking its bytes.
 
+For bounded-memory chunk output, implement `Hdf5ChunkSource` and pass a
+zero-element datatype prototype:
+
+```moonbit nocheck
+///|
+writer.add_chunked_dataset_from_source(
+  "/experiment/streamed",
+  [rows, columns],
+  [64U, 64U],
+  @lib.Float32Values([]),
+  source,
+  filters=[@lib.Shuffle, @lib.Deflate(6)],
+)
+```
+
+Sources must return repeatable edge-clipped chunks. `add_extensible_dataset_from_source`
+has the same contract. Source-backed datasets cannot be resized or patched in
+the builder.
+
 ## Editing Existing Files
 
 ```moonbit nocheck
@@ -178,9 +200,10 @@ arguments.
 - Scope is the documented HDF5 1.14.6 common-file subset. Non-seekable
   streaming output, SWMR, parallel HDF5 and in-file storage reclamation are
   outside the profile.
-- Writer input values and single dataset/selection results are memory resident;
-  edits return a complete byte image. Output sinks must support random access.
-  Edits are append-only, and external sources require caller registration and
+- In-memory writer inputs and single dataset/selection results are memory
+  resident; chunk-source output and read iterators are bounded. Edits return a
+  complete byte image. Output sinks must support random access. Edits are
+  append-only, and external sources require caller registration and
   caller-managed files.
 - Mapping, storage and conversion constraints are listed in the
   [compatibility matrix](docs/compatibility.md).

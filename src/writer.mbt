@@ -516,6 +516,23 @@ pub extend Hdf5WriteFilter with Eq::{not_equal, equal}
 pub extend Hdf5WriteFilter with @debug.Debug::{to_repr}
 
 ///|
+/// Supplies logical dataset chunks in row-major order.
+///
+/// `offset` and `dimensions` describe the edge-clipped chunk. The returned
+/// values must have exactly that many elements and the dataset prototype's
+/// datatype. `chunk_index` uses the active chunk-grid numbering; chunks outside
+/// the current shape are not requested. Sources may be read more than once while
+/// addresses are planned and must therefore return repeatable results.
+pub(open) trait Hdf5ChunkSource {
+  fn read_chunk(
+    Self,
+    chunk_index : Int32,
+    offset : Array[UInt64],
+    dimensions : Array[UInt64],
+  ) -> Hdf5WriteValues raise Hdf5Error
+}
+
+///|
 priv enum WritableStorage {
   WritableCompact
   WritableContiguous
@@ -544,7 +561,9 @@ priv struct WritableDataset {
   path : String
   dimensions : Array[UInt64]
   maximum_dimensions : Array[UInt64]
+  /// A zero-element prototype when `chunk_source` is present.
   values : Hdf5WriteValues
+  chunk_source : &Hdf5ChunkSource?
   storage : WritableStorage
   fill_value : Hdf5WriteValues?
   chunk_filter_masks : Array[WritableChunkFilterMask]
@@ -642,8 +661,44 @@ priv struct EncodedWriteValues {
 priv struct EncodedChunkEntry {
   allocated : Bool
   data : Bytes
+  stored_size : Int32
   address : UInt64
   filter_mask : UInt32
+}
+
+///|
+priv struct EncodedChunkStorage {
+  metadata : Bytes
+  entries : Array[EncodedChunkEntry]
+  length : Int32
+}
+
+///|
+fn render_chunk_storage(
+  storage : EncodedChunkStorage,
+  start : UInt64,
+  base_address : UInt64,
+) -> Bytes raise Hdf5Error {
+  let output = @buffer.Buffer::Buffer(size_hint=storage.length)
+  writer_write_bytes(output, storage.metadata)
+  for entry in storage.entries {
+    if entry.allocated {
+      let relative = (entry.address - base_address).to_int() - start.to_int()
+      guard relative >= output.length() && relative <= storage.length else {
+        raise InvalidField("chunk storage address is outside its allocation")
+      }
+      writer_write_zeros(output, relative - output.length())
+      guard entry.data.length() == entry.stored_size else {
+        raise InvalidField("chunk storage payload size changed")
+      }
+      writer_write_bytes(output, entry.data)
+    }
+  }
+  guard output.length() <= storage.length else {
+    raise InvalidField("chunk storage exceeds its planned length")
+  }
+  writer_write_zeros(output, storage.length - output.length())
+  output.to_bytes()
 }
 
 ///|
@@ -1839,6 +1894,24 @@ fn validate_write_values(
 }
 
 ///|
+fn validate_write_value_prototype(
+  values : Hdf5WriteValues,
+) -> Unit raise Hdf5Error {
+  let count = writer_value_count(values)
+  guard count == 0 || count == 1 else {
+    raise InvalidArgument(
+      "chunk source prototype must contain at most one value",
+    )
+  }
+  let datatype = writer_values_datatype(values)
+  validate_writer_datatype(datatype, 0)
+  validate_writer_byte_size(1, writer_value_element_size(values))
+  if count == 1 {
+    validate_write_values([], values)
+  }
+}
+
+///|
 fn Hdf5Writer::has_object(self : Hdf5Writer, path : String) -> Bool {
   self.groups.contains(path) ||
   self.datasets.search_by(dataset => dataset.path == path) is Some(_) ||
@@ -2138,6 +2211,7 @@ pub fn Hdf5Writer::add_dataset(
     dimensions: dimensions.copy(),
     maximum_dimensions: dimensions.copy(),
     values: copy_write_values(values),
+    chunk_source: None,
     storage: WritableContiguous,
     fill_value: copied_fill,
     chunk_filter_masks: [],
@@ -2176,6 +2250,7 @@ pub fn Hdf5Writer::add_compact_dataset(
     dimensions: dimensions.copy(),
     maximum_dimensions: dimensions.copy(),
     values: copy_write_values(values),
+    chunk_source: None,
     storage: WritableCompact,
     fill_value: copied_fill,
     chunk_filter_masks: [],
@@ -2257,6 +2332,7 @@ pub fn Hdf5Writer::add_external_dataset(
     dimensions: dimensions.copy(),
     maximum_dimensions: dimensions.copy(),
     values: copy_write_values(values),
+    chunk_source: None,
     storage: WritableExternal(slots.copy()),
     fill_value: copied_fill,
     chunk_filter_masks: [],
@@ -2746,6 +2822,67 @@ pub fn Hdf5Writer::add_chunked_dataset(
     dimensions: dimensions.copy(),
     maximum_dimensions: dimensions.copy(),
     values: copy_write_values(values),
+    chunk_source: None,
+    storage: WritableChunked(
+      chunk_dimensions.copy(),
+      copy_write_filters(filters),
+    ),
+    fill_value: copied_fill,
+    chunk_filter_masks: [],
+  })
+}
+
+///|
+/// Adds a finite chunked dataset whose values are pulled from `source`.
+///
+/// `prototype` supplies the datatype and may contain zero or one value. The
+/// source is queried per edge-clipped chunk; chunk payloads are filtered and
+/// written one at a time, so the complete dataset is never materialized.
+/// Source-backed datasets cannot be resized, appended or patched in the builder.
+pub fn Hdf5Writer::add_chunked_dataset_from_source(
+  self : Hdf5Writer,
+  path : String,
+  dimensions : Array[UInt64],
+  chunk_dimensions : Array[UInt32],
+  prototype : Hdf5WriteValues,
+  source : &Hdf5ChunkSource,
+  fill_value? : Hdf5WriteValues,
+  filters~ : Array[Hdf5WriteFilter] = [],
+) -> Unit raise Hdf5Error {
+  let normalized = canonical_writer_path(path)
+  guard normalized != "/" else {
+    raise InvalidArgument("a dataset cannot replace the root group")
+  }
+  guard !self.has_entry(normalized) else {
+    raise InvalidArgument("writer object path already exists")
+  }
+  validate_write_value_prototype(prototype)
+  guard dimensions.length() > 0 &&
+    chunk_dimensions.length() == dimensions.length() else {
+    raise InvalidArgument("chunk dimensions must match a simple dataspace")
+  }
+  for axis in 0..<chunk_dimensions.length() {
+    let dimension = chunk_dimensions[axis]
+    guard dimensions[axis] > 0UL && dimension > 0U && dimension <= 0x7FFFFFFFU else {
+      raise InvalidArgument("chunk dimension is invalid")
+    }
+  }
+  chunk_grid(dimensions, chunk_dimensions) |> ignore
+  validate_writer_chunk_size(
+    chunk_dimensions,
+    writer_value_element_size(prototype),
+  )
+  validate_write_filters(filters, self.custom_filters)
+  validate_writer_filters_for_values(prototype, filters)
+  let copied_fill = validated_write_fill(prototype, fill_value)
+  self.ensure_groups(writer_parent_path(normalized))
+  self.record_link(normalized)
+  self.datasets.push({
+    path: normalized,
+    dimensions: dimensions.copy(),
+    maximum_dimensions: dimensions.copy(),
+    values: copy_write_values(prototype),
+    chunk_source: Some(source),
     storage: WritableChunked(
       chunk_dimensions.copy(),
       copy_write_filters(filters),
@@ -2874,6 +3011,7 @@ pub fn Hdf5Writer::set_chunk_filter_mask(
     dimensions: dataset.dimensions,
     maximum_dimensions: dataset.maximum_dimensions,
     values: dataset.values,
+    chunk_source: dataset.chunk_source,
     storage: dataset.storage,
     fill_value: dataset.fill_value,
     chunk_filter_masks: masks,
@@ -2987,6 +3125,68 @@ pub fn Hdf5Writer::add_extensible_dataset(
     dimensions: dimensions.copy(),
     maximum_dimensions: encoded_maximum,
     values: copy_write_values(values),
+    chunk_source: None,
+    storage: WritableExtensible(
+      chunk_dimensions.copy(),
+      copy_write_filters(filters),
+      unlimited_axes,
+    ),
+    fill_value: copied_fill,
+    chunk_filter_masks: [],
+  })
+}
+
+///|
+/// Adds an extensible chunked dataset whose values are pulled from `source`.
+///
+/// `prototype` supplies the datatype and may contain zero or one value. The
+/// source is queried per edge-clipped chunk and may be read more than once
+/// while metadata addresses are planned. Source-backed datasets cannot be
+/// resized, appended or patched in the builder.
+pub fn Hdf5Writer::add_extensible_dataset_from_source(
+  self : Hdf5Writer,
+  path : String,
+  dimensions : Array[UInt64],
+  maximum_dimensions : Array[UInt64?],
+  chunk_dimensions : Array[UInt32],
+  prototype : Hdf5WriteValues,
+  source : &Hdf5ChunkSource,
+  fill_value? : Hdf5WriteValues,
+  filters~ : Array[Hdf5WriteFilter] = [],
+) -> Unit raise Hdf5Error {
+  let normalized = canonical_writer_path(path)
+  guard normalized != "/" else {
+    raise InvalidArgument("a dataset cannot replace the root group")
+  }
+  guard !self.has_entry(normalized) else {
+    raise InvalidArgument("writer object path already exists")
+  }
+  validate_write_value_prototype(prototype)
+  let (encoded_maximum, unlimited_axes) = validate_extensible_dimensions(
+    dimensions, maximum_dimensions, chunk_dimensions,
+  )
+  validate_writer_chunk_size(
+    chunk_dimensions,
+    writer_value_element_size(prototype),
+  )
+  validate_write_filters(filters, self.custom_filters)
+  validate_writer_filters_for_values(prototype, filters)
+  let copied_fill = validated_write_fill(prototype, fill_value)
+  let grid_dimensions = dimensions.copy()
+  for axis in 0..<grid_dimensions.length() {
+    if !unlimited_axes.contains(axis) {
+      grid_dimensions[axis] = encoded_maximum[axis]
+    }
+  }
+  chunk_grid(grid_dimensions, chunk_dimensions) |> ignore
+  self.ensure_groups(writer_parent_path(normalized))
+  self.record_link(normalized)
+  self.datasets.push({
+    path: normalized,
+    dimensions: dimensions.copy(),
+    maximum_dimensions: encoded_maximum,
+    values: copy_write_values(prototype),
+    chunk_source: Some(source),
     storage: WritableExtensible(
       chunk_dimensions.copy(),
       copy_write_filters(filters),
@@ -3186,6 +3386,11 @@ pub fn Hdf5Writer::resize_dataset(
 ) -> Unit raise Hdf5Error {
   let index = self.writer_dataset_index(path)
   let dataset = self.datasets[index]
+  guard dataset.chunk_source is None else {
+    raise UnsupportedFeature(
+      "datasets backed by a chunk source cannot be resized",
+    )
+  }
   let (chunk_dimensions, filters, unlimited_axes) = match dataset.storage {
     WritableExtensible(chunks, pipeline, axes) => (chunks, pipeline, axes)
     _ => raise InvalidArgument("only extensible datasets can be resized")
@@ -3226,6 +3431,7 @@ pub fn Hdf5Writer::resize_dataset(
     dimensions: dimensions.copy(),
     maximum_dimensions: dataset.maximum_dimensions,
     values,
+    chunk_source: dataset.chunk_source,
     storage: WritableExtensible(chunk_dimensions, filters, unlimited_axes),
     fill_value: dataset.fill_value,
     chunk_filter_masks: dataset.chunk_filter_masks,
@@ -3395,6 +3601,11 @@ pub fn Hdf5Writer::append_dataset(
 ) -> Unit raise Hdf5Error {
   let index = self.writer_dataset_index(path)
   let dataset = self.datasets[index]
+  guard dataset.chunk_source is None else {
+    raise UnsupportedFeature(
+      "datasets backed by a chunk source cannot be patched in a builder",
+    )
+  }
   let unlimited_axes = match dataset.storage {
     WritableExtensible(_, _, axes) => axes
     _ => raise InvalidArgument("only extensible datasets can be appended")
@@ -3438,6 +3649,7 @@ pub fn Hdf5Writer::append_dataset(
       offsets,
       true,
     ),
+    chunk_source: resized.chunk_source,
     storage: resized.storage,
     fill_value: resized.fill_value,
     chunk_filter_masks: resized.chunk_filter_masks,
@@ -3461,6 +3673,11 @@ pub fn Hdf5Writer::write_dataset_slab(
 ) -> Unit raise Hdf5Error {
   let index = self.writer_dataset_index(path)
   let dataset = self.datasets[index]
+  guard dataset.chunk_source is None else {
+    raise UnsupportedFeature(
+      "datasets backed by a chunk source cannot be patched in a builder",
+    )
+  }
   let unlimited_axes = match dataset.storage {
     WritableExternal(_) =>
       raise InvalidArgument("external datasets cannot be patched in a builder")
@@ -3507,6 +3724,7 @@ pub fn Hdf5Writer::write_dataset_slab(
       offsets,
       true,
     ),
+    chunk_source: resized.chunk_source,
     storage: resized.storage,
     fill_value: resized.fill_value,
     chunk_filter_masks: resized.chunk_filter_masks,
@@ -5798,17 +6016,240 @@ fn chunk_grid(
 }
 
 ///|
+fn writer_chunk_edge_shape(
+  dataset : WritableDataset,
+  chunk_index : Int32,
+  grid : Array[Int32],
+  order : Array[Int32],
+  chunk_dimensions : Array[UInt32],
+) -> (Array[UInt64], Array[UInt64])? raise Hdf5Error {
+  let coordinates = writer_chunk_coordinates(chunk_index, grid, order)
+  let offsets : Array[UInt64] = []
+  let dimensions : Array[UInt64] = []
+  for axis in 0..<dataset.dimensions.length() {
+    let width = chunk_dimensions[axis].to_uint64()
+    let start = coordinates[axis] * width
+    if start >= dataset.dimensions[axis] {
+      return None
+    }
+    let remaining = dataset.dimensions[axis] - start
+    offsets.push(start)
+    dimensions.push(if remaining < width { remaining } else { width })
+  }
+  Some((offsets, dimensions))
+}
+
+///|
+fn encode_source_chunk_entry(
+  dataset : WritableDataset,
+  source : &Hdf5ChunkSource,
+  chunk_index : Int32,
+  grid : Array[Int32],
+  order : Array[Int32],
+  chunk_dimensions : Array[UInt32],
+  filters : Array[Hdf5WriteFilter],
+  heap : WritableGlobalHeap,
+  objects : Array[WritableObject],
+  custom_filters : Array[&Hdf5CustomFilter],
+  include_data~ : Bool,
+  reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
+) -> EncodedChunkEntry raise Hdf5Error {
+  let coordinates = writer_chunk_coordinates(chunk_index, grid, order)
+  let filter_mask = dataset_chunk_filter_mask(dataset, coordinates)
+  let (offsets, dimensions) = match
+    writer_chunk_edge_shape(dataset, chunk_index, grid, order, chunk_dimensions) {
+    Some(shape) => shape
+    None =>
+      raise InvalidField("chunk source requested a chunk outside the dataset")
+  }
+  let values = source.read_chunk(chunk_index, offsets.copy(), dimensions.copy())
+  guard same_write_datatype(
+    dataset.values,
+    values,
+    reference_address_size=Some(reference_address_size),
+  ) else {
+    raise InvalidArgument("chunk source returned a different datatype")
+  }
+  validate_write_values(
+    dimensions,
+    values,
+    reference_address_size=Some(reference_address_size),
+  )
+  let prototype = encode_write_values(
+    dataset.values,
+    heap~,
+    objects~,
+    reference_address_size~,
+    vlen_address_size~,
+  )
+  let encoded = encode_write_values(
+    values,
+    heap~,
+    objects~,
+    reference_address_size~,
+    vlen_address_size~,
+  )
+  guard encoded.element_size == prototype.element_size &&
+    encoded.payload.length() ==
+    writer_shape_count(dimensions) * encoded.element_size else {
+    raise InvalidField("chunk source payload size changed during encoding")
+  }
+  let fill = match dataset.fill_value {
+    Some(value) =>
+      encode_write_values(
+        value,
+        heap~,
+        objects~,
+        reference_address_size~,
+        vlen_address_size~,
+      ).payload
+    None => Bytes::make(encoded.element_size, b'\x00')
+  }
+  let chunk_elements = writer_chunk_element_count(chunk_dimensions)
+  let chunk_size = chunk_elements * encoded.element_size
+  let chunk = FixedArray::make(chunk_size, b'\x00')
+  write_repeated_element(chunk, fill)
+  let edge_elements = writer_shape_count(dimensions)
+  let rank = dimensions.length()
+  let mut allocated = writer_values_contain_vlen(dataset.values)
+  for linear in 0..<edge_elements {
+    let coordinates = Array::make(rank, 0)
+    let mut remaining = linear.to_int64()
+    let mut axis = rank
+    while axis > 0 {
+      axis = axis - 1
+      let width = dimensions[axis].reinterpret_as_int64()
+      coordinates[axis] = (remaining % width).to_int()
+      remaining = remaining / width
+    }
+    let mut destination = 0
+    for axis in 0..<rank {
+      destination = destination * chunk_dimensions[axis].reinterpret_as_int() +
+        coordinates[axis]
+    }
+    let source_offset = linear * encoded.element_size
+    let destination_offset = destination * encoded.element_size
+    chunk.blit_from_bytes(
+      destination_offset,
+      encoded.payload,
+      source_offset,
+      encoded.element_size,
+    )
+    if !allocated && element_differs(encoded.payload, source_offset, fill) {
+      allocated = true
+    }
+  }
+  let mut stored_size = 0
+  let data = if allocated {
+    let filtered = encode_chunk_filters(
+      chunk.unsafe_reinterpret_as_bytes(),
+      filters,
+      filter_mask,
+      encoded.element_size,
+      writer_values_datatype(dataset.values),
+      dataset.values,
+      fill,
+      custom_filters,
+    )
+    stored_size = filtered.length()
+    if include_data {
+      filtered
+    } else {
+      b""
+    }
+  } else {
+    b""
+  }
+  { allocated, data, stored_size, address: 0UL, filter_mask, }
+}
+
+///|
+fn scan_chunk_source_values(
+  dataset : WritableDataset,
+  callback : (Hdf5WriteValues) -> Unit raise Hdf5Error,
+) -> Unit raise Hdf5Error {
+  let source = match dataset.chunk_source {
+    Some(source) => source
+    None => return
+  }
+  let (chunk_dimensions, _, order, grid_dimensions) = writer_dataset_chunk_grid(
+    dataset,
+  )
+  let (grid, chunk_count) = chunk_grid(grid_dimensions, chunk_dimensions)
+  for index in 0..<chunk_count {
+    match
+      writer_chunk_edge_shape(dataset, index, grid, order, chunk_dimensions) {
+      Some((offsets, dimensions)) => {
+        let values = source.read_chunk(index, offsets.copy(), dimensions.copy())
+        guard same_write_datatype(
+          dataset.values,
+          values,
+          reference_address_size=Some(8),
+        ) else {
+          raise InvalidArgument("chunk source returned a different datatype")
+        }
+        validate_write_values(
+          dimensions,
+          values,
+          reference_address_size=Some(8),
+        )
+        callback(values)
+      }
+      None => ()
+    }
+  }
+}
+
+///|
 fn encode_dataset_chunks(
   dataset : WritableDataset,
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
   custom_filters : Array[&Hdf5CustomFilter],
+  include_data~ : Bool = true,
   reference_address_size~ : Int32 = 8,
   vlen_address_size~ : Int32 = 0,
 ) -> Array[EncodedChunkEntry] raise Hdf5Error {
   let (chunk_dimensions, filters, order, grid_dimensions) = writer_dataset_chunk_grid(
     dataset,
   )
+  let (grid, chunk_count) = chunk_grid(grid_dimensions, chunk_dimensions)
+  if dataset.chunk_source is Some(source) {
+    let entries : Array[EncodedChunkEntry] = []
+    for index in 0..<chunk_count {
+      let coordinates = writer_chunk_coordinates(index, grid, order)
+      if writer_chunk_edge_shape(dataset, index, grid, order, chunk_dimensions)
+        is Some(_) {
+        entries.push(
+          encode_source_chunk_entry(
+            dataset,
+            source,
+            index,
+            grid,
+            order,
+            chunk_dimensions,
+            filters,
+            heap,
+            objects,
+            custom_filters,
+            include_data~,
+            reference_address_size~,
+            vlen_address_size~,
+          ),
+        )
+      } else {
+        entries.push({
+          allocated: false,
+          data: b"",
+          stored_size: 0,
+          address: 0UL,
+          filter_mask: dataset_chunk_filter_mask(dataset, coordinates),
+        })
+      }
+    }
+    return entries
+  }
   let encoded = encode_write_values(
     dataset.values,
     heap~,
@@ -5827,7 +6268,6 @@ fn encode_dataset_chunks(
       ).payload
     None => Bytes::make(encoded.element_size, b'\x00')
   }
-  let (grid, chunk_count) = chunk_grid(grid_dimensions, chunk_dimensions)
   let mut chunk_elements = 1L
   for dimension in chunk_dimensions {
     guard chunk_elements <= 0x7FFFFFFFL / dimension.to_int64() else {
@@ -5917,6 +6357,7 @@ fn encode_dataset_chunks(
     entries.push({
       allocated: allocated[index],
       data,
+      stored_size: data.length(),
       address: 0UL,
       filter_mask,
     })
@@ -5925,18 +6366,19 @@ fn encode_dataset_chunks(
 }
 
 ///|
-fn encode_fixed_array_storage(
+fn plan_fixed_array_storage(
   start : UInt64,
   dataset : WritableDataset,
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
   custom_filters : Array[&Hdf5CustomFilter],
+  include_data~ : Bool = true,
   offset_size~ : Int32 = 8,
   length_size~ : Int32 = 8,
   base_address~ : UInt64 = 0UL,
   reference_address_size~ : Int32 = 8,
   vlen_address_size~ : Int32 = 0,
-) -> Bytes raise Hdf5Error {
+) -> EncodedChunkStorage raise Hdf5Error {
   let (_, filters) = match dataset.storage {
     WritableChunked(dimensions, filters) => (dimensions, filters)
     WritableExtensible(dimensions, filters, _) => (dimensions, filters)
@@ -5951,6 +6393,7 @@ fn encode_fixed_array_storage(
     heap,
     objects,
     custom_filters,
+    include_data~,
     reference_address_size~,
     vlen_address_size~,
   )
@@ -5983,13 +6426,14 @@ fn encode_fixed_array_storage(
       entries[index] = {
         allocated: true,
         data: entries[index].data,
+        stored_size: entries[index].stored_size,
         address: file_offset_to_stored_address(
           chunk_address.to_uint64(),
           base_address,
         ),
         filter_mask: entries[index].filter_mask,
       }
-      chunk_address = writer_align(chunk_address + entries[index].data.length())
+      chunk_address = writer_align(chunk_address + entries[index].stored_size)
     }
   }
 
@@ -6041,10 +6485,10 @@ fn encode_fixed_array_storage(
         offset_size,
       )
       if filtered {
-        guard entry.data.length() <= 65535 else {
+        guard entry.stored_size <= 65535 else {
           raise InvalidField("filtered writer chunk is too large")
         }
-        page.write_uint16_le(entry.data.length().to_uint16())
+        page.write_uint16_le(entry.stored_size.to_uint16())
         page.write_uint_le(entry.filter_mask)
       }
       entry_index = entry_index + 1
@@ -6060,23 +6504,57 @@ fn encode_fixed_array_storage(
     block.write_uint_le(metadata_checksum(block.to_bytes(), 0, block.length()))
   }
 
-  let output = @buffer.Buffer::Buffer(size_hint=chunk_address - start.to_int())
-  writer_write_bytes(output, header.to_bytes())
-  writer_write_zeros(output, block_address - start.to_int() - output.length())
-  writer_write_bytes(output, block.to_bytes())
+  let metadata = @buffer.Buffer::Buffer(
+    size_hint=chunk_address - start.to_int(),
+  )
+  writer_write_bytes(metadata, header.to_bytes())
+  writer_write_zeros(
+    metadata,
+    block_address - start.to_int() - metadata.length(),
+  )
+  writer_write_bytes(metadata, block.to_bytes())
+  let mut metadata_end = chunk_address - start.to_int()
   for entry in entries {
     if entry.allocated {
-      writer_write_zeros(
-        output,
-        (entry.address - base_address).to_int() -
-        start.to_int() -
-        output.length(),
-      )
-      writer_write_bytes(output, entry.data)
+      metadata_end = (entry.address - base_address).to_int() - start.to_int()
+      break
     }
   }
-  writer_write_zeros(output, chunk_address - start.to_int() - output.length())
-  output.to_bytes()
+  writer_write_zeros(metadata, metadata_end - metadata.length())
+  {
+    metadata: metadata.to_bytes(),
+    entries,
+    length: chunk_address - start.to_int(),
+  }
+}
+
+///|
+fn encode_fixed_array_storage(
+  start : UInt64,
+  dataset : WritableDataset,
+  heap : WritableGlobalHeap,
+  objects : Array[WritableObject],
+  custom_filters : Array[&Hdf5CustomFilter],
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+  base_address~ : UInt64 = 0UL,
+  reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
+) -> Bytes raise Hdf5Error {
+  let plan = plan_fixed_array_storage(
+    start,
+    dataset,
+    heap,
+    objects,
+    custom_filters,
+    include_data=true,
+    offset_size~,
+    length_size~,
+    base_address~,
+    reference_address_size~,
+    vlen_address_size~,
+  )
+  render_chunk_storage(plan, start, base_address)
 }
 
 ///|
@@ -6125,7 +6603,7 @@ fn writer_write_extensible_entry(
     offset_size,
   )
   if filtered {
-    let size = if allocated { entries[index.to_int()].data.length() } else { 0 }
+    let size = if allocated { entries[index.to_int()].stored_size } else { 0 }
     guard size <= 65535 else {
       raise InvalidField("filtered writer chunk is too large")
     }
@@ -6227,18 +6705,19 @@ fn encode_writer_extensible_data_block(
 }
 
 ///|
-fn encode_extensible_array_storage(
+fn plan_extensible_array_storage(
   start : UInt64,
   dataset : WritableDataset,
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
   custom_filters : Array[&Hdf5CustomFilter],
+  include_data~ : Bool = true,
   offset_size~ : Int32 = 8,
   length_size~ : Int32 = 8,
   base_address~ : UInt64 = 0UL,
   reference_address_size~ : Int32 = 8,
   vlen_address_size~ : Int32 = 0,
-) -> Bytes raise Hdf5Error {
+) -> EncodedChunkStorage raise Hdf5Error {
   let (_, filters, unlimited_axes) = match dataset.storage {
     WritableExtensible(dimensions, filters, axes) => (dimensions, filters, axes)
     _ => raise InvalidField("expected extensible writer dataset")
@@ -6253,6 +6732,7 @@ fn encode_extensible_array_storage(
     heap,
     objects,
     custom_filters,
+    include_data~,
     reference_address_size~,
     vlen_address_size~,
   )
@@ -6397,10 +6877,11 @@ fn encode_extensible_array_storage(
       entries[index] = {
         allocated: true,
         data: entries[index].data,
+        stored_size: entries[index].stored_size,
         address: chunk_address.to_uint64(),
         filter_mask: entries[index].filter_mask,
       }
-      chunk_address = writer_align(chunk_address + entries[index].data.length())
+      chunk_address = writer_align(chunk_address + entries[index].stored_size)
     }
   }
 
@@ -6470,7 +6951,7 @@ fn encode_extensible_array_storage(
       offset_size,
     )
     if filtered {
-      let size = if allocated { entries[entry_index].data.length() } else { 0 }
+      let size = if allocated { entries[entry_index].stored_size } else { 0 }
       guard size <= 65535 else {
         raise InvalidField("filtered writer chunk is too large")
       }
@@ -6601,17 +7082,48 @@ fn encode_extensible_array_storage(
     }
     planned_index = planned_index + 1
   }
+  let mut metadata_end = chunk_address - start.to_int()
   for entry in entries {
     if entry.allocated {
-      writer_write_zeros(
-        output,
-        entry.address.to_int() - start.to_int() - output.length(),
-      )
-      writer_write_bytes(output, entry.data)
+      metadata_end = entry.address.to_int() - start.to_int()
+      break
     }
   }
-  writer_write_zeros(output, chunk_address - start.to_int() - output.length())
-  output.to_bytes()
+  writer_write_zeros(output, metadata_end - output.length())
+  {
+    metadata: output.to_bytes(),
+    entries,
+    length: chunk_address - start.to_int(),
+  }
+}
+
+///|
+fn encode_extensible_array_storage(
+  start : UInt64,
+  dataset : WritableDataset,
+  heap : WritableGlobalHeap,
+  objects : Array[WritableObject],
+  custom_filters : Array[&Hdf5CustomFilter],
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+  base_address~ : UInt64 = 0UL,
+  reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
+) -> Bytes raise Hdf5Error {
+  let plan = plan_extensible_array_storage(
+    start,
+    dataset,
+    heap,
+    objects,
+    custom_filters,
+    include_data=true,
+    offset_size~,
+    length_size~,
+    base_address~,
+    reference_address_size~,
+    vlen_address_size~,
+  )
+  render_chunk_storage(plan, start, base_address)
 }
 
 ///|
@@ -6826,7 +7338,7 @@ fn writer_btree_record(
     offset_size,
   )
   if filtered {
-    writer_write_uint_width(buffer, entry.data.length().to_uint64(), size_width)
+    writer_write_uint_width(buffer, entry.stored_size.to_uint64(), size_width)
     writer_write_uint_width(buffer, entry.filter_mask.to_uint64(), 4)
   }
   for coordinate in coordinates {
@@ -6944,18 +7456,19 @@ fn encode_writer_btree_node(
 }
 
 ///|
-fn encode_btree_v2_chunk_storage(
+fn plan_btree_v2_chunk_storage(
   start : UInt64,
   dataset : WritableDataset,
   heap : WritableGlobalHeap,
   objects : Array[WritableObject],
   custom_filters : Array[&Hdf5CustomFilter],
+  include_data~ : Bool = true,
   offset_size~ : Int32 = 8,
   length_size~ : Int32 = 8,
   base_address~ : UInt64 = 0UL,
   reference_address_size~ : Int32 = 8,
   vlen_address_size~ : Int32 = 0,
-) -> Bytes raise Hdf5Error {
+) -> EncodedChunkStorage raise Hdf5Error {
   let (chunk_dimensions, filters, unlimited_axes) = match dataset.storage {
     WritableExtensible(chunks, pipeline, axes) => (chunks, pipeline, axes)
     _ => raise InvalidField("expected extensible writer dataset")
@@ -6970,6 +7483,7 @@ fn encode_btree_v2_chunk_storage(
     heap,
     objects,
     custom_filters,
+    include_data~,
     reference_address_size~,
     vlen_address_size~,
   )
@@ -6985,8 +7499,8 @@ fn encode_btree_v2_chunk_storage(
     writer_value_element_size(dataset.values)
   let mut maximum_stored = 0
   for entry in entries {
-    if entry.allocated && entry.data.length() > maximum_stored {
-      maximum_stored = entry.data.length()
+    if entry.allocated && entry.stored_size > maximum_stored {
+      maximum_stored = entry.stored_size
     }
   }
   let size_width = if filtered {
@@ -7050,10 +7564,11 @@ fn encode_btree_v2_chunk_storage(
     updated[index] = {
       allocated: true,
       data: entries[index].data,
+      stored_size: entries[index].stored_size,
       address,
       filter_mask: entries[index].filter_mask,
     }
-    address = writer_align(address.to_int() + entries[index].data.length()).to_uint64()
+    address = writer_align(address.to_int() + entries[index].stored_size).to_uint64()
   }
   let records : Array[Bytes] = []
   for entry_index in 0..<indices.length() {
@@ -7125,15 +7640,178 @@ fn encode_btree_v2_chunk_storage(
       ),
     )
   }
+  let mut metadata_end = total_chunks
   for index in indices {
     if updated[index].allocated {
-      let relative = updated[index].address.to_int() - start.to_int()
-      writer_write_zeros(output, relative - output.length())
-      writer_write_bytes(output, updated[index].data)
+      metadata_end = updated[index].address.to_int() - start.to_int()
+      break
     }
   }
-  writer_write_zeros(output, total_chunks - output.length())
-  output.to_bytes()
+  writer_write_zeros(output, metadata_end - output.length())
+  { metadata: output.to_bytes(), entries: updated, length: total_chunks, }
+}
+
+///|
+fn encode_btree_v2_chunk_storage(
+  start : UInt64,
+  dataset : WritableDataset,
+  heap : WritableGlobalHeap,
+  objects : Array[WritableObject],
+  custom_filters : Array[&Hdf5CustomFilter],
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+  base_address~ : UInt64 = 0UL,
+  reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
+) -> Bytes raise Hdf5Error {
+  let plan = plan_btree_v2_chunk_storage(
+    start,
+    dataset,
+    heap,
+    objects,
+    custom_filters,
+    include_data=true,
+    offset_size~,
+    length_size~,
+    base_address~,
+    reference_address_size~,
+    vlen_address_size~,
+  )
+  render_chunk_storage(plan, start, base_address)
+}
+
+///|
+fn plan_dataset_chunk_storage(
+  start : UInt64,
+  dataset : WritableDataset,
+  heap : WritableGlobalHeap,
+  objects : Array[WritableObject],
+  custom_filters : Array[&Hdf5CustomFilter],
+  include_data~ : Bool,
+  offset_size~ : Int32 = 8,
+  length_size~ : Int32 = 8,
+  base_address~ : UInt64 = 0UL,
+  reference_address_size~ : Int32 = 8,
+  vlen_address_size~ : Int32 = 0,
+) -> EncodedChunkStorage raise Hdf5Error {
+  match dataset.storage {
+    WritableChunked(_, _) =>
+      plan_fixed_array_storage(
+        start,
+        dataset,
+        heap,
+        objects,
+        custom_filters,
+        include_data~,
+        offset_size~,
+        length_size~,
+        base_address~,
+        reference_address_size~,
+        vlen_address_size~,
+      )
+    WritableExtensible(_, _, unlimited_axes) =>
+      if unlimited_axes.length() == 1 {
+        plan_extensible_array_storage(
+          start,
+          dataset,
+          heap,
+          objects,
+          custom_filters,
+          include_data~,
+          offset_size~,
+          length_size~,
+          base_address~,
+          reference_address_size~,
+          vlen_address_size~,
+        )
+      } else {
+        plan_btree_v2_chunk_storage(
+          start,
+          dataset,
+          heap,
+          objects,
+          custom_filters,
+          include_data~,
+          offset_size~,
+          length_size~,
+          base_address~,
+          reference_address_size~,
+          vlen_address_size~,
+        )
+      }
+    WritableCompact
+    | WritableContiguous
+    | WritableExternal(_)
+    | WritableVirtual(_) =>
+      raise InvalidField("expected chunked writer dataset")
+  }
+}
+
+///|
+fn write_source_chunk_storage(
+  sink : &Hdf5Sink,
+  user_block_size : Int32,
+  start : UInt64,
+  dataset : WritableDataset,
+  heap : WritableGlobalHeap,
+  objects : Array[WritableObject],
+  custom_filters : Array[&Hdf5CustomFilter],
+  plan : EncodedChunkStorage,
+) -> Unit raise Hdf5Error {
+  let (chunk_dimensions, filters, order, grid_dimensions) = writer_dataset_chunk_grid(
+    dataset,
+  )
+  let (grid, _) = chunk_grid(grid_dimensions, chunk_dimensions)
+  writer_sink_write_at(sink, user_block_size, start, plan.metadata)
+  let mut cursor = start.to_int() + plan.metadata.length()
+  for index in 0..<plan.entries.length() {
+    let entry = plan.entries[index]
+    if entry.allocated {
+      let source = match dataset.chunk_source {
+        Some(source) => source
+        None => raise InvalidField("source chunk storage lost its source")
+      }
+      let encoded = encode_source_chunk_entry(
+        dataset,
+        source,
+        index,
+        grid,
+        order,
+        chunk_dimensions,
+        filters,
+        heap,
+        objects,
+        custom_filters,
+        include_data=true,
+      )
+      guard encoded.allocated && encoded.stored_size == entry.stored_size else {
+        raise InvalidField("chunk source output changed during encoding")
+      }
+      let address = entry.address.to_int()
+      guard address >= cursor else {
+        raise InvalidField("chunk source storage addresses overlap")
+      }
+      if address > cursor {
+        writer_sink_write_at(
+          sink,
+          user_block_size,
+          cursor.to_uint64(),
+          Bytes::make(address - cursor, b'\x00'),
+        )
+      }
+      writer_sink_write_at(sink, user_block_size, entry.address, encoded.data)
+      cursor = writer_align(address + encoded.data.length())
+    }
+  }
+  let end = start.to_int() + plan.length
+  if end > cursor {
+    writer_sink_write_at(
+      sink,
+      user_block_size,
+      cursor.to_uint64(),
+      Bytes::make(end - cursor, b'\x00'),
+    )
+  }
 }
 
 ///|
@@ -10210,6 +10888,20 @@ fn Hdf5Writer::global_heap_strings(
         }
       _ => ()
     }
+    match dataset.values {
+      VariableStringValues(_) | StructuredValues(_, _) =>
+        scan_chunk_source_values(dataset, chunk => {
+          collect_heap_strings(strings, chunk)
+          match chunk {
+            StructuredValues(datatype, items) =>
+              for item in items {
+                collect_heap_structured_strings(strings, datatype, item)
+              }
+            _ => ()
+          }
+        })
+      _ => ()
+    }
     match dataset.fill_value {
       Some(fill) => {
         collect_heap_strings(strings, fill)
@@ -10250,6 +10942,25 @@ fn Hdf5Writer::global_heap_sequences(
         for item in items {
           collect_heap_sequences(sequences, datatype, item, heap~, objects~)
         }
+      _ => ()
+    }
+    match dataset.values {
+      StructuredValues(_, _) =>
+        scan_chunk_source_values(dataset, chunk => {
+          match chunk {
+            StructuredValues(datatype, items) =>
+              for item in items {
+                collect_heap_sequences(
+                  sequences,
+                  datatype,
+                  item,
+                  heap~,
+                  objects~,
+                )
+              }
+            _ => ()
+          }
+        })
       _ => ()
     }
     match dataset.fill_value {
@@ -10294,6 +11005,28 @@ fn Hdf5Writer::global_heap_regions(
             external_references~,
           )
         }
+      _ => ()
+    }
+    match dataset.values {
+      StructuredValues(_, _) =>
+        scan_chunk_source_values(dataset, chunk => {
+          match chunk {
+            StructuredValues(datatype, items) =>
+              for item in items {
+                collect_heap_regions(
+                  regions,
+                  datatype,
+                  item,
+                  objects,
+                  self.attributes,
+                  external_sources=self.external_sources,
+                  custom_filters=self.custom_filters,
+                  external_references~,
+                )
+              }
+            _ => ()
+          }
+        })
       _ => ()
     }
     match dataset.fill_value {
@@ -10643,37 +11376,18 @@ fn assign_writable_addresses(
                 offset +
                 encode_write_values(dataset.values, heap~, objects~).payload.length(),
               )
-            WritableChunked(_, _) =>
+            WritableChunked(_, _) | WritableExtensible(_, _, _) =>
               writer_align(
                 offset +
-                encode_fixed_array_storage(
+                plan_dataset_chunk_storage(
                   offset.to_uint64(),
                   dataset,
                   heap,
                   objects,
                   writer.custom_filters,
-                ).length(),
+                  include_data=false,
+                ).length,
               )
-            WritableExtensible(_, _, unlimited_axes) => {
-              let payload_length = if unlimited_axes.length() == 1 {
-                encode_extensible_array_storage(
-                  offset.to_uint64(),
-                  dataset,
-                  heap,
-                  objects,
-                  writer.custom_filters,
-                ).length()
-              } else {
-                encode_btree_v2_chunk_storage(
-                  offset.to_uint64(),
-                  dataset,
-                  heap,
-                  objects,
-                  writer.custom_filters,
-                ).length()
-              }
-              writer_align(offset + payload_length)
-            }
             WritableExternal(_) => offset
             WritableVirtual(_) => offset
           }
@@ -11050,30 +11764,80 @@ pub fn Hdf5Writer::write_to(
           WritableContiguous =>
             encode_write_values(dataset.values, heap=layout.heap, objects~).payload
           WritableChunked(_, _) =>
-            encode_fixed_array_storage(
-              object.raw_address,
-              dataset,
-              layout.heap,
-              objects,
-              self.custom_filters,
-            )
+            match dataset.chunk_source {
+              Some(_) => {
+                let plan = plan_dataset_chunk_storage(
+                  object.raw_address,
+                  dataset,
+                  layout.heap,
+                  objects,
+                  self.custom_filters,
+                  include_data=false,
+                )
+                write_source_chunk_storage(
+                  sink,
+                  self.user_block_size,
+                  object.raw_address,
+                  dataset,
+                  layout.heap,
+                  objects,
+                  self.custom_filters,
+                  plan,
+                )
+                eof = writer_align(object.raw_address.to_int() + plan.length)
+                b""
+              }
+              None =>
+                encode_fixed_array_storage(
+                  object.raw_address,
+                  dataset,
+                  layout.heap,
+                  objects,
+                  self.custom_filters,
+                )
+            }
           WritableExtensible(_, _, unlimited_axes) =>
-            if unlimited_axes.length() == 1 {
-              encode_extensible_array_storage(
-                object.raw_address,
-                dataset,
-                layout.heap,
-                objects,
-                self.custom_filters,
-              )
-            } else {
-              encode_btree_v2_chunk_storage(
-                object.raw_address,
-                dataset,
-                layout.heap,
-                objects,
-                self.custom_filters,
-              )
+            match dataset.chunk_source {
+              Some(_) => {
+                let plan = plan_dataset_chunk_storage(
+                  object.raw_address,
+                  dataset,
+                  layout.heap,
+                  objects,
+                  self.custom_filters,
+                  include_data=false,
+                )
+                write_source_chunk_storage(
+                  sink,
+                  self.user_block_size,
+                  object.raw_address,
+                  dataset,
+                  layout.heap,
+                  objects,
+                  self.custom_filters,
+                  plan,
+                )
+                eof = writer_align(object.raw_address.to_int() + plan.length)
+                b""
+              }
+              None =>
+                if unlimited_axes.length() == 1 {
+                  encode_extensible_array_storage(
+                    object.raw_address,
+                    dataset,
+                    layout.heap,
+                    objects,
+                    self.custom_filters,
+                  )
+                } else {
+                  encode_btree_v2_chunk_storage(
+                    object.raw_address,
+                    dataset,
+                    layout.heap,
+                    objects,
+                    self.custom_filters,
+                  )
+                }
             }
           WritableExternal(_) => b""
           WritableVirtual(_) => b""
