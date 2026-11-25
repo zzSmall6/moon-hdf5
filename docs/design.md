@@ -129,6 +129,11 @@ block never overwrites adjacent dataset rows. Block dimensions affect memory
 use only, not the on-disk contiguous layout. Variable-length and structured
 blocks are likewise pre-scanned for global-heap planning.
 
+The three `*_from_source_typed` methods wrap their sources with per-block
+datatype conversion using the existing strict, lossy or no-conversion policy.
+Prototype and fill conversion happen at registration; block conversion errors
+are reported during output planning or emission.
+
 `set_user_block` reserves a zero-filled 512 B–1 GiB prefix;
 `set_user_block_content` stores caller bytes in the smallest legal size and
 zero-pads the remainder. Layout addresses are relative to the user-block base,

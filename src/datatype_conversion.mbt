@@ -2161,6 +2161,145 @@ pub fn Hdf5Writer::add_extensible_dataset_typed(
 }
 
 ///|
+priv struct ConvertedChunkSource {
+  source : &Hdf5ChunkSource
+  file_datatype : Datatype
+  policy : Hdf5ConversionOptions
+}
+
+///|
+impl Hdf5ChunkSource for ConvertedChunkSource with fn read_chunk(
+  self : ConvertedChunkSource,
+  chunk_index : Int32,
+  offset : Array[UInt64],
+  dimensions : Array[UInt64],
+) -> Hdf5WriteValues raise Hdf5Error {
+  self.source
+  .read_chunk(chunk_index, offset, dimensions)
+  .convert_to(self.file_datatype, options=self.policy)
+}
+
+///|
+priv struct ConvertedValueSource {
+  source : &Hdf5ValueSource
+  file_datatype : Datatype
+  policy : Hdf5ConversionOptions
+}
+
+///|
+impl Hdf5ValueSource for ConvertedValueSource with fn read_values(
+  self : ConvertedValueSource,
+  offset : Array[UInt64],
+  dimensions : Array[UInt64],
+) -> Hdf5WriteValues raise Hdf5Error {
+  self.source
+  .read_values(offset, dimensions)
+  .convert_to(self.file_datatype, options=self.policy)
+}
+
+///|
+/// Adds a contiguous value source with explicit datatype conversion.
+pub fn Hdf5Writer::add_dataset_from_source_typed(
+  self : Hdf5Writer,
+  path : String,
+  dimensions : Array[UInt64],
+  block_dimensions : Array[UInt32],
+  file_datatype : Datatype,
+  prototype : Hdf5WriteValues,
+  source : &Hdf5ValueSource,
+  fill_value? : Hdf5WriteValues,
+  options? : Hdf5ConversionOptions,
+) -> Unit raise Hdf5Error {
+  let converted = conversion_writer_values(prototype, file_datatype, options)
+  let converted_fill = conversion_writer_fill(
+    fill_value, file_datatype, options,
+  )
+  let converted_source = ConvertedValueSource::{
+    source,
+    file_datatype,
+    policy: options.unwrap_or(Hdf5ConversionOptions::strict()),
+  }
+  self.add_dataset_from_source(
+    path,
+    dimensions,
+    block_dimensions,
+    converted,
+    converted_source,
+    fill_value?=converted_fill,
+  )
+}
+
+///|
+/// Adds a finite chunk source with explicit datatype conversion.
+pub fn Hdf5Writer::add_chunked_dataset_from_source_typed(
+  self : Hdf5Writer,
+  path : String,
+  dimensions : Array[UInt64],
+  chunk_dimensions : Array[UInt32],
+  file_datatype : Datatype,
+  prototype : Hdf5WriteValues,
+  source : &Hdf5ChunkSource,
+  fill_value? : Hdf5WriteValues,
+  filters~ : Array[Hdf5WriteFilter] = [],
+  options? : Hdf5ConversionOptions,
+) -> Unit raise Hdf5Error {
+  let converted = conversion_writer_values(prototype, file_datatype, options)
+  let converted_fill = conversion_writer_fill(
+    fill_value, file_datatype, options,
+  )
+  let converted_source = ConvertedChunkSource::{
+    source,
+    file_datatype,
+    policy: options.unwrap_or(Hdf5ConversionOptions::strict()),
+  }
+  self.add_chunked_dataset_from_source(
+    path,
+    dimensions,
+    chunk_dimensions,
+    converted,
+    converted_source,
+    fill_value?=converted_fill,
+    filters~,
+  )
+}
+
+///|
+/// Adds an extensible chunk source with explicit datatype conversion.
+pub fn Hdf5Writer::add_extensible_dataset_from_source_typed(
+  self : Hdf5Writer,
+  path : String,
+  dimensions : Array[UInt64],
+  maximum_dimensions : Array[UInt64?],
+  chunk_dimensions : Array[UInt32],
+  file_datatype : Datatype,
+  prototype : Hdf5WriteValues,
+  source : &Hdf5ChunkSource,
+  fill_value? : Hdf5WriteValues,
+  filters~ : Array[Hdf5WriteFilter] = [],
+  options? : Hdf5ConversionOptions,
+) -> Unit raise Hdf5Error {
+  let converted = conversion_writer_values(prototype, file_datatype, options)
+  let converted_fill = conversion_writer_fill(
+    fill_value, file_datatype, options,
+  )
+  let converted_source = ConvertedChunkSource::{
+    source,
+    file_datatype,
+    policy: options.unwrap_or(Hdf5ConversionOptions::strict()),
+  }
+  self.add_extensible_dataset_from_source(
+    path,
+    dimensions,
+    maximum_dimensions,
+    chunk_dimensions,
+    converted,
+    converted_source,
+    fill_value?=converted_fill,
+    filters~,
+  )
+}
+
+///|
 /// Writes a dataset slab with explicit datatype conversion.
 pub fn Hdf5Writer::write_dataset_slab_typed(
   self : Hdf5Writer,

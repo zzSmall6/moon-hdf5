@@ -25,7 +25,7 @@ verification notes. Public APIs are listed in
 - Chunked and extensible datasets can read values from an `Hdf5ChunkSource`;
   contiguous datasets can read edge-clipped blocks from an `Hdf5ValueSource`.
   Both paths stream output without holding the complete dataset.
-- The release gate passes 497 tests on each target, plus independent h5py
+- The release gate passes 501 tests on each target, plus independent h5py
   3.13.0/HDF5 1.14.6 interoperability checks.
 
 ## Installation
@@ -168,6 +168,10 @@ writer.add_dataset_from_source(
 `Hdf5ValueSource` blocks are edge-clipped and requested in row-major order.
 `block_dimensions` controls memory use only; the file still contains one
 row-major contiguous payload.
+
+The three `*_from_source_typed` variants accept a file datatype before the
+prototype and an optional conversion policy. Each block is converted as it is
+read; prototype and fill conversion are validated when the dataset is added.
 
 ## Editing Existing Files
 

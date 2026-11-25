@@ -105,6 +105,8 @@ def verify_file(path: Path) -> None:
             "source_names",
             "source_scalar",
             "source_series",
+            "source_typed_contiguous",
+            "source_typed_names",
             "string_fill",
         ]
         np.testing.assert_array_equal(
@@ -278,6 +280,23 @@ def verify_file(path: Path) -> None:
             "",
             "分块",
         ]
+        source_typed_contiguous = handle["experiment/source_typed_contiguous"]
+        np.testing.assert_array_equal(
+            source_typed_contiguous[:], contiguous_expected.astype("<i4")
+        )
+        assert source_typed_contiguous.dtype == np.dtype("<i4")
+        assert source_typed_contiguous.chunks is None
+        assert source_typed_contiguous.fillvalue == -1
+        assert handle["experiment/source_typed_names"].asstr()[:].tolist() == [
+            "stream",
+            "chunk",
+            "",
+            "stream",
+            "value",
+            "",
+            "chunk",
+        ]
+        assert handle["experiment/source_typed_names"].dtype.itemsize == 8
         source_scalar = handle["experiment/source_scalar"]
         assert source_scalar.shape == ()
         assert source_scalar[()] == 123

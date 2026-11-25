@@ -8,13 +8,13 @@ profile and the documented post-profile extensions.
 The release gate passes with MoonBit 0.10.19 (`moon 0.1.20261102`),
 `moonbitlang/x@0.5.7` and `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 497 tests passed;
-- native: 497 tests passed;
+- wasm: 501 tests passed;
+- native: 501 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - h5py 3.13.0/HDF5 1.14.6 independently read, resized and patched release-demo
   output for all documented storage and metadata paths, including typed
   datatype conversion in both directions, numeric-layout fixture round-trips,
-  bit-level binary16/x87 checks and direct sink output.
+  bit-level binary16/x87 checks, direct sink output and typed contiguous sources.
 
 No known common-file feature gap remains inside the boundary in
 [compatibility.md](compatibility.md). Unsupported input is rejected rather than
@@ -77,4 +77,5 @@ Historical milestone details are available in the Git history. Version `0.4.1`
 was published before the explicit conversion work; `0.4.2` is the registry
 release containing the completed datatype conversion and API layer. Direct sink
 output, bounded file copying, chunk-source streaming and contiguous value-source
-streaming are GitHub-only in the current worktree.
+streaming, including per-block explicit datatype conversion for all three source
+APIs, are GitHub-only in the current worktree.

@@ -283,6 +283,23 @@ fn run(args : Array[String]) -> Int32 {
       VariableStringValues([]),
       { values: ["block", "分块", "", "block", "value", "", "分块"], },
     )
+    writer.add_dataset_from_source_typed(
+      "/experiment/source_typed_contiguous",
+      [5UL, 7UL],
+      [2U, 3U],
+      @lib.Datatype::write_integer(true, 4),
+      Int64Values([]),
+      { dimensions: [5UL, 7UL], values: contiguous_values, },
+      fill_value=Int64Values([-1L]),
+    )
+    writer.add_dataset_from_source_typed(
+      "/experiment/source_typed_names",
+      [7UL],
+      [3U],
+      @lib.Datatype::write_fixed_string(8),
+      VariableStringValues([]),
+      { values: ["stream", "chunk", "", "stream", "value", "", "chunk"], },
+    )
     writer.add_dataset_from_source(
       "/experiment/source_scalar",
       [],
