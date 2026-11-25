@@ -9,6 +9,9 @@ on:
 jobs:
   check-build-test:
     runs-on: ubuntu-latest
+    env:
+      # Keep formatter and compiler behavior reproducible across CI runs.
+      MOONBIT_INSTALL_VERSION: "0.10.19+bee578715"
     permissions:
       contents: read
     steps:
@@ -17,7 +20,8 @@ jobs:
 
       - name: Install MoonBit
         run: |
-          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | \
+            bash -s -- "$MOONBIT_INSTALL_VERSION"
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
 
       - name: Show toolchain version

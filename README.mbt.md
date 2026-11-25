@@ -203,7 +203,9 @@ H5PY_PYTHON=/path/to/python ./scripts/release_check.sh
 
 `release_check.sh` runs formatting, documentation, package and both test-target
 checks, plus independent h5py verification. Set `SKIP_H5PY=1` to omit Python
-checks. Fixture generation is documented in
+checks. CI pins MoonBit `0.10.19+bee578715` so formatting and compiler behavior
+stay reproducible; newer toolchains are expected to be validated before
+advancing the pin. Fixture generation is documented in
 [testdata/README.md](testdata/README.md).
 
 ## License
