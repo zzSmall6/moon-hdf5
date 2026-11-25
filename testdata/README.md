@@ -85,6 +85,7 @@ Independent verifiers run with the HDF5 1.14.6 environment:
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_virtual_dataset_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_size_matrix_fixtures.py
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_free_space.py
+/tmp/moon-hdf5-h5py/bin/python scripts/verify_space_reuse.py
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_conversion_interop.py \
   /tmp/conversion.h5 testdata/datatypes_v114.h5 \
   testdata/numeric_layouts.h5 testdata/wide_numeric.h5

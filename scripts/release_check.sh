@@ -321,6 +321,7 @@ fi
 if [ "${SKIP_H5PY:-0}" != "1" ]; then
   echo "==> Persistent free-space inspection"
   "$python" scripts/verify_free_space.py
+  "$python" scripts/verify_space_reuse.py
 fi
 
 echo "Release checks passed."

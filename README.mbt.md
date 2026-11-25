@@ -25,7 +25,7 @@ verification notes. Public APIs are listed in
 - Chunked and extensible datasets can read values from an `Hdf5ChunkSource`;
   contiguous datasets can read edge-clipped blocks from an `Hdf5ValueSource`.
   Both paths stream output without holding the complete dataset.
-- The release gate passes 510 tests on each target, plus independent h5py
+- The release gate passes 517 tests on each target, plus independent h5py
   3.13.0/HDF5 1.14.6 interoperability checks.
 
 ## Installation
@@ -203,8 +203,10 @@ let edited = @lib.Hdf5File::parse(with_attribute).add_soft_link(
 Value patching preserves shapes and compatible datatypes. `resize_dataset` and
 `append_dataset` update chunked storage while preserving chunk masks and
 coordinates. Attribute, link and object edits rebuild compact/dense or
-symbol-table metadata as needed. Editing is append-only; superseded bytes
-remain unreferenced.
+symbol-table metadata as needed. Unallocated contiguous writes can reuse
+persisted aggregate raw-data free sections. `relocate_dataset_storage` moves an
+allocated contiguous payload into such a section and returns its old storage
+to the manager. Other storage edits append bytes; file size is not reduced.
 
 ## Command Line
 
@@ -223,12 +225,12 @@ arguments.
 ## Limitations
 
 - Scope is the documented HDF5 1.14.6 common-file subset. Non-seekable
-  streaming output, SWMR, parallel HDF5 and in-file storage reclamation are
+  streaming output, SWMR, parallel HDF5 and general storage reclamation are
   outside the profile.
 - In-memory writer inputs and single dataset/selection results are memory
   resident; source-backed output and read iterators are bounded. Edits return
   a complete byte image. Output sinks must support random access. Edits are
-  append-only, and external sources require caller registration and
+  append-only apart from aggregate contiguous raw-space reuse; external sources require caller registration and
   caller-managed files.
 - Mapping, storage and conversion constraints are listed in the
   [compatibility matrix](docs/compatibility.md).

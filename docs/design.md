@@ -12,7 +12,7 @@ while sharing one datatype/value model between reader and writer.
 | Metadata | Dataspaces, datatypes, layouts, filters, fills and shared messages |
 | Values | Numeric/structured decoding, selections, references and chunk iteration |
 | Sources | In-memory bytes, bounded random-access reads and external-file registries |
-| Writer/editor | Validation, address planning, complete-file encoding and append-only edits |
+| Writer/editor | Validation, address planning, complete-file encoding, append-based metadata edits and contiguous raw-space reuse |
 
 ## Reader
 
@@ -212,8 +212,15 @@ appends v2 headers and attaches through the same link-rebuild path.
 `delete_object` removes every hard link to the target and rejects the root;
 soft and external links remain unresolved.
 
-All editing is append-only. Superseded object headers, heaps, symbol tables and
-indexes remain unreferenced because physical reclamation is outside the profile.
+Metadata edits append bytes. Superseded object headers, heaps, symbol tables and
+indexes remain unreferenced. Contiguous allocation can reuse an existing
+persistent aggregate raw manager; `relocate_dataset_storage` also returns the
+old payload region. Allocation uses aligned best fit, preserves split remnants
+and coalesces adjacent simple sections. FSHD/FSSE counts, sizes and checksums are
+rewritten; serialized images retain their capacity or append when they grow.
+Empty managers clear their section allocation. Version-1 allocation boundaries
+are updated for subsequent HDF5 writes. This does not create managers, handle
+paged allocation or shrink the file.
 
 ## Errors and verification
 

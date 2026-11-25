@@ -8,8 +8,8 @@ profile and the documented post-profile extensions.
 The release gate passes with MoonBit 0.10.19 (`moon 0.1.20261102`),
 `moonbitlang/x@0.5.7` and `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 510 tests passed;
-- native: 510 tests passed;
+- wasm: 517 tests passed;
+- native: 517 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - h5py 3.13.0/HDF5 1.14.6 independently read, resized and patched release-demo
   output for all documented storage and metadata paths, including typed
@@ -26,6 +26,7 @@ silently reinterpreted.
 | --- | --- |
 | Framing and navigation | Superblocks v0–v3, user blocks, 2/4/8-byte address/length combinations, compact/dense groups, hard/soft links, path normalization and source-backed reads; edited v0 and new v3 user-block files checked by h5py |
 | File-space inspection | Eight HDF5 1.14.6 allocation-policy fixtures; every persisted section address/size and total compared with `H5Fget_free_sections` and `H5Fget_freespace`; source reads, legacy settings, checksum/count/class/owner/range/overlap rejection |
+| Raw-space reuse | Best-fit aligned allocation, splitting/coalescing, empty managers and checksummed FSHD/FSSE writeback; unallocated contiguous patches and explicit relocation; h5py checks repeated moves, 4-byte addresses, user blocks, vlen strings, hard links, references and subsequent HDF5 allocations |
 | Datasets and indexes | Compact, contiguous, external raw data, virtual storage and every supported chunk index; sparse/undefined chunks, resize and append; h5py reads release demos after writer and editor output |
 | Virtual data | Multiple/strided mappings, fill gaps, nested virtual datasets, one unlimited axis, 4-/8-byte files and documented datatype conversions; new-file and edited outputs read by h5py |
 | Filters and fills | Shuffle, deflate, Fletcher32, N-bit, integer/f32/f64 scale-offset, masks, fill markers and custom encoders/decoders across indexes and shared pipelines |
@@ -46,8 +47,10 @@ silently reinterpreted.
   builder inputs remain resident, while `Hdf5ChunkSource` and `Hdf5ValueSource`
   inputs are bounded and may be read several times to plan metadata before
   final emission. `encode()` still returns one complete image.
-- Editing is append-only. Superseded bytes, old heaps and rebuilt metadata are
-  not reclaimed because no free-space manager is emitted.
+- Contiguous raw-space reuse updates existing persistent aggregate managers.
+  New managers, paged allocation, automatic deletion/shrink reclamation and
+  whole-file compaction are not implemented. Old heaps and superseded metadata
+  remain unreferenced; a growing section image may append metadata.
 - Value patching allocates only into existing writable layout or reconstructs
   missing chunk-index records. It does not create unrelated metadata.
 - External raw data and external reference targets require caller-registered,

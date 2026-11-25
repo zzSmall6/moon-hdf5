@@ -1429,17 +1429,22 @@ fn Hdf5File::patch_contiguous_dataset_data(
         "contiguous layout does not expose a writable address field",
       )
     }
-    let new_offset = append_aligned_bytes_to_tail(
-      tail,
-      self.bytes.length(),
-      payload,
-      "allocate contiguous storage",
-    )
+    let output = self.bytes.to_fixedarray()
+    let new_offset = match
+      self.reuse_contiguous_space(payload, output, tail, None, 8UL) {
+      Some(offset) => offset
+      None =>
+        append_aligned_bytes_to_tail(
+          tail,
+          self.bytes.length(),
+          payload,
+          "allocate contiguous storage",
+        )
+    }
     let new_address = file_offset_to_stored_address(
       new_offset,
       self.superblock.base_address,
     )
-    let output = self.bytes.to_fixedarray()
     patch_little_endian_uint(
       output,
       metadata.layout.data_address_offset,
