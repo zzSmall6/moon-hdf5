@@ -331,3 +331,37 @@ test "source free-space inspection reads metadata rather than the whole file" {
   assert_true(source.largest_read < 1024)
   assert_true(source.requested < source.bytes.length().to_uint64())
 }
+
+///|
+test "free sections cannot overlap another manager's header or section allocation" {
+  let bytes = @fs.read_file_to_bytes("testdata/free_space_fsm.h5")
+  let file = Hdf5File::parse(bytes)
+  let managers = file.free_space_managers()
+  assert_true(managers.length() >= 2)
+  let first = managers[0].address.to_int()
+  let second = managers[1].address
+  let start = read_uint_at(bytes, first + 54, 8, true).to_int()
+  let size = read_uint_at(bytes, first + 62, 8, true).to_int()
+  let other_sections = read_uint_at(bytes, second.to_int() + 54, 8, true)
+  for address in [second, other_sections] {
+    let patched = space_test_patch(
+      bytes,
+      start,
+      start + size - 4,
+      start + 22,
+      8,
+      address,
+    )
+    for parsed in [Hdf5File::parse(patched), Hdf5File::parse_source(patched)] {
+      assert_true(
+        try {
+          parsed.free_space_managers() |> ignore
+          false
+        } catch {
+          InvalidField(message) => message.contains("manager metadata")
+          _ => false
+        },
+      )
+    }
+  }
+}

@@ -320,9 +320,30 @@ pub fn Hdf5File::free_space_managers(
       result.push(self.read_free_space_manager(address))
     }
   }
+  let metadata_regions : Array[(UInt64, UInt64)] = []
+  let header_size = 18 +
+    7 * self.superblock.length_size +
+    self.superblock.offset_size
+  for manager in result {
+    metadata_regions.push((manager.address, header_size.to_uint64()))
+    let header = self.space_read(manager.address, header_size)
+    let reader = Reader::at(header, 14 + 5 * self.superblock.length_size)
+    let address = reader.read_uint_le(self.superblock.offset_size)
+    let _used_size = reader.read_uint_le(self.superblock.length_size)
+    let allocated_size = reader.read_uint_le(self.superblock.length_size)
+    if allocated_size > 0UL {
+      metadata_regions.push((address, allocated_size))
+    }
+  }
   let all : Array[Hdf5FreeSection] = []
   for manager in result {
     for section in manager.sections {
+      guard !metadata_regions.any(region => {
+        section.address < region.0 + region.1 &&
+        region.0 < section.address + section.size
+      }) else {
+        raise InvalidField("free-space section overlaps manager metadata")
+      }
       all.push(section)
     }
   }
