@@ -1151,7 +1151,9 @@ fn run(args : Array[String]) -> Int32 {
         FixedStringValues([multi_value], 60000),
       )
     }
-    let mut edited = writer.encode()
+    let sink = @lib.Hdf5MemorySink::new()
+    writer.write_to(sink)
+    let mut edited = sink.to_bytes()
     for index in 0..<8 {
       let file = @lib.Hdf5File::parse(edited)
       edited = file.add_hard_link(

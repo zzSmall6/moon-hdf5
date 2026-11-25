@@ -343,6 +343,7 @@ pub fn Hdf5File::append_dataset_typed(Self, String, Array[UInt64], Hdf5WriteValu
 pub fn Hdf5File::attributes(Self, String) -> Array[Attribute] raise Hdf5Error
 pub fn Hdf5File::chunk_iterator(Self, String, Array[UInt64]) -> DatasetChunkIterator raise Hdf5Error
 pub fn Hdf5File::chunk_iterator_as(Self, String, Array[UInt64], Datatype, options? : Hdf5ConversionOptions) -> DatasetChunkConversionIterator raise Hdf5Error
+pub fn Hdf5File::copy_to(Self, &Hdf5Sink) -> Unit raise Hdf5Error
 pub fn Hdf5File::delete_attribute(Self, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::delete_link(Self, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::delete_object(Self, String) -> Bytes raise Hdf5Error
@@ -378,6 +379,16 @@ pub fn Hdf5File::superblock_version(Self) -> Int32
 pub fn Hdf5File::walk(Self) -> Array[Hdf5Node] raise Hdf5Error
 pub fn Hdf5File::with_custom_filter(Self, &Hdf5CustomFilter) -> Self raise Hdf5Error
 pub fn Hdf5File::with_external_source(Self, String, &Hdf5Source) -> Self raise Hdf5Error
+
+pub struct Hdf5MemorySink {
+  // private fields
+}
+pub fn Hdf5MemorySink::length(Self) -> UInt64
+pub fn Hdf5MemorySink::new() -> Self
+pub fn Hdf5MemorySink::set_length(Self, UInt64) -> Unit raise Hdf5Error
+pub fn Hdf5MemorySink::to_bytes(Self) -> Bytes
+pub fn Hdf5MemorySink::write_at(Self, UInt64, Bytes) -> Unit raise Hdf5Error
+pub impl Hdf5Sink for Hdf5MemorySink
 
 #derive(Eq, @debug.Debug)
 pub(all) struct Hdf5Node {
@@ -587,6 +598,7 @@ pub fn Hdf5Writer::set_user_block(Self, Int32) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::set_user_block_content(Self, Bytes) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::write_dataset_slab(Self, String, Array[UInt64], Array[UInt64], Hdf5WriteValues) -> Unit raise Hdf5Error
 pub fn Hdf5Writer::write_dataset_slab_typed(Self, String, Array[UInt64], Array[UInt64], Datatype, Hdf5WriteValues, options? : Hdf5ConversionOptions) -> Unit raise Hdf5Error
+pub fn Hdf5Writer::write_to(Self, &Hdf5Sink) -> Unit raise Hdf5Error
 
 // Type aliases
 
@@ -596,6 +608,12 @@ pub(open) trait Hdf5CustomFilter {
   fn name(Self) -> String = _
   fn decode(Self, Bytes, Array[UInt32], Int32, Int32) -> Bytes raise Hdf5Error
   fn encode(Self, Bytes, Array[UInt32], Int32, Int32) -> Bytes raise Hdf5Error = _
+}
+
+pub(open) trait Hdf5Sink {
+  fn length(Self) -> UInt64
+  fn write_at(Self, UInt64, Bytes) -> Unit raise Hdf5Error
+  fn set_length(Self, UInt64) -> Unit raise Hdf5Error
 }
 
 pub(open) trait Hdf5Source : @debug.Debug {

@@ -1,4 +1,4 @@
-# Code audit — 2026-11-17
+# Code audit — 2026-11-19
 
 Scope: current worktree, reader and writer, against the HDF5 1.14.6 common-file
 profile and the documented post-profile extensions.
@@ -8,13 +8,13 @@ profile and the documented post-profile extensions.
 The release gate passes with MoonBit 0.10.19 (`moon 0.1.20261102`),
 `moonbitlang/x@0.5.7` and `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 480 tests passed;
-- native: 480 tests passed;
+- wasm: 485 tests passed;
+- native: 485 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - h5py 3.13.0/HDF5 1.14.6 independently read, resized and patched release-demo
   output for all documented storage and metadata paths, including typed
-  datatype conversion in both directions, numeric-layout fixture round-trips
-  and bit-level binary16/x87 checks.
+  datatype conversion in both directions, numeric-layout fixture round-trips,
+  bit-level binary16/x87 checks and direct sink output.
 
 No known common-file feature gap remains inside the boundary in
 [compatibility.md](compatibility.md). Unsupported input is rejected rather than
@@ -32,6 +32,7 @@ silently reinterpreted.
 | References | Legacy and version-4 object/region/attribute references in datasets and attributes; same-file and registered external targets; 4-/8-byte slots; compact, contiguous and filtered targets |
 | Shared and dense metadata | SOHM table/indexes/heaps, wrappers v1–v3, shared attributes/fills/filter pipelines, dense direct/indirect blocks, huge objects and metadata v2 B-trees |
 | Editing | Value and attribute patching; dataset resize/append; attribute/link add, rename and delete; object creation/deletion; v1/v2 headers and symbol-table conversion; release outputs independently read by h5py |
+| Output sinks | Writer emission resets and fills a random-access sink, emits independent metadata/data writes, propagates sink failures and preserves `encode()` parity; bytes- and source-backed `copy_to` preserve exact bytes with 1 MiB bounded source reads |
 
 ## Residual risks
 
@@ -40,6 +41,9 @@ silently reinterpreted.
   `UnexpectedEof`.
 - Full datasets and single selection results are memory resident. Use
   `chunk_iterator` or `selection_iterator` for bounded memory.
+- `Hdf5Writer::write_to` avoids retaining a complete output image, but builder
+  input values remain memory resident and address planning may encode a large
+  dataset payload more than once. `encode()` still returns one complete image.
 - Editing is append-only. Superseded bytes, old heaps and rebuilt metadata are
   not reclaimed because no free-space manager is emitted.
 - Value patching allocates only into existing writable layout or reconstructs
@@ -70,4 +74,5 @@ silently reinterpreted.
 
 Historical milestone details are available in the Git history. Version `0.4.1`
 was published before the explicit conversion work; `0.4.2` is the registry
-release containing the completed datatype conversion and API layer.
+release containing the completed datatype conversion and API layer. Direct sink
+output and bounded file copying are GitHub-only in the current worktree.

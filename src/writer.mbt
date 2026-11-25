@@ -781,7 +781,7 @@ pub fn Hdf5Writer::new() -> Hdf5Writer {
 /// Reserves a zero-filled user block before the HDF5 superblock.
 ///
 /// HDF5 requires a user block to be either absent or a power-of-two size of at
-/// least 512 bytes. The in-memory writer accepts every power of two that fits
+/// least 512 bytes. The writer accepts every power of two that fits
 /// its 32-bit buffer offsets, up to 1 GiB. It always emits a version-3
 /// superblock, so the declared base address is the user-block size and all
 /// stored addresses remain relative to that base.
@@ -897,25 +897,6 @@ fn writer_write_zeros(buffer : @buffer.Buffer, count : Int32) -> Unit {
   for _ in 0..<count {
     buffer.write_byte(b'\x00')
   }
-}
-
-///|
-fn writer_write_at(
-  buffer : @buffer.Buffer,
-  base_address : Int32,
-  address : UInt64,
-  payload : Bytes,
-) -> Unit raise Hdf5Error {
-  guard address <= 0x7FFFFFFFUL &&
-    base_address.to_int64() + address.reinterpret_as_int64() <= 0x7FFFFFFFL else {
-    raise UnsupportedFeature("file offset is too large")
-  }
-  let target = base_address + address.to_int()
-  guard target >= buffer.length() else {
-    raise InvalidField("HDF5 write offsets are out of order")
-  }
-  writer_write_zeros(buffer, target - buffer.length())
-  writer_write_bytes(buffer, payload)
 }
 
 ///|
@@ -10922,8 +10903,16 @@ fn encode_superblock(
 }
 
 ///|
-/// Encodes the builder as a complete HDF5 file.
-pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
+/// Writes the builder as a complete HDF5 file into a random-access sink.
+///
+/// Large payloads are emitted as they are encoded instead of being retained in
+/// a complete in-memory output image. Metadata and payload writes may arrive
+/// out of address order; the sink must support random access.
+pub fn Hdf5Writer::write_to(
+  self : Hdf5Writer,
+  sink : &Hdf5Sink,
+) -> Unit raise Hdf5Error {
+  sink.set_length(0UL)
   let layout = assign_writable_addresses(self, initial_writable_objects(self))
   let objects = layout.objects
   let shared_attributes = match layout.shared {
@@ -10938,7 +10927,6 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
     Some(shared) => shared.filters
     None => []
   }
-  let encoded_headers : Array[Bytes] = []
   let mut eof = 48
   for object in objects {
     let creation_order = layout.dense.search_by(metadata => {
@@ -10961,20 +10949,31 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
       object.address,
       creation_order~,
     )
-    encoded_headers.push(header)
+    writer_sink_write_at(sink, self.user_block_size, object.address, header)
     eof = writer_align(object.address.to_int() + header.length())
   }
   let region_heap_payload = encode_region_heap(layout.heap)
   if region_heap_payload.length() > 0 {
+    writer_sink_write_at(
+      sink,
+      self.user_block_size,
+      layout.heap.region_address,
+      region_heap_payload,
+    )
     eof = writer_align(
       layout.heap.region_address.to_int() + region_heap_payload.length(),
     )
   }
   let heap_payload = encode_global_heap(layout.heap)
   if heap_payload.length() > 0 {
+    writer_sink_write_at(
+      sink,
+      self.user_block_size,
+      layout.heap.address,
+      heap_payload,
+    )
     eof = writer_align(layout.heap.address.to_int() + heap_payload.length())
   }
-  let dense_payloads : Array[(UInt64, Bytes)] = []
   for metadata in layout.dense {
     let object = find_writable_object(objects, metadata.path)
     let (heap_bytes, index_bytes, order_index_bytes) = self.encode_dense_metadata(
@@ -10993,14 +10992,28 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
       metadata.order_index_address - metadata.index_address else {
       raise InvalidField("dense order index address changed during encoding")
     }
-    dense_payloads.push((metadata.heap_address, heap_bytes))
-    dense_payloads.push((metadata.index_address, index_bytes))
-    dense_payloads.push((metadata.order_index_address, order_index_bytes))
+    writer_sink_write_at(
+      sink,
+      self.user_block_size,
+      metadata.heap_address,
+      heap_bytes,
+    )
+    writer_sink_write_at(
+      sink,
+      self.user_block_size,
+      metadata.index_address,
+      index_bytes,
+    )
+    writer_sink_write_at(
+      sink,
+      self.user_block_size,
+      metadata.order_index_address,
+      order_index_bytes,
+    )
     eof = writer_align(
       metadata.order_index_address.to_int() + order_index_bytes.length(),
     )
   }
-  let external_payloads : Array[(UInt64, Bytes)] = []
   for metadata in layout.external {
     let dataset = self.datasets[self.writer_dataset_index(metadata.path)]
     let slots = match dataset.storage {
@@ -11008,10 +11021,9 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
       _ => raise InvalidField("external data heap has the wrong dataset kind")
     }
     let payload = encode_external_local_heap(slots, metadata.address)
-    external_payloads.push((metadata.address, payload))
+    writer_sink_write_at(sink, self.user_block_size, metadata.address, payload)
     eof = writer_align(metadata.address.to_int() + payload.length())
   }
-  let virtual_payloads : Array[(UInt64, Bytes)] = []
   for metadata in layout.virtual_heaps {
     let dataset = self.datasets[self.writer_dataset_index(metadata.path)]
     let mappings = match dataset.storage {
@@ -11026,10 +11038,9 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
         8,
       ),
     ])
-    virtual_payloads.push((metadata.address, payload))
+    writer_sink_write_at(sink, self.user_block_size, metadata.address, payload)
     eof = writer_align(metadata.address.to_int() + payload.length())
   }
-  let raw_payloads : Array[(UInt64, Bytes)] = []
   for object in objects {
     match object.kind {
       WritableDatasetObject(index) => {
@@ -11068,14 +11079,18 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
           WritableVirtual(_) => b""
         }
         if payload.length() > 0 {
-          raw_payloads.push((object.raw_address, payload))
+          writer_sink_write_at(
+            sink,
+            self.user_block_size,
+            object.raw_address,
+            payload,
+          )
           eof = writer_align(object.raw_address.to_int() + payload.length())
         }
       }
       WritableGroup | WritableCommittedDatatype(_) => ()
     }
   }
-  let shared_payloads : Array[(UInt64, Bytes)] = []
   if layout.shared is Some(shared) {
     let mut message_count = 0
     let mut message_types = 0
@@ -11092,7 +11107,12 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
       shared.heaps[0].address - shared.table_address else {
       raise InvalidField("shared-message table overlaps its first heap")
     }
-    shared_payloads.push((shared.table_address, table))
+    writer_sink_write_at(
+      sink,
+      self.user_block_size,
+      shared.table_address,
+      table,
+    )
     for heap in shared.heaps {
       let (heap_bytes, ids) = encode_writer_shared_heap(
         heap.address,
@@ -11126,7 +11146,7 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
           raise InvalidField("shared-message heap ID changed during encoding")
         }
       }
-      shared_payloads.push((heap.address, heap_bytes))
+      writer_sink_write_at(sink, self.user_block_size, heap.address, heap_bytes)
       let end = writer_align(heap.address.to_int() + heap_bytes.length())
       if end > eof {
         eof = end
@@ -11142,14 +11162,16 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
     raise UnsupportedFeature("file is too large to include a user block")
   }
   let file_length = self.user_block_size + eof
-  let output = @buffer.Buffer::Buffer(size_hint=file_length)
   guard self.user_block.length() <= self.user_block_size else {
     raise InvalidField("user block content exceeds its reserved size")
   }
-  writer_write_bytes(output, self.user_block)
-  writer_write_zeros(output, self.user_block_size - self.user_block.length())
-  writer_write_bytes(
-    output,
+  if self.user_block.length() > 0 {
+    sink.write_at(0UL, self.user_block)
+  }
+  writer_sink_write_at(
+    sink,
+    0,
+    self.user_block_size.to_uint64(),
     encode_superblock(
       find_writable_object(objects, "/").address,
       match layout.shared {
@@ -11161,8 +11183,8 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
     ),
   )
   if layout.shared is Some(shared) {
-    writer_write_at(
-      output,
+    writer_sink_write_at(
+      sink,
       self.user_block_size,
       shared.extension_address,
       encode_writer_superblock_extension(
@@ -11171,48 +11193,13 @@ pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
       ),
     )
   }
-  for index in 0..<objects.length() {
-    writer_write_at(
-      output,
-      self.user_block_size,
-      objects[index].address,
-      encoded_headers[index],
-    )
-  }
-  if region_heap_payload.length() > 0 {
-    writer_write_at(
-      output,
-      self.user_block_size,
-      layout.heap.region_address,
-      region_heap_payload,
-    )
-  }
-  if heap_payload.length() > 0 {
-    writer_write_at(
-      output,
-      self.user_block_size,
-      layout.heap.address,
-      heap_payload,
-    )
-  }
-  for (address, payload) in dense_payloads {
-    writer_write_at(output, self.user_block_size, address, payload)
-  }
-  for (address, payload) in external_payloads {
-    writer_write_at(output, self.user_block_size, address, payload)
-  }
-  for (address, payload) in virtual_payloads {
-    writer_write_at(output, self.user_block_size, address, payload)
-  }
-  for (address, payload) in raw_payloads {
-    writer_write_at(output, self.user_block_size, address, payload)
-  }
-  for (address, payload) in shared_payloads {
-    writer_write_at(output, self.user_block_size, address, payload)
-  }
-  guard file_length >= output.length() else {
-    raise InvalidField("HDF5 output exceeds its declared end-of-file address")
-  }
-  writer_write_zeros(output, file_length - output.length())
-  output.to_bytes()
+  sink.set_length(file_length.to_uint64())
+}
+
+///|
+/// Encodes the builder as a complete HDF5 file.
+pub fn Hdf5Writer::encode(self : Hdf5Writer) -> Bytes raise Hdf5Error {
+  let sink = Hdf5MemorySink::new()
+  self.write_to(sink)
+  sink.to_bytes()
 }

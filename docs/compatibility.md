@@ -8,9 +8,9 @@ that form. This document is the delivery boundary; detailed evidence is in
 ## Profile
 
 - Baseline: h5py 3.13.0 with HDF5 1.14.6 on wasm and native targets.
-- Outside the profile: streaming output, SWMR, parallel HDF5, in-file storage
-  reclamation, metadata edits outside the documented APIs, and high-level
-  netCDF-4 or MATLAB semantics.
+- Outside the profile: non-seekable streaming output, SWMR, parallel HDF5,
+  in-file storage reclamation, metadata edits outside the documented APIs,
+  and high-level netCDF-4 or MATLAB semantics.
 - The release gate is `scripts/release_check.sh`: formatting, documentation and
   package checks; both test targets; writer/editor demos; independent h5py
   verification.
@@ -19,7 +19,7 @@ that form. This document is the delivery boundary; detailed evidence is in
 
 | Area | Supported | Boundary |
 | --- | --- | --- |
-| Framing and navigation | Superblocks v0–v3, user blocks, 2/4/8-byte address and length widths, compact/dense groups, hard and soft links, source-backed reads | Values must fit the declared widths; path normalization is lexical; traversal stops on an address repeated in the current ancestor chain |
+| Framing and navigation | Superblocks v0–v3, user blocks, 2/4/8-byte address and length widths, compact/dense groups, hard and soft links, source-backed reads and bounded `copy_to` output | Values must fit the declared widths; path normalization is lexical; traversal stops on an address repeated in the current ancestor chain |
 | Cross-file data | `Hdf5Resolver` follows chained external links and references; contiguous external raw data spans registered files and element boundaries | `Hdf5File` alone does not open external files; short sources are zero-filled |
 | Storage and indexes | Compact, contiguous, virtual and chunked datasets; v1 B-tree, single-chunk, implicit, fixed-array, extensible-array and v2 B-tree indexes; default/custom/undefined fills | Unsupported index variants are rejected; missing chunks use the effective fill value |
 | Filters | Deflate, shuffle, Fletcher32, N-bit and integer/f32/f64 scale-offset; registered dataset and metadata-heap decoders | N-bit must precede lossless filters and follow only shuffle; unsupported scale modes and unregistered required filters are rejected |
@@ -33,7 +33,7 @@ that form. This document is the delivery boundary; detailed evidence is in
 
 | Area | Supported | Boundary |
 | --- | --- | --- |
-| Framing and output | Superblock v3, v2 object headers, OCHK continuations, user blocks | New output uses v3; user blocks are 0 or powers of two from 512 B through 1 GiB |
+| Framing and output | Superblock v3, v2 object headers, OCHK continuations, user blocks; direct `Hdf5Writer::write_to` emission and bounded `Hdf5File::copy_to` | New output uses v3; user blocks are 0 or powers of two from 512 B through 1 GiB; sinks must support random access and truncation |
 | Object creation | Groups, contiguous/compact/chunked/external/virtual datasets, committed datatypes, attributes and links; fills; finite, extensible-array and v2 B-tree chunks | Compact payloads are limited to 65,524 bytes; v2 B-tree output is bulk-built; external creation does not open or validate sources |
 | Dense and shared metadata | Compact/dense links, dense attributes, SOHM fills/filter pipelines/attributes, committed datatypes, huge objects and indirect heap roots | Dense attributes cap at 65,535 records; dense links use the 64-bit creation-order field; one SOHM master table; no free-space manager |
 | Filters and fills | Built-in filters and caller-registered encoders/decoders; named v2 entries; per-chunk masks; custom fills | Built-in IDs cannot be overridden; vlen chunk data supports no filter, shuffle or deflate, not Fletcher32/scale-offset; four-byte structured vlen/ref custom fills are rejected |

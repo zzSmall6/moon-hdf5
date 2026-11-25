@@ -19,7 +19,10 @@ verification notes. Public APIs are listed in
 - Existing files support value and attribute patching, resize and append,
   attribute/link add, rename and delete, and object creation/deletion. Every
   edit returns a new byte image.
-- The release gate passes 480 tests on each target, plus independent h5py
+- Writers can emit directly into a caller-provided random-access `Hdf5Sink`;
+  `encode()` is the in-memory convenience path. `Hdf5File::copy_to` streams
+  bytes-backed or source-backed files in bounded chunks.
+- The release gate passes 485 tests on each target, plus independent h5py
   3.13.0/HDF5 1.14.6 interoperability checks.
 
 ## Installation
@@ -59,7 +62,9 @@ let attributes = file.attributes("/matrix")
 `selection_iterator` for bounded-memory access. `Hdf5Resolver` resolves
 version-4 references and links into external files registered with
 `add_source`; reader-side custom chunk and metadata filters are registered
-through `with_custom_filter` or `add_custom_filter`.
+through `with_custom_filter` or `add_custom_filter`. `copy_to` copies an
+unmodified file image into an `Hdf5Sink` without allocating a second complete
+file buffer.
 
 ## Datatype Conversion
 
@@ -113,14 +118,17 @@ writer.add_attribute(
 )
 writer.add_soft_link("/experiment", "latest", "/experiment/ids")
 
-let bytes = writer.encode()
+let sink = @lib.Hdf5MemorySink::new()
+writer.write_to(sink)
+let bytes = sink.to_bytes()
 ```
 
 The writer also provides compact, contiguous, resizable/extensible, external
 and virtual dataset creation; committed datatypes; user blocks; structured,
 variable-length and reference values; built-in filters and caller-registered
 custom filters. See the [compatibility matrix](docs/compatibility.md) for exact
-variants and constraints.
+variants and constraints. `encode()` is shorthand for writing to an
+`Hdf5MemorySink` and taking its bytes.
 
 ## Editing Existing Files
 
@@ -167,10 +175,13 @@ arguments.
 
 ## Limitations
 
-- Scope is the documented HDF5 1.14.6 common-file subset. Streaming output,
-  SWMR, parallel HDF5 and in-file storage reclamation are outside the profile.
-- APIs are memory resident, edits are append-only, and external sources require
-  caller registration and caller-managed files.
+- Scope is the documented HDF5 1.14.6 common-file subset. Non-seekable
+  streaming output, SWMR, parallel HDF5 and in-file storage reclamation are
+  outside the profile.
+- Writer input values and single dataset/selection results are memory resident;
+  edits return a complete byte image. Output sinks must support random access.
+  Edits are append-only, and external sources require caller registration and
+  caller-managed files.
 - Mapping, storage and conversion constraints are listed in the
   [compatibility matrix](docs/compatibility.md).
 - Writer limits include 65,524-byte compact payloads, dense attributes up to

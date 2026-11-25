@@ -102,10 +102,17 @@ boundary.
 
 ## Writer
 
-`Hdf5Writer` is an in-memory builder. Adding an object validates paths, names,
+`Hdf5Writer` is a value-building API. Adding an object validates paths, names,
 shapes, datatypes, values, filters and fill values immediately. Encoding plans
 all addresses before writing checksummed metadata. Output uses superblock v3,
 v2 object headers and checksummed OCHK continuations.
+
+`write_to` accepts a random-access `Hdf5Sink` and emits metadata and payloads as
+they are encoded, without retaining a complete output image. The sink contract
+allows out-of-order writes, zero-filled gaps and final length truncation.
+`encode` is the convenience path that writes to `Hdf5MemorySink` and returns a
+snapshot. Builder input values remain memory resident. `Hdf5File::copy_to`
+uses the same sink to copy bytes- or source-backed files in 1 MiB chunks.
 
 `set_user_block` reserves a zero-filled 512 B–1 GiB prefix;
 `set_user_block_content` stores caller bytes in the smallest legal size and
