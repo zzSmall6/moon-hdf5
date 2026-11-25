@@ -348,6 +348,8 @@ pub fn Hdf5File::delete_attribute(Self, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::delete_link(Self, String, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::delete_object(Self, String) -> Bytes raise Hdf5Error
 pub fn Hdf5File::exists(Self, String) -> Bool
+pub fn Hdf5File::file_space_info(Self) -> Hdf5FileSpaceInfo? raise Hdf5Error
+pub fn Hdf5File::free_space_managers(Self) -> Array[Hdf5FreeSpaceManager] raise Hdf5Error
 pub fn Hdf5File::object_kind_at(Self, String) -> Hdf5ObjectKind raise Hdf5Error
 pub fn Hdf5File::parse(Bytes) -> Self raise Hdf5Error
 pub fn Hdf5File::parse_source(&Hdf5Source) -> Self raise Hdf5Error
@@ -379,6 +381,47 @@ pub fn Hdf5File::superblock_version(Self) -> Int32
 pub fn Hdf5File::walk(Self) -> Array[Hdf5Node] raise Hdf5Error
 pub fn Hdf5File::with_custom_filter(Self, &Hdf5CustomFilter) -> Self raise Hdf5Error
 pub fn Hdf5File::with_external_source(Self, String, &Hdf5Source) -> Self raise Hdf5Error
+
+#derive(@debug.Debug)
+pub(all) struct Hdf5FileSpaceInfo {
+  strategy : Hdf5FileSpaceStrategy
+  persistent : Bool
+  threshold : UInt64
+  page_size : UInt64
+  manager_addresses : Array[UInt64]
+}
+pub fn Hdf5FileSpaceInfo::to_repr(Self) -> @debug.Repr
+
+#derive(Eq, @debug.Debug)
+pub(all) enum Hdf5FileSpaceStrategy {
+  FsmAggregate
+  Paged
+  Aggregate
+  Unmanaged
+}
+pub fn Hdf5FileSpaceStrategy::equal(Self, Self) -> Bool
+pub fn Hdf5FileSpaceStrategy::not_equal(Self, Self) -> Bool
+pub fn Hdf5FileSpaceStrategy::to_repr(Self) -> @debug.Repr
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Hdf5FreeSection {
+  address : UInt64
+  size : UInt64
+  section_type : Int32
+}
+pub fn Hdf5FreeSection::equal(Self, Self) -> Bool
+pub fn Hdf5FreeSection::not_equal(Self, Self) -> Bool
+pub fn Hdf5FreeSection::to_repr(Self) -> @debug.Repr
+
+#derive(@debug.Debug)
+pub(all) struct Hdf5FreeSpaceManager {
+  address : UInt64
+  total_space : UInt64
+  total_sections : UInt64
+  ghost_sections : UInt64
+  sections : Array[Hdf5FreeSection]
+}
+pub fn Hdf5FreeSpaceManager::to_repr(Self) -> @debug.Repr
 
 pub struct Hdf5MemorySink {
   // private fields

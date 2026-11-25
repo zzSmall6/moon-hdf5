@@ -25,7 +25,7 @@ verification notes. Public APIs are listed in
 - Chunked and extensible datasets can read values from an `Hdf5ChunkSource`;
   contiguous datasets can read edge-clipped blocks from an `Hdf5ValueSource`.
   Both paths stream output without holding the complete dataset.
-- The release gate passes 501 tests on each target, plus independent h5py
+- The release gate passes 510 tests on each target, plus independent h5py
   3.13.0/HDF5 1.14.6 interoperability checks.
 
 ## Installation
@@ -68,6 +68,10 @@ version-4 references and links into external files registered with
 through `with_custom_filter` or `add_custom_filter`. `copy_to` copies an
 unmodified file image into an `Hdf5Sink` without allocating a second complete
 file buffer.
+
+`file_space_info` and `free_space_managers` inspect allocation policies and
+persisted free regions, including paged storage. They do not reclaim storage
+or discover untracked holes left by append-only edits.
 
 ## Datatype Conversion
 

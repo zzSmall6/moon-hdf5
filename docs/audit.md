@@ -8,8 +8,8 @@ profile and the documented post-profile extensions.
 The release gate passes with MoonBit 0.10.19 (`moon 0.1.20261102`),
 `moonbitlang/x@0.5.7` and `moonbitstack/moonzip@0.4.0`:
 
-- wasm: 501 tests passed;
-- native: 501 tests passed;
+- wasm: 510 tests passed;
+- native: 510 tests passed;
 - interface, formatting, `moon check`, `moon doc` and package checks passed;
 - h5py 3.13.0/HDF5 1.14.6 independently read, resized and patched release-demo
   output for all documented storage and metadata paths, including typed
@@ -25,6 +25,7 @@ silently reinterpreted.
 | Area | Evidence |
 | --- | --- |
 | Framing and navigation | Superblocks v0–v3, user blocks, 2/4/8-byte address/length combinations, compact/dense groups, hard/soft links, path normalization and source-backed reads; edited v0 and new v3 user-block files checked by h5py |
+| File-space inspection | Eight HDF5 1.14.6 allocation-policy fixtures; every persisted section address/size and total compared with `H5Fget_free_sections` and `H5Fget_freespace`; source reads, legacy settings, checksum/count/class/owner/range/overlap rejection |
 | Datasets and indexes | Compact, contiguous, external raw data, virtual storage and every supported chunk index; sparse/undefined chunks, resize and append; h5py reads release demos after writer and editor output |
 | Virtual data | Multiple/strided mappings, fill gaps, nested virtual datasets, one unlimited axis, 4-/8-byte files and documented datatype conversions; new-file and edited outputs read by h5py |
 | Filters and fills | Shuffle, deflate, Fletcher32, N-bit, integer/f32/f64 scale-offset, masks, fill markers and custom encoders/decoders across indexes and shared pipelines |
@@ -78,4 +79,4 @@ was published before the explicit conversion work; `0.4.2` is the registry
 release containing the completed datatype conversion and API layer. Direct sink
 output, bounded file copying, chunk-source streaming and contiguous value-source
 streaming, including per-block explicit datatype conversion for all three source
-APIs, are GitHub-only in the current worktree.
+APIs, and persisted file-space inspection are GitHub-only in the current worktree.

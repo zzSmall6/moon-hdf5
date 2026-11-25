@@ -30,6 +30,7 @@ python3 -m venv /tmp/moon-hdf5-h5py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_wide_numeric_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_virtual_dataset_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/generate_size_matrix_fixtures.py
+/tmp/moon-hdf5-h5py/bin/python scripts/generate_free_space_fixtures.py
 ```
 
 The v114 generator refuses other HDF5 versions. A newer HDF5 2.x environment can
@@ -83,6 +84,7 @@ Independent verifiers run with the HDF5 1.14.6 environment:
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_wide_numeric_fixture.py testdata/wide_numeric.h5
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_virtual_dataset_fixture.py
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_size_matrix_fixtures.py
+/tmp/moon-hdf5-h5py/bin/python scripts/verify_free_space.py
 /tmp/moon-hdf5-h5py/bin/python scripts/verify_conversion_interop.py \
   /tmp/conversion.h5 testdata/datatypes_v114.h5 \
   testdata/numeric_layouts.h5 testdata/wide_numeric.h5

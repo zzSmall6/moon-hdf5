@@ -100,6 +100,14 @@ and managed heaps, interning equal messages. Committed datatypes use wrapper
 version 3 type 2. The format exposes only one master table, which is the output
 boundary.
 
+## File-space inspection
+
+`file_space_info` reads explicit allocation settings from the superblock
+extension; `free_space_managers` reads file-client FSHD/FSSE metadata and
+checks checksums, owners, counts, totals, ranges and overlapping free sections.
+Settings without persistence expose no manager slots. Inspection reads metadata
+only and does not infer free space from gaps or make allocation decisions.
+
 ## Writer
 
 `Hdf5Writer` is a value-building API. Adding an object validates paths, names,

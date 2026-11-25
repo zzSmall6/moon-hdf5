@@ -40,6 +40,7 @@ output.
 - [HDF5 fixed arrays](https://github.com/HDFGroup/hdf5/blob/develop/src/H5FAcache.c): page layout; `H5FA.c` and `H5VMprivate.h` were consulted for page offsets and bitmap bit order.
 - [HDF5 extensible arrays](https://github.com/HDFGroup/hdf5/blob/develop/src/H5EAcache.c): block layout; `H5EAhdr.c`, `H5EA.c`, `H5EApkg.h`, `H5Dearray.c` and `H5Olayout.c` were consulted for block sizing, offsets, dimension ordering and creation parameters.
 - [HDF5 v2 B-trees](https://github.com/HDFGroup/hdf5/blob/develop/src/H5B2cache.c): node layout; `H5B2hdr.c`, `H5B2pkg.h` and `H5Dbtree2.c` were consulted for pointer widths, capacities and chunk record encoding.
+- [HDF5 free-space metadata](https://github.com/HDFGroup/hdf5/blob/hdf5_1.14.6/src/H5FScache.c): FSHD/FSSE layout; `H5Ofsinfo.c`, `H5FSsection.c`, `H5MFsection.c` and private headers were consulted for strategy versions, section widths, memory types and client classes.
 
 MoonBit code is original, with AI assistance; reference source code was not copied.
 Fixtures are generated h5py data; see [provenance and regeneration](../testdata/README.md).

@@ -318,4 +318,9 @@ else
   "$python" scripts/verify_wide_numeric_fixture.py testdata/wide_numeric.h5
 fi
 
+if [ "${SKIP_H5PY:-0}" != "1" ]; then
+  echo "==> Persistent free-space inspection"
+  "$python" scripts/verify_free_space.py
+fi
+
 echo "Release checks passed."
