@@ -236,7 +236,16 @@ addresses and recomputes all affected metadata checksums, including unfiltered
 v2 B-tree nodes. Sparse fill slots, filter masks and heap references are retained.
 The operation fails without returning an edited image when the reserve is too
 small. Implicit indexes are rejected because their addresses are derived rather
-than stored. Chunk value patching still uses its existing allocation path.
+than stored.
+
+Chunk patches use a transaction-local raw-space state. Missing chunks and
+growing filtered chunks allocate from the original free sections or append
+when no section fits. Replaced storage and shrink tails are held separately
+until every chunk and index update succeeds, so later writes cannot overwrite
+input bytes still needed by the patch. The final image then coalesces releases,
+applies the manager threshold and writes the manager once. Index rebuilds and
+new vlen heaps retain their existing append paths; their abandoned metadata
+and heap bytes are not reclaimed.
 
 ## Errors and verification
 

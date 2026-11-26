@@ -70,3 +70,15 @@ when HDF5 creates links in writer-produced dense groups. Continued-allocation
 checks use a compact child group; they do not establish arbitrary dense-group
 editing compatibility. Automatic chunk replacement/deletion/resize reclamation
 and paged allocation remain unimplemented. No MoonCakes release is made.
+
+## Post-release: automatic chunk patch reuse
+
+Chunk patching now shares transaction-local allocation state: new/growing
+chunks consume persisted aggregate raw sections before appending; replaced
+payloads and unused shrink tails are returned after all chunk writes finish.
+Five tests bring the total to 533 per target, including empty slots, insufficient
+reserves, repeated growth/shrink, vlen heaps and live/free overlap rejection.
+`verify_chunk_space_patch.py` independently checks exact free-byte accounting,
+repeated edits across modern indexes and v1 B-trees at 4-/8-byte address widths,
+user blocks, HDF5 rewrites and subsequent allocations. Automatic object deletion,
+dataset resize and abandoned index/heap reclamation remain unimplemented.

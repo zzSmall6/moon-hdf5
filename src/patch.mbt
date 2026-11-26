@@ -1925,6 +1925,25 @@ fn Hdf5File::patch_chunked_dataset_data(
   values : Hdf5WriteValues,
   tail_prefix : Bytes,
 ) -> Bytes raise Hdf5Error {
+  let space = self.chunk_space_patch(header, metadata)
+  finish_chunk_space_patch(
+    self.patch_chunked_dataset_data_impl(
+      header, metadata, payload, values, tail_prefix, space,
+    ),
+    space,
+  )
+}
+
+///|
+fn Hdf5File::patch_chunked_dataset_data_impl(
+  self : Hdf5File,
+  header : ObjectHeader,
+  metadata : DatasetMetadata,
+  payload : Bytes,
+  values : Hdf5WriteValues,
+  tail_prefix : Bytes,
+  space : ChunkSpacePatch?,
+) -> Bytes raise Hdf5Error {
   let layout = metadata.layout
   guard metadata.dataspace.kind == Simple &&
     metadata.dataspace.dimensions.length() > 0 else {
@@ -2891,8 +2910,8 @@ fn Hdf5File::patch_chunked_dataset_data(
             guard encoded.length() > 0 else {
               raise InvalidField("allocated chunk encoded to an empty payload")
             }
-            let new_offset = append_aligned_chunk_to_tail(
-              tail, tail_base, encoded,
+            let new_offset = self.allocate_patch_chunk(
+              space, output, tail, tail_base, encoded,
             )
             let new_address = file_offset_to_stored_address(
               new_offset,
@@ -3060,11 +3079,17 @@ fn Hdf5File::patch_chunked_dataset_data(
               for byte_index in 0..<encoded.length() {
                 output[chunk_offset + byte_index] = encoded[byte_index]
               }
+              release_patch_chunk(
+                space,
+                record.address + encoded.length().to_uint64(),
+                record.size - encoded.length().to_uint64(),
+              )
               record.address
             } else {
-              let new_offset = append_aligned_chunk_to_tail(
-                tail, tail_base, encoded,
+              let new_offset = self.allocate_patch_chunk(
+                space, output, tail, tail_base, encoded,
               )
+              release_patch_chunk(space, record.address, record.size)
               let new_address = file_offset_to_stored_address(
                 new_offset,
                 self.superblock.base_address,
@@ -3142,8 +3167,8 @@ fn Hdf5File::patch_chunked_dataset_data(
             self.custom_filters,
           )
           if has_non_fill {
-            let new_offset = append_aligned_chunk_to_tail(
-              tail, tail_base, encoded,
+            let new_offset = self.allocate_patch_chunk(
+              space, output, tail, tail_base, encoded,
             )
             let new_address = file_offset_to_stored_address(
               new_offset,
