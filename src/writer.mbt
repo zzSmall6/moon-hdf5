@@ -644,6 +644,7 @@ pub struct Hdf5Writer {
   priv mut share_filters : Bool
   priv mut user_block_size : Int32
   priv mut user_block : Bytes
+  priv mut raw_space_reserve : Int32
   priv custom_filters : Array[&Hdf5CustomFilter]
   priv external_sources : Array[Hdf5ExternalSource]
 }
@@ -841,6 +842,7 @@ pub fn Hdf5Writer::new() -> Hdf5Writer {
     share_filters: false,
     user_block_size: 0,
     user_block: b"",
+    raw_space_reserve: 0,
     custom_filters: [],
     external_sources: [],
   }
@@ -10574,6 +10576,9 @@ fn Hdf5Writer::object_payload(
   let buffer = @buffer.Buffer::Buffer()
   match object.kind {
     WritableGroup => {
+      if self.raw_space_reserve > 0 {
+        write_header_message(buffer, 0x0A, b"\x00\x00")
+      }
       let entries = self.dense_link_entries(object, objects, track_order=true)
       if writer_dense_entries_fit(entries, kind=WritableDenseLinks) {
         let (heap_address, index_address, order_index_address) = writer_dense_addresses(
@@ -11976,6 +11981,12 @@ pub fn Hdf5Writer::write_to(
   self : Hdf5Writer,
   sink : &Hdf5Sink,
 ) -> Unit raise Hdf5Error {
+  guard self.raw_space_reserve == 0 ||
+    !(self.share_attributes || self.share_fills || self.share_filters) else {
+    raise UnsupportedFeature(
+      "file-space reserves cannot be combined with shared-message output",
+    )
+  }
   sink.set_length(0UL)
   let layout = assign_writable_addresses(self, initial_writable_objects(self))
   let objects = layout.objects
@@ -12294,6 +12305,18 @@ pub fn Hdf5Writer::write_to(
       }
     }
   }
+  let extension_address = match self.raw_space_reserve {
+    0 =>
+      match layout.shared {
+        Some(shared) => shared.extension_address
+        None => 0xFFFFFFFFFFFFFFFFUL
+      }
+    _ => {
+      let (extension, end) = self.write_reserved_file_space(sink, eof)
+      eof = end
+      extension
+    }
+  }
   guard eof.to_int64() <= 0x7FFFFFFFL - self.user_block_size.to_int64() else {
     raise UnsupportedFeature("file is too large to include a user block")
   }
@@ -12310,10 +12333,7 @@ pub fn Hdf5Writer::write_to(
     self.user_block_size.to_uint64(),
     encode_superblock(
       find_writable_object(objects, "/").address,
-      match layout.shared {
-        Some(shared) => shared.extension_address
-        None => 0xFFFFFFFFFFFFFFFFUL
-      },
+      extension_address,
       file_length.to_uint64(),
       base_address=self.user_block_size.to_uint64(),
     ),

@@ -63,6 +63,39 @@ def verify() -> None:
         raise SystemExit("space reuse verification requires HDF5 1.14.6")
     with tempfile.TemporaryDirectory(prefix="moon-hdf5-reuse-") as directory:
         temporary = Path(directory)
+        for mode in ("plain", "userblock"):
+            created = temporary / f"created-{mode}.h5"
+            moved = temporary / f"moved-{mode}.h5"
+            subprocess.run(
+                ["moon", "run", "src/cmd/free_space_demo", "--target", "native",
+                 "--", "create", mode, str(created)], cwd=ROOT, check=True,
+            )
+            with h5py.File(created, "r") as handle:
+                assert handle.id.get_create_plist().get_file_space_strategy() == (0, 1, 1)
+                assert handle.id.get_freespace() == 8192
+                free_sections = sections(handle)
+                assert len(free_sections) == 1 and free_sections[0][1] == 8192
+                np.testing.assert_array_equal(handle["target"][:], np.full(512, 42))
+                np.testing.assert_array_equal(handle["chunks"][:], [1, 2, 3, 4])
+                assert handle["target"].attrs["unit"] == b"items"
+                assert handle.userblock_size == (512 if mode == "userblock" else 0)
+            edit("relocate", created, "/target", moved)
+            with h5py.File(moved, "r") as handle:
+                assert handle.id.get_freespace() == 8192
+                assert sum(length for _, length in sections(handle)) == 8192
+            for path in (created, moved):
+                with h5py.File(path, "r") as handle:
+                    available = sections(handle)
+                with h5py.File(path, "r+") as handle:
+                    dataset = handle.create_dataset("new", data=np.arange(1024, dtype="<i4"))
+                    offset = dataset.id.get_offset() - handle.userblock_size
+                    assert any(start <= offset and offset + dataset.nbytes <= start + length
+                               for start, length in available)
+                with h5py.File(path, "r") as handle:
+                    np.testing.assert_array_equal(handle["new"][:], np.arange(1024))
+                    np.testing.assert_array_equal(handle["target"][:], np.full(512, 42))
+                    np.testing.assert_array_equal(handle["second"][:], np.full(512, 7))
+                    np.testing.assert_array_equal(handle["chunks"][:], [1, 2, 3, 4])
         for name in ("fsm", "width4"):
             source = ROOT / "testdata" / f"free_space_{name}.h5"
             destination = temporary / f"{name}.h5"

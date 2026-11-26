@@ -46,6 +46,8 @@ writer.add_attribute("/ids", "unit", [], @lib.FixedStringValues(["items"], 8))
 - **Inspect/reuse space:** `file_space_info` and `free_space_managers` inspect
   persisted sections. Contiguous allocation and `relocate_dataset_storage`
   can reuse an existing persistent aggregate raw-data manager.
+  `set_file_space_reserve(bytes)` creates a new persistent raw manager with a
+  zero-filled reserve; shared-message output must be disabled.
 
 See the [API](src/pkg.generated.mbti), [compatibility matrix](docs/compatibility.md),
 [design](docs/design.md) and [audit](docs/audit.md) for contracts and evidence.
@@ -54,8 +56,8 @@ See the [API](src/pkg.generated.mbti), [compatibility matrix](docs/compatibility
 
 This is a common-file subset, not a complete libhdf5 replacement. SWMR,
 parallel HDF5, non-seekable output and general storage reclamation are outside
-the current implementation. Space reuse does not create managers, reclaim old
-heaps or shrink files. Other editing paths append storage.
+the current implementation. Space reuse does not reclaim old heaps or shrink
+files. Other editing paths append storage.
 
 Single dataset/selection results and ordinary writer inputs remain resident;
 iterators and source callbacks bound value buffers. Variable-length streaming
@@ -74,7 +76,7 @@ H5PY_PYTHON=/path/to/python ./scripts/release_check.sh
 ```
 
 The release gate checks interfaces, formatting, documentation, package contents,
-518 tests on each target and h5py 3.13.0/HDF5 1.14.6 interoperability. CI pins
+523 tests on each target and h5py 3.13.0/HDF5 1.14.6 interoperability. CI pins
 MoonBit `0.10.19+bee578715`. [Fixture regeneration](testdata/README.md).
 
 ## License

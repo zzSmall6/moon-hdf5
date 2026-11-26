@@ -31,7 +31,7 @@ metadata. Space checks compare every persisted section with
 ## Remaining Boundaries
 
 - Free-space reuse requires an existing persistent aggregate raw manager.
-  Creating managers, paged allocation, automatic deletion/shrink reclamation,
+  Paged allocation, automatic deletion/shrink reclamation,
   old-heap collection and whole-file compaction remain unimplemented.
 - Sources must be repeatable. Value buffers can be bounded, but variable-length
   writing still plans global heaps; `encode()` and edits return complete images.
@@ -39,3 +39,16 @@ metadata. Space checks compare every persisted section with
   sections are not a complete liveness proof for every object in a corrupt file.
 - SWMR, parallel HDF5 and non-seekable output remain outside the implementation.
   Exact datatype, mapping and format limits are in the compatibility matrix.
+
+## Post-release: new-file reserves
+
+The GitHub worktree adds `set_file_space_reserve`: persistent aggregate raw
+manager creation with a zero-filled reserve, user blocks, sink and source output.
+Five additional tests bring the total to 523 per target. h5py verifies manager
+settings, every reserved section, explicit relocation and allocation into the
+reserve, followed by reopen/data checks.
+
+Shared-message output and reserves are rejected together before sink mutation.
+Continued HDF5 metadata creation exposed an existing shared-index limitation;
+read interoperability alone does not establish write interoperability for SOHM.
+No package release accompanies this work.

@@ -177,7 +177,9 @@ layout-v4 message, but records source names without opening or validating them.
 Dense links are not capped at 65,535 records and use the format's 64-bit
 creation-order field. Dense attributes are capped at 65,535 by the
 attribute-info field. Dense output supports multiple direct heap blocks,
-indirect roots and huge objects; no free-space manager is emitted.
+indirect roots and huge objects. Shared-message output is not combined with
+file-space reservation because its persisted indexes are not verified for
+arbitrary libhdf5 metadata creation.
 
 ## Editing
 
@@ -220,7 +222,13 @@ and coalesces adjacent simple sections. FSHD/FSSE counts, sizes and checksums ar
 rewritten; serialized images retain their capacity or append when they grow.
 Empty managers clear their section allocation. Version-1 allocation boundaries
 are updated for subsequent HDF5 writes. This does not create managers, handle
-paged allocation or shrink the file.
+paged allocation or shrink the file. `set_file_space_reserve` explicitly creates
+a raw manager in new files: output appends a zero-filled reserve, FSHD/FSSE
+metadata and a checksummed superblock extension. Allocation addresses remain
+relative to the user-block base. The reserve is optional and zero disables it.
+Reserved files also emit group-info messages needed for HDF5 link creation.
+Shared-message settings are rejected before the sink is reset; default output
+without a reserve retains its existing layout.
 
 ## Errors and verification
 
