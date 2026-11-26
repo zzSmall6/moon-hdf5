@@ -52,3 +52,21 @@ Shared-message output and reserves are rejected together before sink mutation.
 Continued HDF5 metadata creation exposed an existing shared-index limitation;
 read interoperability alone does not establish write interoperability for SOHM.
 No package release accompanies this work.
+
+## Post-release: chunk relocation
+
+Explicit `relocate_dataset_storage` now supports allocated chunks in single,
+fixed-array, extensible-array and v1/v2 B-tree indexes. Five tests bring the
+total to 528 per target, covering sparse fills, vlen heaps, skipped filters,
+multi-level uncompressed v2 checksums and insufficient-space failure.
+`verify_chunk_relocation.py` compares stored bytes and free regions with HDF5,
+then rewrites chunks, allocates another dataset and reopens the output; both
+address widths and user blocks are covered. Single-chunk filter masks are
+checked by MoonBit because HDF5 1.14.6's chunk-query APIs expose unstable mask
+values for that index; stored payload bytes are checked independently.
+
+Further interoperability testing also encountered a pre-existing limitation
+when HDF5 creates links in writer-produced dense groups. Continued-allocation
+checks use a compact child group; they do not establish arbitrary dense-group
+editing compatibility. Automatic chunk replacement/deletion/resize reclamation
+and paged allocation remain unimplemented. No MoonCakes release is made.

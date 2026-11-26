@@ -112,16 +112,8 @@ fn ChunkBTreeV2::record(
     } else {
       0
     },
-    if self.client == 11 {
-      node_start
-    } else {
-      -1
-    },
-    if self.client == 11 {
-      metadata_checksum_offset
-    } else {
-      -1
-    },
+    node_start,
+    metadata_checksum_offset,
   )
   if !chunk_contains_selection(
       offsets,

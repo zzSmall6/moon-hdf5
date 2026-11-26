@@ -45,7 +45,8 @@ writer.add_attribute("/ids", "unit", [], @lib.FixedStringValues(["items"], 8))
   and links, and create/delete objects. Each edit returns a new byte image.
 - **Inspect/reuse space:** `file_space_info` and `free_space_managers` inspect
   persisted sections. Contiguous allocation and `relocate_dataset_storage`
-  can reuse an existing persistent aggregate raw-data manager.
+  reuse persistent aggregate raw-data space; explicit relocation supports
+  contiguous data and chunks with explicit indexes, preserving stored bytes.
   `set_file_space_reserve(bytes)` creates a new persistent raw manager with a
   zero-filled reserve; shared-message output must be disabled.
 
@@ -76,7 +77,7 @@ H5PY_PYTHON=/path/to/python ./scripts/release_check.sh
 ```
 
 The release gate checks interfaces, formatting, documentation, package contents,
-523 tests on each target and h5py 3.13.0/HDF5 1.14.6 interoperability. CI pins
+528 tests on each target and h5py 3.13.0/HDF5 1.14.6 interoperability. CI pins
 MoonBit `0.10.19+bee578715`. [Fixture regeneration](testdata/README.md).
 
 ## License

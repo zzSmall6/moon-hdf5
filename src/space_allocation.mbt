@@ -299,8 +299,8 @@ fn Hdf5File::reuse_contiguous_space(
 }
 
 ///|
-/// Moves an allocated, internal contiguous payload into an existing persisted
-/// raw-data free section and returns its previous storage to that manager.
+/// Moves allocated internal contiguous data or explicit-index chunks into
+/// persisted raw-data free sections and returns previous storage to the manager.
 /// Shapes, values, references, attributes and object addresses are preserved.
 /// Requires a bytes-backed file with a persistent aggregate strategy and a
 /// suitable free section. This does not shrink the file or reclaim old heaps.
@@ -324,6 +324,9 @@ pub fn Hdf5File::relocate_dataset_storage(
   }
   let header = self.object_header_at(node.address)
   let metadata = self.read_dataset_metadata(path)
+  if metadata.layout.kind() == Chunked {
+    return self.relocate_chunk_storage(header, metadata, alignment)
+  }
   let absent = btree_v1_undefined_address(self.superblock.offset_size)
   guard metadata.layout.kind() == Contiguous &&
     metadata.layout.data_address != absent &&

@@ -2,6 +2,68 @@
 fn main {
   let args = @env.args()
   try {
+    if args.length() == 4 && args[1] == "create-chunks" {
+      let writer = @lib.Hdf5Writer::new()
+      writer.add_group("/edits")
+      writer.set_file_space_reserve(1048576)
+      if args[2] == "userblock" {
+        writer.set_user_block_content(b"chunk-reserve")
+      }
+      let values = Array::make(1200, 0)
+      for index in 0..<values.length() {
+        values[index] = index - 600
+      }
+      for filtered in [false, true] {
+        let suffix = if filtered { "filtered" } else { "raw" }
+        let filters : Array[@lib.Hdf5WriteFilter] = if filtered {
+          [Shuffle, Deflate(4), Fletcher32]
+        } else {
+          []
+        }
+        writer.add_chunked_dataset(
+          "/single_" + suffix,
+          [30UL, 40UL],
+          [30U, 40U],
+          Int32Values(values),
+          filters~,
+        )
+        writer.add_chunked_dataset(
+          "/fixed_" + suffix,
+          [30UL, 40UL],
+          [3U, 4U],
+          Int32Values(values),
+          filters~,
+        )
+        writer.add_extensible_dataset(
+          "/array_" + suffix,
+          [30UL, 40UL],
+          [None, Some(40UL)],
+          [3U, 4U],
+          Int32Values(values),
+          filters~,
+        )
+        writer.add_extensible_dataset(
+          "/tree_" + suffix,
+          [30UL, 40UL],
+          [None, None],
+          [3U, 4U],
+          Int32Values(values),
+          filters~,
+        )
+        if filtered {
+          writer.set_chunk_filter_mask("/fixed_" + suffix, 0, 7U)
+        }
+      }
+      writer.add_chunked_dataset(
+        "/names",
+        [5UL],
+        [2U],
+        VariableStringValues(["alpha", "月亮", "", "beta", "alpha"]),
+        filters=[Deflate(4)],
+      )
+      @fs.write_bytes_to_file(args[3], writer.encode())
+      return
+    }
     if args.length() == 4 && args[1] == "create" {
       let writer = @lib.Hdf5Writer::new()
       writer.set_file_space_reserve(8192)

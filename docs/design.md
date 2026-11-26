@@ -230,6 +230,14 @@ Reserved files also emit group-info messages needed for HDF5 link creation.
 Shared-message settings are rejected before the sink is reset; default output
 without a reserve retains its existing layout.
 
+Chunk relocation plans destinations for every allocated chunk before returning
+any original region. It copies stored bytes unchanged, rewrites explicit index
+addresses and recomputes all affected metadata checksums, including unfiltered
+v2 B-tree nodes. Sparse fill slots, filter masks and heap references are retained.
+The operation fails without returning an edited image when the reserve is too
+small. Implicit indexes are rejected because their addresses are derived rather
+than stored. Chunk value patching still uses its existing allocation path.
+
 ## Errors and verification
 
 Unsupported structures raise `UnsupportedFeature`; malformed metadata normally
