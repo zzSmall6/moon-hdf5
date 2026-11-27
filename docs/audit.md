@@ -82,3 +82,15 @@ reserves, repeated growth/shrink, vlen heaps and live/free overlap rejection.
 repeated edits across modern indexes and v1 B-trees at 4-/8-byte address widths,
 user blocks, HDF5 rewrites and subsequent allocations. Automatic object deletion,
 dataset resize and abandoned index/heap reclamation remain unimplemented.
+
+## Post-release: conservative dataset deletion
+
+`delete_object` now returns eligible fixed-width internal dataset payloads to an
+existing aggregate raw manager, after all hard aliases are removed. Six tests
+bring the total to 539 per target. References in reachable datasets/attributes,
+vlen storage, groups and conservatively unsupported layouts prevent reclamation.
+Overlap checks reject ambiguous live/free or shared raw storage before deletion.
+`verify_deletion_space.py` checks exact free-byte increases, aliases, preserved
+object references, 4-/8-byte addresses, user blocks and continued HDF5 allocation.
+Headers, indexes, heaps, deleted group descendants and hidden chunks after resize
+remain allocated. This work does not publish a MoonCakes package.

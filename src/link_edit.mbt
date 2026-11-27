@@ -733,8 +733,11 @@ pub fn Hdf5File::delete_link(
 /// unreachable when its final hard link is removed. This function also removes
 /// hard links in other groups so aliases cannot keep the object reachable.
 /// Soft and external links are left untouched and may subsequently dangle. The
-/// root group cannot be deleted. Metadata and raw data from the deleted object
-/// remain in the append-only file until free-space reclamation is available.
+/// root group cannot be deleted. Deleted object metadata remains allocated.
+/// Eligible fixed-width dataset payloads are returned
+/// to an existing persistent aggregate raw manager when no reachable reference
+/// datatype is present. Vlen data, group descendants and unsupported storage
+/// remain allocated. Deleting a link alone does not reclaim storage.
 pub fn Hdf5File::delete_object(
   self : Hdf5File,
   path : String,
@@ -746,6 +749,7 @@ pub fn Hdf5File::delete_object(
   guard target.address != self.root_address() else {
     raise InvalidArgument("the root group cannot be deleted")
   }
+  let reclaimed = self.prepare_deleted_storage(target)
   let group_addresses = [self.root_address()]
   for node in self.walk() {
     if node.kind == Group && !group_addresses.contains(node.address) {
@@ -780,5 +784,5 @@ pub fn Hdf5File::delete_object(
   guard removed else {
     raise InvalidArgument("object has no removable hard link: " + path)
   }
-  bytes
+  finish_chunk_space_patch(bytes, reclaimed)
 }

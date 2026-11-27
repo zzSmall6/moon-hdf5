@@ -48,6 +48,8 @@ writer.add_attribute("/ids", "unit", [], @lib.FixedStringValues(["items"], 8))
   reuse persistent aggregate raw-data space; explicit relocation supports
   contiguous data and chunks with explicit indexes, preserving stored bytes.
   Chunk patches reuse free regions and return replaced bytes or shrink tails.
+  Object deletion reclaims eligible fixed-width dataset payloads conservatively;
+  reference-bearing files and vlen data retain storage.
   `set_file_space_reserve(bytes)` creates a new persistent raw manager with a
   zero-filled reserve; shared-message output must be disabled.
 
@@ -78,7 +80,7 @@ H5PY_PYTHON=/path/to/python ./scripts/release_check.sh
 ```
 
 The release gate checks interfaces, formatting, documentation, package contents,
-533 tests on each target and h5py 3.13.0/HDF5 1.14.6 interoperability. CI pins
+539 tests on each target and h5py 3.13.0/HDF5 1.14.6 interoperability. CI pins
 MoonBit `0.10.19+bee578715`. [Fixture regeneration](testdata/README.md).
 
 ## License

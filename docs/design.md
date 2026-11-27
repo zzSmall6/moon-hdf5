@@ -247,6 +247,16 @@ applies the manager threshold and writes the manager once. Index rebuilds and
 new vlen heaps retain their existing append paths; their abandoned metadata
 and heap bytes are not reclaimed.
 
+Dataset deletion prepares a conservative release plan before modifying links,
+then commits the manager update only after every hard alias is removed. It
+returns fixed-width internal contiguous/explicit-index chunk payloads, not
+headers, indexes or heaps. Reachable reference datatypes in datasets or
+attributes disable reclamation; vlen targets, uncertain traversal, other vlen
+or virtual datasets, and implicit-index storage are also excluded conservatively.
+Other reachable dataset payloads are checked for overlapping raw regions.
+Deleting a link alone or a group does not reclaim payloads. Dataspace shrinking
+still retains hidden chunks until a future index-aware reclamation pass.
+
 ## Errors and verification
 
 Unsupported structures raise `UnsupportedFeature`; malformed metadata normally

@@ -110,6 +110,11 @@ fn main {
       @fs.write_bytes_to_file(args[3], writer.encode())
       return
     }
+    if args.length() == 5 && args[1] == "delete" {
+      let file = @lib.Hdf5File::parse(@fs.read_file_to_bytes(args[2]))
+      @fs.write_bytes_to_file(args[4], file.delete_object(args[3]))
+      return
+    }
     if args.length() == 5 &&
       (args[1] == "relocate" || args[1] == "patch" || args[1] == "patch-noise") {
       let file = @lib.Hdf5File::parse(@fs.read_file_to_bytes(args[2]))

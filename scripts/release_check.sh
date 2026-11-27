@@ -324,6 +324,7 @@ if [ "${SKIP_H5PY:-0}" != "1" ]; then
   "$python" scripts/verify_space_reuse.py
   "$python" scripts/verify_chunk_relocation.py
   "$python" scripts/verify_chunk_space_patch.py
+  "$python" scripts/verify_deletion_space.py
 fi
 
 echo "Release checks passed."
